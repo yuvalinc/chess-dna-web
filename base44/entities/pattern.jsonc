@@ -1,0 +1,31 @@
+{
+  "name": "Pattern",
+  "type": "object",
+  "properties": {
+    "patterns": { "type": "array" },
+    "lastUpdated": { "type": "number" },
+    "gamesInWindow": { "type": "number" }
+  },
+  "required": ["patterns"],
+  "rls": {
+    "create": true,
+    "read": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "update": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "delete": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    }
+  }
+}

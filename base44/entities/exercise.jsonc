@@ -1,0 +1,36 @@
+{
+  "name": "Exercise",
+  "type": "object",
+  "properties": {
+    "themeId": { "type": "string" },
+    "position": { "type": "string" },
+    "solution": { "type": "string" },
+    "explanation": { "type": "string" },
+    "difficulty": { "type": "string" },
+    "hint": { "type": "string" },
+    "stockfishVerified": { "type": "boolean", "default": false },
+    "generatedAt": { "type": "number" }
+  },
+  "required": ["themeId", "position", "solution"],
+  "rls": {
+    "create": true,
+    "read": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "update": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "delete": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    }
+  }
+}

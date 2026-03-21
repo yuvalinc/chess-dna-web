@@ -1,0 +1,9 @@
+{
+  "name": "chess-dna",
+  "site": {
+    "buildCommand": "npm run build",
+    "serveCommand": "npm run dev",
+    "outputDirectory": "./dist",
+    "installCommand": "npm ci"
+  }
+}

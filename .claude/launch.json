@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--host"],
+      "cwd": "/Users/yuval.incze/chess-dna-web",
+      "port": 5173,
+      "autoPort": true
+    }
+  ]
+}

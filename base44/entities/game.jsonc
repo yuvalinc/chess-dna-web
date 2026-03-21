@@ -1,0 +1,40 @@
+{
+  "name": "Game",
+  "type": "object",
+  "properties": {
+    "gameId": { "type": "string" },
+    "url": { "type": "string" },
+    "pgn": { "type": "string" },
+    "player": { "type": "object" },
+    "opponent": { "type": "object" },
+    "timeClass": { "type": "string" },
+    "timeControl": { "type": "string" },
+    "opening": { "type": "object" },
+    "totalMoves": { "type": "number" },
+    "playedAt": { "type": "number" },
+    "analyzedAt": { "type": "number" },
+    "analysisStatus": { "type": "string", "default": "pending" }
+  },
+  "required": ["gameId", "pgn", "playedAt"],
+  "rls": {
+    "create": true,
+    "read": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "update": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "delete": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "Lesson",
+  "type": "object",
+  "properties": {
+    "themeId": { "type": "string" },
+    "title": { "type": "string" },
+    "explanation": { "type": "string" },
+    "examplePositions": { "type": "array" },
+    "stockfishVerified": { "type": "boolean", "default": false },
+    "generatedAt": { "type": "number" }
+  },
+  "required": ["themeId", "title"],
+  "rls": {
+    "create": true,
+    "read": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "update": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "delete": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "Analysis",
+  "type": "object",
+  "properties": {
+    "gameId": { "type": "string" },
+    "moves": { "type": "array" },
+    "summary": { "type": "object" },
+    "analyzedAt": { "type": "number" },
+    "engineDepth": { "type": "number" },
+    "engineVersion": { "type": "string" }
+  },
+  "required": ["gameId", "moves"],
+  "rls": {
+    "create": true,
+    "read": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "update": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "delete": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    }
+  }
+}

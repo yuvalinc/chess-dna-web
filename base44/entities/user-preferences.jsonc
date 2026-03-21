@@ -1,0 +1,50 @@
+{
+  "name": "UserPreferences",
+  "type": "object",
+  "properties": {
+    "chesscomUsername": { "type": "string" },
+    "claudeApiKey": { "type": "string" },
+    "claudeModel": { "type": "string", "default": "claude-sonnet-4-20250514" },
+    "openaiApiKey": { "type": "string" },
+    "openaiModel": { "type": "string", "default": "gpt-4o" },
+    "geminiApiKey": { "type": "string" },
+    "geminiModel": { "type": "string", "default": "gemini-2.0-flash" },
+    "aiProviderPriority": { "type": "array", "default": ["claude", "openai", "gemini"] },
+    "analysisDepth": { "type": "number", "default": 18 },
+    "autoAnalyze": { "type": "boolean", "default": true },
+    "windowSize": { "type": "number", "default": 50 },
+    "selectedTimeClass": { "type": "string" },
+    "theme": { "type": "string", "default": "dark" },
+    "boardTheme": { "type": "string", "default": "classic" },
+    "ttsVoiceA": { "type": "string", "default": "nova" },
+    "ttsVoiceB": { "type": "string", "default": "onyx" },
+    "ttsModel": { "type": "string", "default": "gpt-4o-mini-tts" },
+    "podcastLength": { "type": "string", "default": "STANDARD" },
+    "audioProvider": { "type": "string", "default": "auto" },
+    "radarRevealedAt": { "type": "number" },
+    "patternsUnlockedAt": { "type": "number" },
+    "aiChoiceMade": { "type": "boolean", "default": false },
+    "guidedWalkthroughDone": { "type": "boolean", "default": false }
+  },
+  "rls": {
+    "create": true,
+    "read": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "update": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "delete": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    }
+  }
+}

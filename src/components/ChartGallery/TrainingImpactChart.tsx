@@ -114,7 +114,7 @@ export function getTrainingImpactCorrelation(
   analyses: GameAnalysis[],
 ): CorrelationInfo {
   const data = buildTrainingImpactData(games, analyses);
-  if (data.length < 3) return { r: 0, label: 'Weak →', color: '#94a3b8' };
+  if (data.length < 3) return { r: 0, label: 'Weak →', labelKey: 'correlation_weak', color: '#94a3b8' };
   const r = computeCorrelation(
     data.map((d) => d.elo),
     data.map((d) => d.rollingAvg),

@@ -1,6 +1,6 @@
 import { GEMINI_API_BASE, GEMINI_MAX_TOKENS } from '@shared/constants';
 import { addTokenUsage } from '@/storage/settings-store';
-import type { AIProvider, AIMessage, AIMessageContent } from './ai-types';
+import type { AIProvider, AIMessage, AIMessageContent, AIResponse } from './ai-types';
 
 interface GeminiResponse {
   candidates: Array<{
@@ -105,6 +105,46 @@ export class GeminiClient implements AIProvider {
     return text;
   }
 
+  async sendMessageWithUsage(
+    system: string,
+    messages: AIMessage[],
+    maxTokens: number = GEMINI_MAX_TOKENS,
+  ): Promise<AIResponse> {
+    const contents = messages.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: formatPartsForGemini(m.content),
+    }));
+
+    const url = `${GEMINI_API_BASE}/${this.model}:generateContent?key=${this.apiKey}`;
+
+    const response = await this.fetchWithRetry(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents,
+        generationConfig: { maxOutputTokens: maxTokens },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini API error ${response.status}: ${errorText}`);
+    }
+
+    const data: GeminiResponse = await response.json();
+    const inputTokens = data.usageMetadata?.promptTokenCount ?? 0;
+    const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
+    if (data.usageMetadata) {
+      await addTokenUsage(inputTokens, outputTokens);
+    }
+
+    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join('');
+    if (!text) throw new Error('Gemini returned empty response');
+
+    return { text, inputTokens, outputTokens };
+  }
+
   private async fetchWithRetry(
     url: string,
     options: RequestInit,
@@ -126,6 +166,9 @@ export class GeminiClient implements AIProvider {
 
         // Retry on rate limit or server errors
         if (response.status === 429 || response.status >= 500) {
+          const errBody = await response.text().catch(() => '');
+          lastError = new Error(`HTTP ${response.status}: ${errBody.slice(0, 200)}`);
+          console.warn(`[Gemini] Attempt ${attempt + 1}/${maxRetries} got ${response.status} for ${this.model}:`, errBody.slice(0, 200));
           const retryAfter = response.headers.get('retry-after');
           const delay = retryAfter
             ? parseInt(retryAfter, 10) * 1000
@@ -137,13 +180,14 @@ export class GeminiClient implements AIProvider {
         return response;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`[Gemini] Attempt ${attempt + 1}/${maxRetries} failed for ${this.model}:`, lastError.message);
         if (attempt < maxRetries - 1) {
           await sleep(Math.pow(2, attempt) * 1000);
         }
       }
     }
 
-    throw lastError ?? new Error('Gemini request failed after retries');
+    throw new Error(`Gemini ${this.model}: ${lastError?.message ?? 'request failed after retries'}`);
   }
 }
 

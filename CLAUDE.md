@@ -104,6 +104,35 @@ VITE_FALLBACK_CLAUDE_KEY   # Shared beta Claude API key
 VITE_FALLBACK_OPENAI_KEY   # Shared beta OpenAI API key
 ```
 
+## Critical Files (extra caution required)
+These files are complex, widely depended on, and easy to break:
+- `src/contexts/ChessDataContext.tsx` — core data hub, 40+ derived values, event listeners with refs. **All hooks must come before early returns.**
+- `src/pages/GameDetail.tsx` — complex hook ordering. **All useState/useEffect/useMemo/useCallback MUST be before any conditional returns** (React error #300/#310).
+- `src/engine/stockfish-client.ts` — singleton WASM worker. Breaking this breaks all analysis.
+- `src/patterns/skill-calculator.ts` — profile computation with fallback logic for broken game-analysis joins.
+- `src/shared/constants.ts` — all thresholds; changing values has cascading effects across the app.
+- `src/hooks/useEntity.ts` — Base44 entity hooks with guest/auth branching. Hook count must stay stable.
+
+## Do NOT
+- Do not use `any` type — define proper interfaces in `src/shared/types/`
+- Do not add new npm dependencies without discussing first
+- Do not modify Base44 entity schemas — Base44 silently drops unknown fields
+- Do not put React hooks after conditional `return` statements — causes React error #300
+- Do not use `tsc -b` exit code to determine build success — it has incremental cache bugs; check for `dist/` output instead
+- Do not filter entities by `created_by_id` server-side — legacy records don't have this field
+- Do not call `runBatchAnalysis` directly — always use `queueForAnalysis()` from ChessDataContext
+- Do not use CSS custom properties (`var(--chess-*)`) in share card components — html2canvas can't resolve them; use `SHARE_COLORS` constants
+- Do not assume `entity.list()` returns all records — Base44 has a 5000-record limit
+
+## Build & Deploy
+```bash
+npm run build          # tsc -b && vite build
+npx base44 site deploy -y   # Deploy dist/ to production
+```
+- Build MUST succeed with no TypeScript errors before deploying
+- Verify the `dist/assets/index-*.js` filename changes after build (content hash)
+- After deploy, clear browser cache to verify new bundle loads (check filename in DevTools network tab)
+
 ## Notable Details
 - No `User` entity in Base44 — `auth.me()` may 401 but token still works for CRUD
 - Streaming TTS: chunks play as they arrive (don't wait for full synthesis)
@@ -114,3 +143,5 @@ VITE_FALLBACK_OPENAI_KEY   # Shared beta OpenAI API key
 - Fallback API keys from env vars let users try the app without setting personal keys
 - Audio sessions persist to IndexedDB (survives page reload)
 - `[Chess DNA]` / `[Chess Tutor]` console log prefixes for debugging
+- Game deduplication: `allGames` memo prefers game copies that have matching Analysis records
+- Share card rendering: overlays use inline styles with hardcoded hex colors, not Tailwind

@@ -14,14 +14,16 @@ export default function ThemedChessboard(props: ThemedChessboardProps) {
   const theme = getBoardTheme(boardTheme);
 
   return (
-    <Chessboard
-      {...props}
-      customDarkSquareStyle={{ backgroundColor: theme.darkSquare }}
-      customLightSquareStyle={{ backgroundColor: theme.lightSquare }}
-      customBoardStyle={{
-        borderRadius: '4px',
-        ...props.customBoardStyle,
-      }}
-    />
+    <div dir="ltr">
+      <Chessboard
+        {...props}
+        customDarkSquareStyle={{ backgroundColor: theme.darkSquare }}
+        customLightSquareStyle={{ backgroundColor: theme.lightSquare }}
+        customBoardStyle={{
+          borderRadius: '4px',
+          ...props.customBoardStyle,
+        }}
+      />
+    </div>
   );
 }

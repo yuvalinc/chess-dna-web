@@ -12,7 +12,10 @@
   },
   "dependencies": {
     "@base44/sdk": "^0.8.19",
+    "@xyflow/react": "^12.10.1",
     "chess.js": "^1.4.0",
+    "html2canvas": "^1.4.1",
+    "mp4-muxer": "^5.2.2",
     "react": "^19.2.0",
     "react-chessboard": "^4.7.3",
     "react-dom": "^19.2.0",

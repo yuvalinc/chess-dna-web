@@ -19,7 +19,7 @@ function fixModelName(model: string): string {
 /**
  * Create a concrete AIProvider from a config.
  */
-function createProvider(config: AIProviderConfig): AIProvider {
+export function createProvider(config: AIProviderConfig): AIProvider {
   switch (config.type) {
     case 'claude':
       return new ClaudeClient(config.apiKey, config.model);
@@ -118,7 +118,7 @@ export async function sendWithFallback(
       return result;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      console.warn(`[Chess Tutor] Provider ${config.type} failed:`, error.message);
+      console.error(`[Chess Tutor] Provider ${config.type} failed:`, error.message);
       errors.push({ provider: config.type, error });
 
       // Don't fallback on auth errors for remaining providers if they'd have the same issue

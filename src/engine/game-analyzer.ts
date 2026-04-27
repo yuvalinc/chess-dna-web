@@ -34,12 +34,18 @@ export async function analyzeGame(
   chess.loadPgn(game.pgn);
   const history = chess.history({ verbose: true });
 
+  // Parse clock times from PGN comments (chess.com format: {[%clk H:MM:SS]})
+  const clockTimes = parseClockTimes(game.pgn);
+
   // Reset and replay
   chess.reset();
 
   const moves: MoveAnalysis[] = [];
   let prevEval: PositionEval | null = null;
   let prevMoveWasBlunder = false; // Track if opponent's last move was a blunder
+  // Track previous clock for each color to compute timeSpent
+  let prevWhiteClock: number | null = null;
+  let prevBlackClock: number | null = null;
 
   // Analyze each position
   for (let i = 0; i < history.length; i++) {
@@ -54,8 +60,24 @@ export async function analyzeGame(
     // Get material before the move
     const materialBefore = countMaterial(fenBefore);
 
-    // Get engine eval for the position BEFORE the move
-    const evalBefore = prevEval ?? (await client.analyzePosition(fenBefore, depth));
+    // Get engine eval for the position BEFORE the move.
+    // Use cached eval from previous iteration when available (evalAfter of move i-1).
+    // The eval values (cp/mate) are always correct since the position matches.
+    // If the cached bestMove is for the wrong side, we still use the eval values
+    // but will get the correct bestMove from the current position's analysis.
+    let evalBefore: PositionEval;
+    if (prevEval) {
+      // Reuse cached eval — the cp/mate values are correct for this position.
+      // If bestMove is illegal (opponent's move stored), clear it so we don't
+      // incorrectly credit the player for playing the "best" move.
+      if (prevEval.bestMove && !isLegalUci(fenBefore, prevEval.bestMove)) {
+        evalBefore = { ...prevEval, bestMove: '' };
+      } else {
+        evalBefore = prevEval;
+      }
+    } else {
+      evalBefore = await client.analyzePosition(fenBefore, depth);
+    }
 
     // Make the move
     chess.move(move.san);
@@ -70,10 +92,25 @@ export async function analyzeGame(
     // Calculate centipawn loss from the perspective of the side that moved.
     const cpBefore = evalToCpForSideToMove(evalBefore);
     const cpAfter = -evalToCpForSideToMove(evalAfter);
-    const cpLoss = Math.max(0, cpBefore - cpAfter);
 
-    // Calculate win chance loss (chess.com Expected Points model)
-    const winChanceLoss = calcWinChanceLoss(cpBefore, cpAfter);
+    // If the player played the engine's recommended best move, cpLoss must be 0.
+    const moveUci = `${move.from}${move.to}${move.promotion ?? ''}`;
+    const playedBestMove = moveUci === evalBefore.bestMove;
+    let cpLoss = playedBestMove ? 0 : Math.max(0, cpBefore - cpAfter);
+    let winChanceLoss = playedBestMove ? 0 : calcWinChanceLoss(cpBefore, cpAfter);
+
+    // Sanity check: if the move is a capture and the position is still clearly
+    // winning for the mover (cpAfter > 200), cap cpLoss. Stockfish eval
+    // inconsistencies (especially WASM lite, transposition table, or mate↔cp
+    // transitions) can produce huge cpLoss even for obviously good captures.
+    if (!!move.captured && cpAfter > 200 && cpLoss > 0) {
+      if (winChanceLoss > 0.15 && cpAfter > 400) {
+        // Capturing a piece while staying > +4.0 can't be a blunder
+        console.warn(`[Chess DNA] Capping suspicious cpLoss for capture: ${move.san} cpLoss=${cpLoss} cpBefore=${cpBefore} cpAfter=${cpAfter}`);
+        cpLoss = Math.min(cpLoss, 100);
+        winChanceLoss = Math.min(winChanceLoss, 0.05);
+      }
+    }
 
     // Detect sacrifice
     const isSacrifice = detectSacrifice(
@@ -119,7 +156,6 @@ export async function analyzeGame(
     const pvSan = pvToSan(fenBefore, evalBefore.pv);
 
     // Detect tactical motifs
-    const moveUci = `${move.from}${move.to}${move.promotion ?? ''}`;
     const tacticalMotifs = cpLoss > 30
       ? detectTacticalMotifs(fenBefore, evalBefore.bestMove, moveUci)
       : detectTacticalMotifs(fenBefore, evalBefore.bestMove, '');
@@ -127,6 +163,18 @@ export async function analyzeGame(
     // Normalize eval scores to always be from White's perspective for storage/display.
     const normalizedEvalBefore = normalizeEvalToWhite(evalBefore, isWhite);
     const normalizedEvalAfter = normalizeEvalToWhite(evalAfter, !isWhite);
+
+    // Compute time spent from clock data
+    const clockRemaining = clockTimes[i] ?? null;
+    let timeSpent: number | null = null;
+    if (clockRemaining !== null) {
+      const prevClock = isWhite ? prevWhiteClock : prevBlackClock;
+      if (prevClock !== null) {
+        timeSpent = Math.max(0, prevClock - clockRemaining);
+      }
+      if (isWhite) prevWhiteClock = clockRemaining;
+      else prevBlackClock = clockRemaining;
+    }
 
     moves.push({
       moveNumber: fullMoveNumber,
@@ -151,6 +199,8 @@ export async function analyzeGame(
       isCastling: move.san === 'O-O' || move.san === 'O-O-O',
       isSacrifice,
       legalMoveCount,
+      timeSpent,
+      clockRemaining,
     });
 
     // Report progress
@@ -187,13 +237,37 @@ function normalizeEvalToWhite(eval_: PositionEval, sideToMoveIsWhite: boolean): 
 
 /**
  * Convert an eval to centipawns from the side-to-move's perspective.
+ *
+ * Mate scores are capped at ±1500cp to prevent wildly inflated cpLoss
+ * values when comparing a mate eval against a centipawn eval.
+ * At 1500cp the win probability is already ~99.6%, so the difference
+ * between "mate" and "very winning" is negligible in win-chance terms.
  */
 function evalToCpForSideToMove(eval_: PositionEval): number {
   if (eval_.scoreType === 'mate') {
     const sign = eval_.score > 0 ? 1 : -1;
-    return sign * (10000 - Math.abs(eval_.score));
+    // Scale by distance: mate-in-1 → 1500, mate-in-50 → 1010, longer → 1000 floor
+    const raw = 1000 + Math.max(0, 50 - Math.abs(eval_.score)) * 10;
+    return sign * Math.min(1500, raw);
   }
   return eval_.score;
+}
+
+/**
+ * Check whether a UCI move string is legal in the given position.
+ */
+function isLegalUci(fen: string, uci: string): boolean {
+  if (!uci || uci.length < 4) return false;
+  try {
+    const chess = new Chess(fen);
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const promotion = uci.length > 4 ? uci[4] : undefined;
+    const result = chess.move({ from, to, promotion });
+    return result !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -343,4 +417,22 @@ function computePhaseAccuracy(
 
 function avg(nums: number[]): number {
   return nums.reduce((s, n) => s + n, 0) / nums.length;
+}
+
+/**
+ * Parse clock times from PGN comments.
+ * Chess.com format: {[%clk H:MM:SS]} or {[%clk H:MM:SS.s]}
+ * Returns an array of clock remaining in seconds, indexed by half-move (0-based).
+ */
+function parseClockTimes(pgn: string): (number | null)[] {
+  const times: (number | null)[] = [];
+  const regex = /\[%clk\s+(\d+):(\d+):(\d+(?:\.\d+)?)\]/g;
+  let match;
+  while ((match = regex.exec(pgn)) !== null) {
+    const hours = parseInt(match[1], 10);
+    const minutes = parseInt(match[2], 10);
+    const seconds = parseFloat(match[3]);
+    times.push(hours * 3600 + minutes * 60 + seconds);
+  }
+  return times;
 }

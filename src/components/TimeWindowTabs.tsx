@@ -1,4 +1,5 @@
 import { TIME_WINDOWS, type TimeWindowId } from '@/patterns/windowed-profile';
+import { useT } from '@/i18n/index';
 
 interface TimeWindowTabsProps {
   activeWindow: TimeWindowId;
@@ -11,8 +12,9 @@ export default function TimeWindowTabs({
   onWindowChange,
   analyzedGameCount,
 }: TimeWindowTabsProps) {
+  const { t } = useT();
   return (
-    <div className="flex gap-1 mb-3">
+    <div className="flex rtl:flex-row-reverse gap-1 mb-3">
       {TIME_WINDOWS.map((w) => {
         const isActive = activeWindow === w.id;
         // Ability tab: always enabled if any games exist (falls back to all available games)
@@ -34,11 +36,11 @@ export default function TimeWindowTabs({
             }`}
             title={!hasEnough ? `Need at least ${w.gameCount} analyzed games` : undefined}
           >
-            {w.label}
+            {t(`tab_${w.id}` as Parameters<typeof t>[0])}
             {w.id === 'ability' && analyzedGameCount < w.gameCount ? (
-              <span className="ml-1 text-[9px] opacity-60">{analyzedGameCount}</span>
+              <span className="ms-1 text-[9px] opacity-60">{analyzedGameCount}</span>
             ) : (
-              <span className="ml-1 text-[9px] opacity-60">{w.gameCount}</span>
+              <span className="ms-1 text-[9px] opacity-60">{w.gameCount}</span>
             )}
           </button>
         );

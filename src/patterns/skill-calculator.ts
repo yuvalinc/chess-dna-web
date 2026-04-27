@@ -1,135 +1,61 @@
 import type { CurrentPatterns, SkillProfile, SkillDimension, SkillDimensionId } from '@shared/types/patterns';
-import { WeaknessTheme } from '@shared/types/patterns';
 import type { GameAnalysis, MoveAnalysis } from '@shared/types/analysis';
 import type { GameRecord } from '@shared/types/game';
+import type { SkillCalcConfigSchema, DimensionConfig, MoveFilter } from '@shared/types/skill-config';
+import { getDefaultConfig } from './skill-config-loader';
+import { DEFAULT_BUCKET_SCORES } from '@shared/constants';
 
 /* ────────────────────────────────────────────────────────────
- *  Constants
- * ──────────────────────────────────────────────────────────── */
-
-/** Platform-average ELO used as the baseline for opponent rating multiplier */
-const BENCHMARK_RATING = 1200;
-
-/* ────────────────────────────────────────────────────────────
- *  Dimension definitions — which weakness themes map to each
- * ──────────────────────────────────────────────────────────── */
-
-interface DimensionDef {
-  id: SkillDimensionId;
-  label: string;
-  themes: WeaknessTheme[];
-  description: string;
-  /** Weight for overall rating (should sum to ~1.0 across all) */
-  weight: number;
-}
-
-const DIMENSION_DEFS: DimensionDef[] = [
-  {
-    id: 'openings',
-    label: 'Openings',
-    themes: [WeaknessTheme.OPENING_INACCURACY, WeaknessTheme.OPENING_SPECIFIC],
-    description: 'How well you handle the opening phase — following principles, developing pieces, and preparing for the middlegame.',
-    weight: 0.12,
-  },
-  {
-    id: 'tactics',
-    label: 'Tactics',
-    themes: [
-      WeaknessTheme.MISSED_FORK,
-      WeaknessTheme.MISSED_PIN,
-      WeaknessTheme.MISSED_SKEWER,
-      WeaknessTheme.MISSED_TACTIC_OTHER,
-      WeaknessTheme.MIDDLEGAME_TACTICS,
-    ],
-    description: 'Your ability to spot forks, pins, skewers, and other tactical combinations that win material or deliver checkmate.',
-    weight: 0.18,
-  },
-  {
-    id: 'defense',
-    label: 'Defense',
-    themes: [WeaknessTheme.HANGING_PIECE, WeaknessTheme.BACK_RANK_WEAKNESS, WeaknessTheme.KING_SAFETY],
-    description: 'How well you protect your pieces and king — avoiding hanging pieces, back-rank mates, and keeping your king safe.',
-    weight: 0.15,
-  },
-  {
-    id: 'positional',
-    label: 'Positional',
-    themes: [WeaknessTheme.PAWN_STRUCTURE, WeaknessTheme.PIECE_ACTIVITY, WeaknessTheme.SPACE_CONTROL],
-    description: 'Your understanding of pawn structure, piece placement, and controlling space on the board.',
-    weight: 0.13,
-  },
-  {
-    id: 'endgame',
-    label: 'Endgame',
-    themes: [WeaknessTheme.ENDGAME_TECHNIQUE, WeaknessTheme.ENDGAME_PAWN_PLAY],
-    description: 'Your technique in endgames — king activity, pawn promotion, and converting advantages.',
-    weight: 0.13,
-  },
-  {
-    id: 'calculation',
-    label: 'Calculation',
-    themes: [], // Derived from complex-position best-move rate, not from specific patterns
-    description: 'How precisely you calculate moves — finding the best move in complex positions where multiple options exist.',
-    weight: 0.15,
-  },
-  {
-    id: 'time_management',
-    label: 'Time Management',
-    themes: [WeaknessTheme.TIME_PRESSURE_BLUNDER],
-    description: 'How well you manage your clock — maintaining time advantage and avoiding rushed decisions under time pressure.',
-    weight: 0.10,
-  },
-  {
-    id: 'resilience',
-    label: 'Resilience',
-    themes: [],
-    description: 'How well you fight back from losing positions — maintaining accuracy and composure when behind.',
-    weight: 0.07,
-  },
-];
-
-/* ────────────────────────────────────────────────────────────
- *  Main calculation
+ *  Main calculation — filter-based scoring
+ *
+ *  Each dimension score = average accuracy of moves matching
+ *  the dimension's filters, optionally adjusted by opponent's
+ *  actual accuracy in each game.
  * ──────────────────────────────────────────────────────────── */
 
 export function calculateSkillProfile(
-  patterns: CurrentPatterns | null,
+  _patterns: CurrentPatterns | null,
   games: GameRecord[],
   analyses: GameAnalysis[],
+  config?: SkillCalcConfigSchema,
 ): SkillProfile {
+  const cfg = config ?? getDefaultConfig();
   const analyzedGames = games.filter((g) => g.analysisStatus === 'complete');
   const gamesUsed = analyzedGames.length;
 
-  // Build a lookup: theme → { frequency, severity, trend }
-  const patternMap = new Map<
-    WeaknessTheme,
-    { frequency: number; severity: number; trend: 'improving' | 'worsening' | 'stable' }
-  >();
-  if (patterns) {
-    for (const p of patterns.patterns) {
-      patternMap.set(p.theme, {
-        frequency: p.frequency,
-        severity: p.severity,
-        trend: p.trend,
-      });
-    }
+  if (gamesUsed === 0) {
+    return {
+      dimensions: cfg.dimensions.map((d) => ({
+        id: d.id as SkillDimensionId,
+        label: d.label,
+        score: 50,
+        trend: 'stable' as const,
+        relatedThemes: [],
+        description: d.description,
+      })),
+      overallRating: 50,
+      calculatedAt: Date.now(),
+      gamesUsed: 0,
+    };
   }
 
-  // Aggregate game-level stats with opponent rating multiplier
-  const gameStats = computeGameStats(analyses, analyzedGames);
+  // Build lookup: gameId → opponent accuracy (for opponent adjustment)
+  const opponentAccuracyMap = buildOpponentAccuracyMap(analyses, analyzedGames);
 
-  // Calculate each dimension — no ELO normalization, opponent adjustment is baked into gameStats
-  const dimensions: SkillDimension[] = DIMENSION_DEFS.map((def) => {
-    const score = calculateDimensionScore(def, patternMap, gameStats, gamesUsed);
-    const trend = calculateDimensionTrend(def, patternMap);
+  // Collect all player moves with their game context
+  const allPlayerMoves = collectPlayerMoves(analyses, analyzedGames);
+
+  // Calculate each dimension
+  const dimensions: SkillDimension[] = cfg.dimensions.map((dimCfg) => {
+    const score = calculateDimensionScore(dimCfg, allPlayerMoves, opponentAccuracyMap, cfg.baselineAccuracy);
 
     return {
-      id: def.id,
-      label: def.label,
-      score: Math.round(clamp(score, 0, 99)),
-      trend,
-      relatedThemes: def.themes,
-      description: def.description,
+      id: dimCfg.id as SkillDimensionId,
+      label: dimCfg.label,
+      score: Math.round(clamp(score, dimCfg.clampMin, dimCfg.clampMax)),
+      trend: 'stable' as const, // TODO: compute from recent vs older games
+      relatedThemes: [],
+      description: dimCfg.description,
     };
   });
 
@@ -137,10 +63,10 @@ export function calculateSkillProfile(
   let overallRating = 0;
   let totalWeight = 0;
   for (let i = 0; i < dimensions.length; i++) {
-    overallRating += dimensions[i].score * DIMENSION_DEFS[i].weight;
-    totalWeight += DIMENSION_DEFS[i].weight;
+    overallRating += dimensions[i].score * cfg.dimensions[i].weight;
+    totalWeight += cfg.dimensions[i].weight;
   }
-  overallRating = Math.round(overallRating / totalWeight);
+  overallRating = Math.round(totalWeight > 0 ? overallRating / totalWeight : 50);
 
   return {
     dimensions,
@@ -151,273 +77,257 @@ export function calculateSkillProfile(
 }
 
 /* ────────────────────────────────────────────────────────────
- *  Per-dimension scoring
+ *  Complexity weight — harder positions count more
+ *
+ *  This separates strong from weak players: both may play
+ *  "best" moves, but strong players do it in complex positions.
  * ──────────────────────────────────────────────────────────── */
 
-interface GameStats {
-  avgAccuracy: number;
-  avgBestMoveRate: number;
-  avgBlundersPerGame: number;
-  avgOpeningAccuracy: number;
-  avgMiddlegameAccuracy: number;
-  avgEndgameAccuracy: number;
-  /** Best-move rate in complex positions only (legalMoveCount >= 8, not opening, |eval| <= 500cp) */
-  avgComplexBestMoveRate: number;
-  /** Accuracy in losing positions only (eval <= -150cp from player's perspective) */
-  avgLosingPositionAccuracy: number;
+function getComplexityWeight(move: MoveAnalysis): number {
+  let weight = 1.0;
+
+  // More candidate moves = harder position
+  const moves = move.legalMoveCount;
+  if (moves <= 3) weight *= 0.5;
+  else if (moves <= 7) weight *= 0.8;
+  else if (moves <= 15) weight *= 1.0;
+  else if (moves <= 25) weight *= 1.3;
+  else weight *= 1.5;
+
+  // Equal positions are harder than decisive ones
+  if (move.evalBefore.scoreType === 'cp') {
+    const absEval = Math.abs(move.evalBefore.score);
+    if (absEval < 100) weight *= 1.2;       // roughly equal — hardest
+    else if (absEval < 300) weight *= 1.0;   // slight advantage
+    else if (absEval < 600) weight *= 0.8;   // clear advantage — easier
+    else weight *= 0.6;                       // winning/losing — easiest
+  }
+
+  // Tactical positions are harder to navigate
+  if (move.tacticalMotifs.length > 0) weight *= 1.15;
+
+  return weight;
 }
 
-/**
- * Compute aggregated game stats with opponent rating multiplier.
- * Each game's stats are multiplied by (opponentRating / BENCHMARK_RATING)
- * before averaging, so accuracy against stronger opponents counts more.
- */
-function computeGameStats(analyses: GameAnalysis[], games: GameRecord[]): GameStats {
-  if (analyses.length === 0) {
-    return {
-      avgAccuracy: 50,
-      avgBestMoveRate: 0.2,
-      avgBlundersPerGame: 2,
-      avgOpeningAccuracy: 50,
-      avgMiddlegameAccuracy: 50,
-      avgEndgameAccuracy: 50,
-      avgComplexBestMoveRate: 0.3,
-      avgLosingPositionAccuracy: 90,
-    };
-  }
+/* ────────────────────────────────────────────────────────────
+ *  Per-dimension scoring — filter + complexity-weighted average
+ * ──────────────────────────────────────────────────────────── */
 
-  // Build gameId → opponent rating lookup
-  const ratingMap = new Map<string, number>();
-  for (const g of games) {
-    ratingMap.set(g.id, g.opponent.rating);
-  }
-
-  let totalAccuracy = 0;
-  let totalBestRate = 0;
-  let totalBlunders = 0;
-  let totalOpeningAcc = 0;
-  let totalMiddlegameAcc = 0;
-  let totalEndgameAcc = 0;
-  let totalComplexBestMoveRate = 0;
-  let totalLosingAccuracy = 0;
-  let gamesWithComplexPositions = 0;
-  let gamesWithLosingPositions = 0;
-
-  for (const a of analyses) {
-    const opponentRating = ratingMap.get(a.gameId) ?? BENCHMARK_RATING;
-    const multiplier = opponentRating / BENCHMARK_RATING;
-
-    totalAccuracy += a.summary.accuracy * multiplier;
-    totalBestRate += (a.summary.bestMoves / Math.max(1, a.summary.totalMoves)) * multiplier;
-    totalBlunders += a.summary.blunders * multiplier;
-    totalOpeningAcc += a.summary.phaseAccuracy.opening * multiplier;
-    totalMiddlegameAcc += a.summary.phaseAccuracy.middlegame * multiplier;
-    totalEndgameAcc += a.summary.phaseAccuracy.endgame * multiplier;
-
-    // Calculation: complex position best-move rate
-    const complexRate = computeComplexBestMoveRate(a.moves);
-    if (complexRate !== null) {
-      totalComplexBestMoveRate += complexRate * multiplier;
-      gamesWithComplexPositions++;
-    }
-
-    // Resilience: accuracy in losing positions
-    const losingAcc = computeLosingPositionAccuracy(a.moves, a.summary.playerColor);
-    if (losingAcc !== null) {
-      totalLosingAccuracy += losingAcc * multiplier;
-      gamesWithLosingPositions++;
-    }
-  }
-
-  const n = analyses.length;
-  return {
-    avgAccuracy: totalAccuracy / n,
-    avgBestMoveRate: totalBestRate / n,
-    avgBlundersPerGame: totalBlunders / n,
-    avgOpeningAccuracy: totalOpeningAcc / n,
-    avgMiddlegameAccuracy: totalMiddlegameAcc / n,
-    avgEndgameAccuracy: totalEndgameAcc / n,
-    avgComplexBestMoveRate: gamesWithComplexPositions > 0
-      ? totalComplexBestMoveRate / gamesWithComplexPositions
-      : 0.3, // default if no complex positions found in any game
-    avgLosingPositionAccuracy: gamesWithLosingPositions > 0
-      ? totalLosingAccuracy / gamesWithLosingPositions
-      : 90, // never losing = high resilience
-  };
+interface PlayerMove {
+  move: MoveAnalysis;
+  gameId: string;
+  playerColor: 'white' | 'black';
 }
 
-/**
- * Compute best-move rate in complex positions for a single game.
- * Complex = legalMoveCount >= 8, phase !== 'opening', |eval| <= 500cp.
- * Returns null if no complex positions found.
- */
-function computeComplexBestMoveRate(moves: MoveAnalysis[]): number | null {
-  let complexCount = 0;
-  let bestCount = 0;
-
-  for (const m of moves) {
-    if (
-      m.legalMoveCount >= 8 &&
-      m.phase !== 'opening' &&
-      m.evalBefore.scoreType === 'cp' &&
-      Math.abs(m.evalBefore.score) <= 500
-    ) {
-      complexCount++;
-      if (m.quality === 'best' || m.quality === 'brilliant' || m.quality === 'great') {
-        bestCount++;
-      }
-    }
-  }
-
-  if (complexCount === 0) return null;
-  return bestCount / complexCount;
+/** Resolve bucket scores: dimension-specific overrides merged with defaults */
+function resolveBuckets(dimCfg: DimensionConfig): Record<string, number | null> {
+  const custom = dimCfg.scoring?.buckets;
+  if (!custom || Object.keys(custom).length === 0) return DEFAULT_BUCKET_SCORES;
+  return { ...DEFAULT_BUCKET_SCORES, ...custom };
 }
 
-/**
- * Compute accuracy in losing positions for a single game.
- * Losing = eval <= -150cp from the player's perspective.
- * Returns null if no losing positions found (player was never behind).
- */
-function computeLosingPositionAccuracy(
-  moves: MoveAnalysis[],
-  playerColor: 'white' | 'black',
-): number | null {
-  let totalWinChanceLoss = 0;
-  let losingMoveCount = 0;
-
-  for (const m of moves) {
-    // Only look at the player's own moves
-    if (m.color !== playerColor) continue;
-
-    if (m.evalBefore.scoreType === 'cp') {
-      // Convert eval to player's perspective (evalBefore.score is from white's perspective)
-      const playerEval = playerColor === 'white' ? m.evalBefore.score : -m.evalBefore.score;
-
-      if (playerEval <= -150) {
-        totalWinChanceLoss += m.winChanceLoss;
-        losingMoveCount++;
-      }
-    }
-  }
-
-  if (losingMoveCount === 0) return null;
-  // Convert winChanceLoss (0.0 = perfect, 1.0 = worst) to accuracy (100 = perfect, 0 = worst)
-  const avgWinChanceLoss = totalWinChanceLoss / losingMoveCount;
-  return clamp(100 - avgWinChanceLoss * 100, 0, 100);
+/** Score a single move using quality bucket lookup. Returns null if excluded. */
+export function scoreMoveByBucket(quality: string, buckets: Record<string, number | null>): number | null {
+  const val = buckets[quality];
+  if (val === undefined) return DEFAULT_BUCKET_SCORES[quality] ?? null;
+  return val;
 }
 
 function calculateDimensionScore(
-  def: DimensionDef,
-  patternMap: Map<WeaknessTheme, { frequency: number; severity: number }>,
-  gameStats: GameStats,
-  gamesUsed: number,
+  dimCfg: DimensionConfig,
+  allMoves: PlayerMove[],
+  opponentAccuracyMap: Map<string, number>,
+  baselineAccuracy: number,
 ): number {
-  // If no games analyzed, return neutral score
-  if (gamesUsed === 0) return 50;
+  // Filter moves that match this dimension
+  const matching = allMoves.filter((pm) => matchesFilters(pm.move, dimCfg.filters));
 
-  switch (def.id) {
-    case 'openings':
-      return scoreFromPatterns(def.themes, patternMap, 15, gameStats) * 0.5 +
-        gameStats.avgOpeningAccuracy * 0.5;
+  if (matching.length === 0) return 50; // no data
 
-    case 'tactics':
-      return scoreFromPatterns(def.themes, patternMap, 10, gameStats) * 0.5 +
-        gameStats.avgMiddlegameAccuracy * 0.5;
+  const buckets = resolveBuckets(dimCfg);
 
-    case 'defense':
-      return scoreFromPatterns(def.themes, patternMap, 12, gameStats) * 0.5 +
-        gameStats.avgAccuracy * 0.5;
-
-    case 'positional':
-      return scoreFromPatterns(def.themes, patternMap, 15, gameStats) * 0.5 +
-        gameStats.avgMiddlegameAccuracy * 0.5;
-
-    case 'endgame':
-      return scoreFromPatterns(def.themes, patternMap, 15, gameStats) * 0.5 +
-        gameStats.avgEndgameAccuracy * 0.5;
-
-    case 'calculation':
-      return clamp(gameStats.avgComplexBestMoveRate * 100, 10, 99);
-
-    case 'time_management': {
-      const timePressure = patternMap.get(WeaknessTheme.TIME_PRESSURE_BLUNDER);
-      const timePenalty = timePressure ? timePressure.frequency * 25 : 0;
-      // Consistency: low variance between phase accuracies = good time management
-      const phases = [gameStats.avgOpeningAccuracy, gameStats.avgMiddlegameAccuracy, gameStats.avgEndgameAccuracy];
-      const avgPhase = phases.reduce((a, b) => a + b, 0) / 3;
-      const variance = phases.reduce((s, p) => s + (p - avgPhase) ** 2, 0) / 3;
-      const consistencyScore = clamp(100 - Math.sqrt(variance) * 2, 0, 100);
-      return clamp(consistencyScore * 0.6 - timePenalty + gameStats.avgAccuracy * 0.4, 10, 99);
+  if (dimCfg.opponentAdjust) {
+    let totalScore = 0;
+    let totalWeight = 0;
+    for (const pm of matching) {
+      const moveScore = scoreMoveByBucket(pm.move.quality, buckets);
+      if (moveScore == null) continue; // excluded (e.g. forced)
+      const oppAcc = opponentAccuracyMap.get(pm.gameId) ?? baselineAccuracy;
+      const cw = getComplexityWeight(pm.move);
+      const weight = (oppAcc / baselineAccuracy) * cw;
+      totalScore += moveScore * weight;
+      totalWeight += weight;
     }
-
-    case 'resilience':
-      return clamp(gameStats.avgLosingPositionAccuracy, 10, 99);
-
-    default:
-      return 50;
+    return totalWeight > 0 ? totalScore / totalWeight : 50;
+  } else {
+    let totalScore = 0;
+    let totalWeight = 0;
+    for (const pm of matching) {
+      const moveScore = scoreMoveByBucket(pm.move.quality, buckets);
+      if (moveScore == null) continue;
+      const cw = getComplexityWeight(pm.move);
+      totalScore += moveScore * cw;
+      totalWeight += cw;
+    }
+    return totalWeight > 0 ? totalScore / totalWeight : 50;
   }
 }
 
-/**
- * Score from pattern frequency/severity.
- * Start at 90, subtract based on how frequent + severe the mistakes are.
- * `divisor` controls sensitivity (lower = harsher penalties).
- */
-function scoreFromPatterns(
-  themes: WeaknessTheme[],
-  patternMap: Map<WeaknessTheme, { frequency: number; severity: number }>,
-  divisor: number,
-  gameStats?: GameStats,
-): number {
-  let combinedFreq = 0;
-  let totalSeverity = 0;
-  let count = 0;
+/* ────────────────────────────────────────────────────────────
+ *  Move filter matching
+ * ──────────────────────────────────────────────────────────── */
 
-  for (const theme of themes) {
-    const p = patternMap.get(theme);
-    if (p) {
-      combinedFreq += p.frequency;
-      totalSeverity += p.severity;
-      count++;
-    }
-  }
-
-  if (count === 0) {
-    // No patterns detected — derive from accuracy instead of flat 85
-    if (gameStats) {
-      return clamp(
-        gameStats.avgAccuracy * 0.8 + gameStats.avgBestMoveRate * 100 * 0.2,
-        20, 95,
-      );
-    }
-    return 85; // absolute fallback if no stats available
-  }
-
-  const avgSeverity = totalSeverity / count;
-  const penalty = combinedFreq * (avgSeverity / divisor);
-
-  return clamp(99 - penalty, 10, 99);
+function matchesFilters(move: MoveAnalysis, filters: MoveFilter[]): boolean {
+  if (filters.length === 0) return true; // no filters = match all
+  // OR logic: match if ANY filter passes
+  return filters.some((f) => matchesSingleFilter(move, f));
 }
 
-function calculateDimensionTrend(
-  def: DimensionDef,
-  patternMap: Map<WeaknessTheme, { trend: 'improving' | 'worsening' | 'stable' }>,
-): 'improving' | 'worsening' | 'stable' {
-  let improving = 0;
-  let worsening = 0;
+function matchesSingleFilter(move: MoveAnalysis, filter: MoveFilter): boolean {
+  // Phase filter
+  if (filter.phases && filter.phases.length > 0) {
+    if (!filter.phases.includes(move.phase)) return false;
+  }
 
-  for (const theme of def.themes) {
-    const p = patternMap.get(theme);
-    if (p) {
-      if (p.trend === 'improving') improving++;
-      else if (p.trend === 'worsening') worsening++;
+  // Tactical motifs
+  if (filter.hasTactics === true && move.tacticalMotifs.length === 0) return false;
+  if (filter.hasTactics === false && move.tacticalMotifs.length > 0) return false;
+
+  if (filter.tacticalMotifs && filter.tacticalMotifs.length > 0) {
+    const hasMatch = filter.tacticalMotifs.some((m) => move.tacticalMotifs.includes(m));
+    if (!hasMatch) return false;
+  }
+
+  // Eval range (player perspective)
+  if (filter.evalRange) {
+    if (move.evalBefore.scoreType !== 'cp') return false;
+    // evalBefore.score is from white's perspective; convert to player's
+    const playerEval = move.color === 'white' ? move.evalBefore.score : -move.evalBefore.score;
+    if (playerEval < filter.evalRange.min || playerEval > filter.evalRange.max) return false;
+  }
+
+  // Complexity range
+  if (filter.complexityRange) {
+    if (move.legalMoveCount < filter.complexityRange.min) return false;
+    if (move.legalMoveCount > filter.complexityRange.max) return false;
+  }
+
+  // Exclude forced moves
+  if (filter.excludeForced && move.legalMoveCount <= 1) return false;
+
+  // Move types
+  if (filter.moveTypes && filter.moveTypes.length > 0) {
+    const hasType = filter.moveTypes.some((t) => {
+      switch (t) {
+        case 'capture': return move.isCapture;
+        case 'check': return move.isCheck;
+        case 'castling': return move.isCastling;
+        case 'sacrifice': return move.isSacrifice;
+        default: return false;
+      }
+    });
+    if (!hasType) return false;
+  }
+
+  // Time range (only if clock data available)
+  if (filter.timeRange) {
+    if (move.timeSpent == null) return false;
+    if (move.timeSpent < filter.timeRange.min || move.timeSpent > filter.timeRange.max) return false;
+  }
+
+  return true;
+}
+
+/* ────────────────────────────────────────────────────────────
+ *  Helper: collect all player moves across games
+ * ──────────────────────────────────────────────────────────── */
+
+function collectPlayerMoves(analyses: GameAnalysis[], games: GameRecord[]): PlayerMove[] {
+  // Primary: match by Base44 entity ID
+  const gameMap = new Map<string, GameRecord>();
+  for (const g of games) gameMap.set(g.id, g);
+
+  const result: PlayerMove[] = [];
+  let matched = 0;
+  let unmatched = 0;
+
+  for (const a of analyses) {
+    const game = gameMap.get(a.gameId);
+    if (game) {
+      matched++;
+      const playerColor = game.player.color;
+      for (const move of a.moves) {
+        if (move.color === playerColor) {
+          result.push({ move, gameId: a.gameId, playerColor });
+        }
+      }
+    } else {
+      unmatched++;
     }
   }
 
-  if (improving > worsening) return 'improving';
-  if (worsening > improving) return 'worsening';
-  return 'stable';
+  // Fallback: if most analyses couldn't match games (duplicate record issue),
+  // use the analysis summary's playerColor directly without game lookup.
+  // Use a lenient threshold: if more than half of analyses are unmatched, use fallback.
+  if (unmatched > matched && analyses.length > 0) {
+    console.warn(`[Chess DNA Skill] collectPlayerMoves fallback: ${unmatched} unmatched > ${matched} matched — using summary.playerColor`);
+    const fallbackResult: PlayerMove[] = [];
+    for (const a of analyses) {
+      // Use summary.playerColor if available, else guess from first move
+      const playerColor = a.summary?.playerColor || (a.moves[0]?.color === 'white' ? 'white' : 'black');
+      if (!playerColor) continue;
+      for (const move of a.moves) {
+        if (move.color === playerColor) {
+          fallbackResult.push({ move, gameId: a.gameId, playerColor });
+        }
+      }
+    }
+    return fallbackResult;
+  }
+
+  return result;
 }
+
+/* ────────────────────────────────────────────────────────────
+ *  Helper: opponent accuracy map
+ *  For each game, compute the OPPONENT's actual accuracy
+ *  (not their ELO). This is used to weight the player's
+ *  accuracy — harder opponents (higher actual accuracy)
+ *  give a bonus.
+ * ──────────────────────────────────────────────────────────── */
+
+function buildOpponentAccuracyMap(
+  analyses: GameAnalysis[],
+  games: GameRecord[],
+): Map<string, number> {
+  const gameMap = new Map<string, GameRecord>();
+  for (const g of games) gameMap.set(g.id, g);
+
+  const map = new Map<string, number>();
+
+  for (const a of analyses) {
+    const game = gameMap.get(a.gameId);
+    // Derive opponent color: from game if matched, else from summary
+    const playerColor = game?.player?.color || a.summary?.playerColor || 'white';
+    const opponentColor = playerColor === 'white' ? 'black' : 'white';
+    const opponentMoves = a.moves.filter((m) => m.color === opponentColor);
+
+    if (opponentMoves.length === 0) {
+      map.set(a.gameId, 50);
+      continue;
+    }
+
+    // Opponent accuracy = average (100 - winChanceLoss × 100)
+    const totalAcc = opponentMoves.reduce((sum, m) => sum + (100 - m.winChanceLoss * 100), 0);
+    map.set(a.gameId, totalAcc / opponentMoves.length);
+  }
+
+  return map;
+}
+
+/* ────────────────────────────────────────────────────────────
+ *  Utility
+ * ──────────────────────────────────────────────────────────── */
 
 function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
@@ -427,34 +337,60 @@ function clamp(val: number, min: number, max: number): number {
  *  Exports for UI
  * ──────────────────────────────────────────────────────────── */
 
-export function getDimensionDefs(): DimensionDef[] {
-  return DIMENSION_DEFS;
+export function getDimensionDefs() {
+  const cfg = getDefaultConfig();
+  return cfg.dimensions.map((d) => ({
+    id: d.id,
+    label: d.label,
+    description: d.description,
+    weight: d.weight,
+    filters: d.filters,
+  }));
 }
 
-/**
- * Returns the top N weakest dimensions (lowest scores).
- */
 export function getWeakestDimensions(profile: SkillProfile, n: number = 3): SkillDimension[] {
   return [...profile.dimensions]
     .sort((a, b) => a.score - b.score)
     .slice(0, n);
 }
 
-/**
- * Returns the top N strongest dimensions (highest scores).
- */
 export function getStrongestDimensions(profile: SkillProfile, n: number = 3): SkillDimension[] {
   return [...profile.dimensions]
     .sort((a, b) => b.score - a.score)
     .slice(0, n);
 }
 
+export function getPrimaryThemeForDimension(_dimensionId: SkillDimensionId) {
+  // With filter-based scoring, dimensions don't map to specific themes anymore.
+  // Return null — callers should use dimension filters instead.
+  return null;
+}
+
 /**
- * Get the primary WeaknessTheme to use for lesson/exercise generation
- * for a given skill dimension.
+ * Compute how many moves match a dimension's filters.
+ * Used by the Studio UI to show "Potential: N moves".
  */
-export function getPrimaryThemeForDimension(dimensionId: SkillDimensionId): WeaknessTheme | null {
-  const def = DIMENSION_DEFS.find((d) => d.id === dimensionId);
-  if (!def || def.themes.length === 0) return null;
-  return def.themes[0];
+export function countMatchingMoves(
+  dimCfg: DimensionConfig,
+  analyses: GameAnalysis[],
+  games: GameRecord[],
+): { matching: number; total: number; avgAccuracy: number } {
+  const allMoves = collectPlayerMoves(analyses, games);
+  const matching = allMoves.filter((pm) => matchesFilters(pm.move, dimCfg.filters));
+
+  const buckets = resolveBuckets(dimCfg);
+  let totalScore = 0;
+  let count = 0;
+  for (const pm of matching) {
+    const moveScore = scoreMoveByBucket(pm.move.quality, buckets);
+    if (moveScore == null) continue;
+    totalScore += moveScore;
+    count++;
+  }
+
+  return {
+    matching: matching.length,
+    total: allMoves.length,
+    avgAccuracy: count > 0 ? totalScore / count : 0,
+  };
 }

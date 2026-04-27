@@ -9,6 +9,7 @@ import {
 } from 'recharts';
 import type { GameRecord } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
+import { useT } from '@/i18n/index';
 import {
   CHART_COLORS,
   AXIS_TICK,
@@ -26,6 +27,7 @@ export default function PhaseAccuracyOverTimeChart({
   games,
   analyses,
 }: PhaseAccuracyOverTimeChartProps) {
+  const { t } = useT();
   const data = useMemo(() => buildPhaseAccuracyData(games, analyses), [games, analyses]);
 
   // Auto-fit Y domain to data amplitude with padding
@@ -50,9 +52,9 @@ export default function PhaseAccuracyOverTimeChart({
     <div className="flex flex-col h-full">
       {/* Legend */}
       <div className="flex justify-center gap-3 mb-1">
-        <LegendItem color={CHART_COLORS.openingBlue} label="Opening" />
-        <LegendItem color={CHART_COLORS.accent} label="Middlegame" />
-        <LegendItem color={CHART_COLORS.endgamePurple} label="Endgame" />
+        <LegendItem color={CHART_COLORS.openingBlue} label={t('phase_opening')} />
+        <LegendItem color={CHART_COLORS.accent} label={t('phase_middlegame')} />
+        <LegendItem color={CHART_COLORS.endgamePurple} label={t('phase_endgame')} />
       </div>
 
       <div className="flex-1">
@@ -83,12 +85,8 @@ export default function PhaseAccuracyOverTimeChart({
               }}
               labelFormatter={(val) => formatDate(val as number)}
               formatter={(value: number, name: string) => {
-                const labels: Record<string, string> = {
-                  opening: 'Opening',
-                  middlegame: 'Middlegame',
-                  endgame: 'Endgame',
-                };
-                return [`${value}%`, labels[name] ?? name];
+                const phaseKey = `phase_${name}` as Parameters<typeof t>[0];
+                return [`${value}%`, t(phaseKey)];
               }}
             />
             <Line

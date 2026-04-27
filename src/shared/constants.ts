@@ -10,6 +10,23 @@ export const WIN_CHANCE_THRESHOLDS = {
   // Anything above MISTAKE threshold is a blunder
 } as const;
 
+// ── Quality Bucket Scoring ──
+// Default score (0-99) for each move quality category.
+// null = exclude from average (e.g. forced moves).
+export const DEFAULT_BUCKET_SCORES: Record<string, number | null> = {
+  brilliant: 99,
+  great: 99,
+  best: 99,
+  excellent: 75,
+  good: 50,
+  book: 65,
+  inaccuracy: 15,
+  mistake: 3,
+  miss: 1,
+  blunder: 0,
+  forced: null, // excluded from scoring
+} as const;
+
 // Legacy centipawn thresholds — still used for cpLoss-based accuracy calc
 export const CP_THRESHOLDS = {
   BEST: 10,
@@ -35,6 +52,12 @@ export const DEFAULT_ANALYSIS_DEPTH = 18;
 export const VALIDATION_DEPTH = 16;           // Slightly faster than game analysis — sufficient for move validation
 export const VALIDATION_TOLERANCE_CP = 50;    // Moves within 50cp of best are accepted as correct
 export const VALIDATION_MAX_RETRIES = 2;      // 3 total attempts (1 original + 2 retries with Stockfish feedback)
+
+// TimeMachine challenge scoring
+export const TM_ANALYSIS_DEPTH = DEFAULT_ANALYSIS_DEPTH; // Match game analysis for consistency
+export const TM_PERFECT_THRESHOLD = 0.005;   // <0.5% win chance loss = score 100
+export const TM_EXCELLENT_THRESHOLD = 90;
+export const TM_GOOD_THRESHOLD = 70;
 
 // Pattern recognition settings
 export const PATTERN_MIN_GAMES = 3;
@@ -70,11 +93,17 @@ export const STORAGE_KEYS = {
   SCHEMA_VERSION: 'meta:schema_version',
 } as const;
 
-// Chess.com game URL pattern
-export const CHESS_COM_GAME_URL_REGEX = /chess\.com\/game\/(live|daily)\/(\d+)/;
+// Chess.com game URL pattern — matches both /game/live/123 and /live/game/123 formats
+export const CHESS_COM_GAME_URL_REGEX = /chess\.com\/(?:game\/(?:live|daily)|(?:live|daily)\/game)\/(\d+)/;
 
 // Chess.com public API base
 export const CHESS_COM_API_BASE = 'https://api.chess.com/pub';
+
+// Lichess game URL pattern — matches lichess.org/abcd1234
+export const LICHESS_GAME_URL_REGEX = /lichess\.org\/(\w{8})/;
+
+// Lichess API base
+export const LICHESS_API_BASE = 'https://lichess.org/api';
 
 // Claude API
 export const CLAUDE_API_BASE = 'https://api.anthropic.com/v1/messages';
@@ -108,6 +137,12 @@ export const TTS_NARRATOR_INSTRUCTIONS =
 // Gemini API
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 export const GEMINI_MAX_TOKENS = 2048;
+
+// Auto-sync polling interval (3 minutes)
+export const SYNC_INTERVAL_MS = 180_000;
+
+// Admin emails allowed to access /skill and /affiliate
+export const ADMIN_EMAILS = ['yuval.inc@gmail.com', 'nitzansteinberg18@gmail.com'];
 
 // Google Cloud Podcast API (NotebookLM backend)
 export const GCP_PODCAST_API_BASE = 'https://discoveryengine.googleapis.com/v1';

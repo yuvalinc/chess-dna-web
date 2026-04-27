@@ -1,4 +1,6 @@
 import { useState, useEffect, useId, useMemo } from 'react';
+import { useT } from '@/i18n/index';
+import type { TranslationKey } from '@/i18n/locales/en';
 import {
   RadarChart,
   Radar,
@@ -83,11 +85,19 @@ export default function SkillRadar({
   const tier = useMemo(() => getTierForScore(profile.overallRating), [profile.overallRating]);
   const tierColor = useMemo(() => getTierColor(tier, theme), [tier, theme]);
 
+  const { t } = useT();
+  const SKILL_LABEL_KEYS: Record<string, TranslationKey> = {
+    openings: 'skill_openings', tactics: 'skill_tactics', defense: 'skill_defense',
+    positional: 'skill_positional', endgame: 'skill_endgame', calculation: 'skill_calculation',
+    time_management: 'skill_time_management', resilience: 'skill_resilience',
+  };
+
   const data = useMemo(() => profile.dimensions.map((dim, idx) => {
     const isRevealed = idx < revealedCount;
     const dimTier = getTierForScore(dim.score);
+    const labelKey = SKILL_LABEL_KEYS[dim.id];
     return {
-      dimension: dim.label,
+      dimension: labelKey ? t(labelKey) : dim.label,
       score: isRevealed ? Math.round(dim.score * animProgress) : 0,
       actualScore: isRevealed ? dim.score : 0,
       fullMark: 99,
@@ -280,7 +290,7 @@ function DimensionLabel({ x, y, payload, cx, cy, data, onDimensionClick, compact
       {item.dimension.includes(' ') ? (
         <text
           x={labelX}
-          y={labelY - (compact ? 12 : 16)}
+          y={labelY - (compact ? 14 : 20)}
           textAnchor="middle"
           fill={isRevealed ? 'rgb(var(--chess-text-secondary))' : 'rgb(var(--chess-text-disabled))'}
           fontSize={titleSize}
@@ -305,7 +315,7 @@ function DimensionLabel({ x, y, payload, cx, cy, data, onDimensionClick, compact
       {/* Score — bold, large, tier-colored with glow */}
       <text
         x={labelX}
-        y={labelY + (compact ? 10 : 14)}
+        y={labelY + (compact ? 14 : 18)}
         textAnchor={textAnchor}
         fill={isRevealed ? item.tierColor : '#334155'}
         fontSize={scoreSize}

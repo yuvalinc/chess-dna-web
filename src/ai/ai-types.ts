@@ -26,6 +26,13 @@ export interface AIMessage {
   content: AIMessageContent;
 }
 
+/** Response with usage metadata for cost tracking */
+export interface AIResponse {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 /**
  * Every AI provider implements this interface.
  */
@@ -36,6 +43,11 @@ export interface AIProvider {
     messages: AIMessage[],
     maxTokens?: number,
   ): Promise<string>;
+  sendMessageWithUsage(
+    system: string,
+    messages: AIMessage[],
+    maxTokens?: number,
+  ): Promise<AIResponse>;
 }
 
 /**

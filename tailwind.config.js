@@ -69,6 +69,33 @@ export default {
           '0%': { opacity: '0', transform: 'translateY(10px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
         },
+        // ── Fancy UI keyframes ──
+        'ticker-roll': {
+          '0%': { transform: 'translateY(100%)', opacity: '0' },
+          '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
+        'border-beam': {
+          '0%': { left: '-20%' },
+          '100%': { left: '120%' },
+        },
+        'aurora-drift': {
+          '0%, 100%': { transform: 'translate(0, 0) rotate(0deg) scale(1)' },
+          '25%': { transform: 'translate(30px, -20px) rotate(3deg) scale(1.05)' },
+          '50%': { transform: 'translate(-20px, 20px) rotate(-2deg) scale(0.95)' },
+          '75%': { transform: 'translate(10px, 10px) rotate(1deg) scale(1.02)' },
+        },
+        'word-blur-in': {
+          '0%': { opacity: '0', filter: 'blur(8px)', transform: 'translateY(4px)' },
+          '100%': { opacity: '1', filter: 'blur(0)', transform: 'translateY(0)' },
+        },
+        'shimmer-sweep': {
+          '0%': { left: '-100%' },
+          '100%': { left: '200%' },
+        },
+        'neon-rotate': {
+          '0%': { '--neon-angle': '0deg' },
+          '100%': { '--neon-angle': '360deg' },
+        },
       },
       animation: {
         'fade-in-up': 'fade-in-up 0.6s ease-out forwards',
@@ -81,6 +108,12 @@ export default {
         'unlock-burst': 'unlock-burst 0.6s ease-out forwards',
         'orbit': 'orbit 6s linear infinite',
         'count-up': 'count-up 0.4s ease-out forwards',
+        // ── Fancy UI animations ──
+        'ticker-roll': 'ticker-roll 0.6s ease-out both',
+        'border-beam': 'border-beam 2.5s linear infinite',
+        'aurora-drift': 'aurora-drift 8s ease-in-out infinite',
+        'word-blur-in': 'word-blur-in 0.4s ease-out both',
+        'shimmer-sweep': 'shimmer-sweep 2s ease-in-out infinite',
       },
     },
   },

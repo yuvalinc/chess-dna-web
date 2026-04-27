@@ -3,11 +3,12 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Chess } from 'chess.js';
 import ThemedChessboard from '@/components/ThemedChessboard';
 import { useTheme } from '@/components/ThemeContext';
+import { useT } from '@/i18n/index';
 import { useChessData } from '@/contexts/ChessDataContext';
 import { useEntityList } from '@/hooks/useEntity';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Lesson, Exercise } from '@shared/types/ai';
-import type { WeaknessPattern, PatternSnapshot } from '@shared/types/patterns';
+import type { WeaknessPattern, PatternSnapshot, CurrentPatterns } from '@shared/types/patterns';
 import type { GameRecord } from '@shared/types/game';
 import type { WeaknessTheme } from '@shared/types/patterns';
 import type { UserSettings } from '@shared/types/storage';
@@ -43,6 +44,7 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
   const location = useLocation();
   const preselectedTheme = (location.state as { preselectedTheme?: WeaknessTheme } | null)?.preselectedTheme;
   const { settings } = useTheme();
+  const { t } = useT();
   const { authResolved } = useAuth();
   const { patterns, allGames, allAnalyses, gamesMap } = useChessData();
   // RLS handles user scoping server-side
@@ -306,7 +308,7 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
       <div className="text-center py-16 max-w-md mx-auto">
         <div className="text-4xl mb-4 opacity-60">{hasUnanalyzedGames ? '\uD83E\uDDEC' : '\u25C8'}</div>
         <h2 className="text-xl font-black mb-2">
-          {hasUnanalyzedGames ? 'Analyzing Your Games...' : 'No Patterns Yet'}
+          {hasUnanalyzedGames ? t('getting_better_analyzing') : t('getting_better_no_patterns')}
         </h2>
         <p className="text-gray-400 text-sm">
           {hasUnanalyzedGames
@@ -314,7 +316,9 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
             : 'Analyze more games in the "Your DNA" tab to discover weakness patterns, then come back here to train on them.'}
         </p>
         {hasUnanalyzedGames && (
-          <div className="mt-4 text-2xl animate-spin-slow">{'\uD83E\uDDEC'}</div>
+          <div className="mt-4 animate-spin-slow inline-block">
+            <svg className="text-chess-accent" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><g transform="rotate(45 12 12)"><path d="M8 2c0 6.5 8 12.5 8 19" /><path d="M16 2c0 6.5-8 12.5-8 19" /><line x1="9.2" y1="5.5" x2="14.8" y2="5.5" /><line x1="11" y1="8.5" x2="13" y2="8.5" /><line x1="11" y1="14.5" x2="13" y2="14.5" /><line x1="9.2" y1="17.5" x2="14.8" y2="17.5" /></g></svg>
+          </div>
         )}
       </div>
     );
@@ -334,7 +338,7 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
   if (view.type === 'training-session') {
     const sessionPlan = updatedPlanState?.options[view.planIndex] ?? null;
     const sessionPattern = sessionPlan?.targetPattern
-      ? inlinePatterns?.patterns.find(p => p.theme === sessionPlan.targetPattern) ?? null
+      ? inlinePatterns?.patterns.find((p: WeaknessPattern) => p.theme === sessionPlan.targetPattern) ?? null
       : null;
 
     return (
@@ -357,7 +361,7 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
   // ── Pattern detail: side-by-side lessons + puzzles ──
   if (view.type === 'pattern') {
     const theme = view.theme;
-    const pattern = inlinePatterns?.patterns.find(p => p.theme === theme);
+    const pattern = inlinePatterns?.patterns.find((p: WeaknessPattern) => p.theme === theme);
     const lessons = getLessonsForTheme(theme);
     const exercises = getExercisesForTheme(theme);
 
@@ -781,12 +785,12 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
                           <YAxis domain={[0, 100]} hide />
                           <ReferenceLine y={70} stroke="rgba(255,255,255,0.1)" strokeDasharray="3 3" />
                           <Tooltip
-                            content={({ active, payload, label }: { active?: boolean; payload?: Array<{ dataKey?: string; value?: number; stroke?: string }>; label?: number }) => {
+                            content={({ active, payload, label }: any) => {
                               if (!active || !payload?.length) return null;
                               return (
                                 <div className="bg-chess-bg border border-chess-border/60 rounded-lg px-3 py-2 text-xs shadow-lg">
                                   <div className="text-chess-text-secondary mb-1">Session {(label ?? 0) + 1}</div>
-                                  {payload.map((p) => (
+                                  {payload.map((p: any) => (
                                     <div key={String(p.dataKey)} className="flex items-center gap-2">
                                       <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.stroke }} />
                                       <span className="text-chess-text">{p.value != null ? `${p.value}%` : '--'}</span>
@@ -859,7 +863,7 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
         <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2 mt-4">Your Weakness Patterns</div>
       )}
       <div className="space-y-3">
-        {patternsList.map((p, i) => {
+        {patternsList.map((p: any, i: number) => {
           const lessons = getLessonsForTheme(p.theme);
           const exercises = getExercisesForTheme(p.theme);
           const severityColor = p.severity > 150 ? 'text-chess-blunder' : p.severity > 80 ? 'text-chess-mistake' : 'text-chess-inaccuracy';
@@ -974,7 +978,7 @@ export default function GettingBetter({ themeFilter, onClearFilter }: GettingBet
                       <div>
                         <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">From your games</div>
                         <div className="space-y-2">
-                          {p.examplePositions.slice(0, 3).map((ex, exIdx) => {
+                          {p.examplePositions.slice(0, 3).map((ex: any, exIdx: number) => {
                             const exGame = gamesMap[ex.gameId];
                             return (
                               <div

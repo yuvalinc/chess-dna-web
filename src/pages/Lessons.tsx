@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ThemedChessboard from '@/components/ThemedChessboard';
 import { useTheme } from '@/components/ThemeContext';
+import { useT } from '@/i18n/index';
 import { useChessData } from '@/contexts/ChessDataContext';
 import { useEntityList } from '@/hooks/useEntity';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,6 +19,7 @@ interface LessonsProps {
 
 export default function Lessons({ themeFilter: _themeFilter, onClearFilter: _onClearFilter }: LessonsProps = {}) {
   const { settings } = useTheme();
+  const { t } = useT();
   const { patterns } = useChessData();
   const { authResolved } = useAuth();
   // RLS handles user scoping server-side
@@ -56,7 +58,7 @@ export default function Lessons({ themeFilter: _themeFilter, onClearFilter: _onC
     return (
       <div className="text-center py-16">
         <div className="text-4xl mb-4">&#128218;</div>
-        <h2 className="text-xl mb-2">AI Lessons</h2>
+        <h2 className="text-xl mb-2">{t('lessons_ai_title')}</h2>
         <p className="text-gray-400 text-sm">
           Configure an AI provider API key (Claude, OpenAI, or Gemini) in Settings to generate personalized lessons.
         </p>
@@ -71,13 +73,13 @@ export default function Lessons({ themeFilter: _themeFilter, onClearFilter: _onC
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold">Lessons</h2>
+        <h2 className="text-xl font-bold">{t('lessons_title')}</h2>
         <button
           onClick={handleGenerate}
           disabled={generating || !patterns?.patterns.length}
           className="bg-chess-accent text-white px-4 py-2 rounded-lg text-sm hover:brightness-110 transition-all disabled:opacity-50"
         >
-          {generating ? 'Generating...' : 'Generate Lesson'}
+          {generating ? t('lessons_generating') : t('lessons_generate')}
         </button>
       </div>
 
@@ -85,7 +87,7 @@ export default function Lessons({ themeFilter: _themeFilter, onClearFilter: _onC
         <div className="text-gray-400">Loading lessons...</div>
       ) : lessons.length === 0 ? (
         <div className="text-center py-12 text-gray-400">
-          <p>No lessons yet. Generate one based on your weakness patterns!</p>
+          <p>{t('lessons_empty')}</p>
         </div>
       ) : (
         <div className="grid gap-3">
@@ -118,6 +120,7 @@ export default function Lessons({ themeFilter: _themeFilter, onClearFilter: _onC
 }
 
 function LessonView({ lesson, onBack }: { lesson: Lesson; onBack: () => void }) {
+  const { t } = useT();
   const [posIndex, setPosIndex] = useState(0);
 
   return (
@@ -126,7 +129,7 @@ function LessonView({ lesson, onBack }: { lesson: Lesson; onBack: () => void }) 
         onClick={onBack}
         className="text-gray-400 hover:text-chess-text transition-colors mb-4"
       >
-        &larr; Back to Lessons
+        {t('lessons_back')}
       </button>
 
       <div className="flex items-center gap-2 mb-1">

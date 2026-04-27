@@ -1,6 +1,6 @@
 import { CLAUDE_API_BASE, CLAUDE_API_VERSION, CLAUDE_MAX_TOKENS } from '@shared/constants';
 import { addTokenUsage } from '@/storage/settings-store';
-import type { AIProvider, AIMessage, AIMessageContent } from './ai-types';
+import type { AIProvider, AIMessage, AIMessageContent, AIResponse } from './ai-types';
 
 interface ClaudeResponse {
   content: Array<{ type: 'text'; text: string }>;
@@ -83,12 +83,54 @@ export class ClaudeClient implements AIProvider {
       .join('');
   }
 
+  async sendMessageWithUsage(
+    system: string,
+    messages: AIMessage[],
+    maxTokens: number = CLAUDE_MAX_TOKENS,
+  ): Promise<AIResponse> {
+    const formattedMessages = messages.map((m) => ({
+      role: m.role,
+      content: formatContentForClaude(m.content),
+    }));
+
+    const response = await this.fetchWithRetry(CLAUDE_API_BASE, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': CLAUDE_API_VERSION,
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: maxTokens,
+        system,
+        messages: formattedMessages,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Claude API error ${response.status}: ${errorText}`);
+    }
+
+    const data: ClaudeResponse = await response.json();
+    await addTokenUsage(data.usage.input_tokens, data.usage.output_tokens);
+
+    return {
+      text: data.content.filter((c) => c.type === 'text').map((c) => c.text).join(''),
+      inputTokens: data.usage.input_tokens,
+      outputTokens: data.usage.output_tokens,
+    };
+  }
+
   private async fetchWithRetry(
     url: string,
     options: RequestInit,
     maxRetries: number = 3,
   ): Promise<Response> {
     let lastError: Error | null = null;
+    const bodySize = typeof options.body === 'string' ? options.body.length : 0;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -102,7 +144,6 @@ export class ClaudeClient implements AIProvider {
 
         clearTimeout(timeout);
 
-        // Retry on rate limit or server errors
         if (response.status === 429 || response.status >= 500) {
           const retryAfter = response.headers.get('retry-after');
           const delay = retryAfter
@@ -115,6 +156,10 @@ export class ClaudeClient implements AIProvider {
         return response;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        console.error(
+          `[Claude] fetch attempt ${attempt + 1}/${maxRetries} failed:`,
+          { name: lastError.name, message: lastError.message, bodySize, url, cause: (lastError as Error & { cause?: unknown }).cause },
+        );
         if (attempt < maxRetries - 1) {
           await sleep(Math.pow(2, attempt) * 1000);
         }

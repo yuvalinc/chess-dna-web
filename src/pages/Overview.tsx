@@ -1,27 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CHESS_COM_API_BASE } from '@shared/constants';
+import { fetchChessCom } from '@/api/chess-com-fetch';
 import { importChessComGames } from '@/api/chess-com-import';
+import { importLichessGames } from '@/api/lichess-import';
+import { DataAttribution } from '@/components/PlatformBadge';
 import { base44 } from '@/api/base44Client';
-import { runBatchAnalysis, runAnalysisPipeline, deserializePatternSnapshot, deserializeTrainingPlan, serializeTrainingPlan, deserializeLesson, deserializeExercise } from '@/engine/analysis-pipeline';
-import { analysisEvents, setBatchMode } from '@/engine/analysis-events';
-import { useEntityList, useSingletonEntity } from '@/hooks/useEntity';
-import { useChessData } from '@/contexts/ChessDataContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { AuthPrompt } from '@/components/AuthGuard';
+import { analysisEvents } from '@/engine/analysis-events';
+import { useChessData } from '@/contexts/ChessDataContext';
 import type { CurrentPatterns, SkillDimension } from '@shared/types/patterns';
 import type { GameRecord, TimeClass } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
 import type { UserSettings } from '@shared/types/storage';
 import { calculateSkillProfile, getWeakestDimensions, getStrongestDimensions } from '@/patterns/skill-calculator';
-import { hasAnyProvider } from '@/ai/ai-router';
 import { getThemeLabel } from '@/patterns/pattern-engine';
-import type { TrainingPlanState } from '@shared/types/training';
-import type { Exercise, Lesson } from '@shared/types/ai';
-import type { PatternSnapshot } from '@shared/types/patterns';
-import { generateTrainingPlanOptions, updatePlanProgress, computeTrainingAccuracy } from '@/patterns/training-planner';
+import { hasAnyProvider } from '@/ai/ai-router';
 import { getTierForScore, getTierColor, getTierGlowColor, getTierProgress, getNextTier, pointsToNextTier, ALL_TIERS } from '@/patterns/rank-tiers';
 import {
-  getOverallPercentile,
   getRatingRangeLabel,
 } from '@/patterns/score-benchmarks';
 import { computeWindowedProfile, computePatternsFromGames, TIME_WINDOWS, DEFAULT_WINDOW, type TimeWindowId } from '@/patterns/windowed-profile';
@@ -31,7 +28,9 @@ import TimeWindowTabs from '@/components/TimeWindowTabs';
 import { useAudioPlayer } from '@/contexts/AudioPlayerContext';
 import { type JourneyStage } from '@/components/Onboarding';
 import { useTheme } from '@/components/ThemeContext';
-import FriendCompare from '@/components/FriendCompare';
+import { useT, translateTierName, translateTierTitle, SUPPORTED_LANGUAGES } from '@/i18n/index';
+import NumberTicker from '@/components/NumberTicker';
+// FriendCompare moved to /compare page
 
 interface OverviewProps {
   stageOverride?: JourneyStage | null;
@@ -40,79 +39,59 @@ interface OverviewProps {
 
 export default function Overview({ stageOverride, timeClassFilter: timeClassFilterProp }: OverviewProps) {
   const navigate = useNavigate();
+  const { t } = useT();
   const { settings, updateSettings, isAdmin } = useTheme();
+  const { isGuest } = useAuth();
   const {
     patterns,
-    allGames,
     allAnalyses,
     games,
     analyses,
     dataLoading,
     filteredAnalyzedCount: analyzedCount,
-    filteredAnalyzingCount: analyzingCount,
     totalGameCount,
     analyzedCount: globalAnalyzedCount,
     analyzingCount: globalAnalyzingCount,
-    profile,
     weakest,
     strongest,
     playerElo,
     tier,
     tierProgress,
     nextTier,
-    benchmark,
-    leadersBenchmark,
     overallPercentile,
     journeyStage,
     refetchGames,
     refetchAnalyses,
     refetchPatterns,
+    queueForAnalysis,
   } = useChessData();
 
   // Use prop if provided, otherwise read from settings
-  const timeClassFilter = timeClassFilterProp ?? settings.selectedTimeClass ?? null;
+  // timeClassFilter available for future use
+  void (timeClassFilterProp ?? settings.selectedTimeClass);
 
   // Admin stage navigator (isAdmin comes from ThemeContext)
   const [adminStageOverride, setAdminStageOverride] = useState<JourneyStage | null>(null);
 
-  const effectiveStage = stageOverride ?? adminStageOverride ?? journeyStage;
+  // Track highest journey stage reached to prevent regression from stale renders.
+  // Once user reaches S5, never show S0/S1/S2 again even if data temporarily resets.
+  const highestStageRef = useRef<JourneyStage>(journeyStage);
+  if (journeyStage > highestStageRef.current) {
+    highestStageRef.current = journeyStage;
+  }
+  const stableJourneyStage = Math.max(journeyStage, highestStageRef.current) as JourneyStage;
+
+  const effectiveStage = stageOverride ?? adminStageOverride ?? stableJourneyStage;
+
+  // S1 progress updates are now handled by the analysis event listener in
+  // ChessDataContext (refetches every 5 completed games). No polling needed.
 
   const [activeWindow, setActiveWindow] = useState<TimeWindowId>(DEFAULT_WINDOW);
-  const [statsExpanded, setStatsExpanded] = useState(true);
-  const [activeChartIndex, setActiveChartIndex] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      // Await all three refetches to ensure data is updated before clearing the spinner
-      await Promise.all([
-        refetchGames(),
-        refetchAnalyses(),
-        refetchPatterns(),
-      ]);
-    } catch {
-      // ignore — hooks handle their own errors
-    } finally {
-      // Brief delay so the user sees the spin feedback
-      setTimeout(() => setRefreshing(false), 400);
-    }
-  }, [refetchGames, refetchAnalyses, refetchPatterns]);
-
+  const [, setActiveChartIndex] = useState(0);
   // Global audio player
   const { state: audioState, controls: audioControls } = useAudioPlayer();
 
-  // Sync state — shows whenever games need importing or analyzing
-  const [syncStatus, setSyncStatus] = useState<{
-    phase: 'importing' | 'analyzing';
-    currentType: 'rapid' | 'blitz' | 'bullet';
-    imported: number;
-    total: number;
-    analyzed: number;
-    analyzeTotal: number;
-  } | null>(null);
-  // Suppress per-game refetches during a type's analysis to prevent flicker
-  const syncAnalyzingRef = useRef(false);
+  // syncTriggeredRef — kept to coordinate with analysis effect
   const syncTriggeredRef = useRef(false);
 
   // Windowed profile computation for the active time window
@@ -128,20 +107,17 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
   }, [analyses, windowedData.games]);
 
   // Windowed dimensions for stat squares
-  const windowedWeakest = useMemo(() => getWeakestDimensions(windowedData.profile, 3), [windowedData.profile]);
-  const windowedStrongest = useMemo(() => getStrongestDimensions(windowedData.profile, 2), [windowedData.profile]);
-  const windowedPercentile = useMemo(
-    () => getOverallPercentile(windowedData.profile, playerElo),
-    [windowedData.profile, playerElo],
-  );
+  // Used in expanded stat view
+  void getWeakestDimensions;
+  void getStrongestDimensions;
 
   // radarBenchmarks removed — no longer using vs-mode comparison
 
   // Note: Auto-unlock patterns + analysis event refetching now handled by ChessDataContext
 
   // Auto-analyze games that aren't complete (works at any stage)
-  // During onboarding (S1): only analyze the 5 onboarding games
-  // Post-onboarding: analyze all unanalyzed games
+  // Pushes game IDs into the shared analysis queue in ChessDataContext,
+  // which ensures a single analysis pipeline (no duplicate batch runs).
   const analysisTriggeredRef = useRef(false);
   useEffect(() => {
     if (games.length === 0) return;
@@ -150,7 +126,6 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
     const onboardingIds = settings.onboardingGameIds ?? [];
     const isOnboarding = onboardingIds.length > 0 && !settings.radarRevealedAt;
 
-    // Include games that are pending, errored, or stuck in 'analyzing' (from a previous interrupted session)
     const needsAnalysis = (g: typeof games[0]) =>
       g.analysisStatus !== 'complete';
 
@@ -163,92 +138,19 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
     } else {
       toAnalyze = games.filter(needsAnalysis);
     }
+    // Analyze newest games first (highest playedAt first)
+    toAnalyze.sort((a, b) => (b.playedAt ?? 0) - (a.playedAt ?? 0));
 
     if (toAnalyze.length === 0) return;
 
     analysisTriggeredRef.current = true;
-    setBatchMode(true); // suppress per-game refetch — only update on all_complete
     const gameIds = toAnalyze.map((g) => g.id);
-    console.log('[Chess DNA] Auto-analyzing', gameIds.length, 'games', isOnboarding ? '(onboarding only)' : '');
-    runBatchAnalysis(gameIds, settings.analysisDepth ?? 18)
-      .then(() => {
-        setBatchMode(false);
-        analysisTriggeredRef.current = false;
-      })
-      .catch((err) => {
-        setBatchMode(false);
-        console.error('[Chess DNA] Batch analysis failed:', err);
-        analysisTriggeredRef.current = false;
-      });
-  }, [games, settings.analysisDepth, settings.onboardingGameIds, settings.radarRevealedAt]);
+    console.log('[Chess DNA] Queuing', gameIds.length, 'games for analysis', isOnboarding ? '(onboarding only)' : '');
+    queueForAnalysis(gameIds);
+  }, [games, settings.onboardingGameIds, settings.radarRevealedAt, queueForAnalysis]);
 
-  // Sync: incremental import + analyze NEW games only.
-  // Runs once per page load at S5+. Only processes freshly imported games.
-  useEffect(() => {
-    if (effectiveStage < 5) return;
-    if (syncTriggeredRef.current) return;
-    if (!settings.chesscomUsername) return;
-    if (!settings.bulkImportDone) return; // initial bulk import handled by onboarding
-
-    syncTriggeredRef.current = true;
-    const username = settings.chesscomUsername;
-
-    (async () => {
-      const timeClasses = ['rapid', 'blitz', 'bullet'] as const;
-
-      for (const tc of timeClasses) {
-        // Phase 1: Import new games only (duplicates are skipped inside importChessComGames)
-        setSyncStatus({ phase: 'importing', currentType: tc, imported: 0, total: 0, analyzed: 0, analyzeTotal: 0 });
-
-        let newIds: string[] = [];
-        try {
-          newIds = await importChessComGames(username, {
-            timeClass: tc,
-            maxGames: 30,
-            onProgress: (progress) => {
-              setSyncStatus(prev => prev ? {
-                ...prev,
-                imported: progress.fetched,
-                total: progress.total || 30,
-              } : prev);
-            },
-          });
-        } catch (err) {
-          console.warn(`[Chess DNA] Sync import ${tc} failed:`, err);
-        }
-
-        // Phase 2: Analyze ONLY newly imported games (batch mode suppresses per-game refetch)
-        if (newIds.length > 0) {
-          setSyncStatus(prev => prev ? { ...prev, phase: 'analyzing', analyzed: 0, analyzeTotal: newIds.length } : prev);
-
-          syncAnalyzingRef.current = true;
-          analysisTriggeredRef.current = true;
-          setBatchMode(true);
-          try {
-            for (let i = 0; i < newIds.length; i++) {
-              await runAnalysisPipeline(newIds[i], settings.analysisDepth ?? 18);
-              setSyncStatus(prev => prev ? { ...prev, analyzed: i + 1 } : prev);
-            }
-          } catch (err) {
-            console.error(`[Chess DNA] Sync analysis ${tc} failed:`, err);
-          } finally {
-            setBatchMode(false);
-            syncAnalyzingRef.current = false;
-            analysisTriggeredRef.current = false;
-          }
-
-          // Refresh data ONCE after all games in this time class complete
-          refetchGames();
-          refetchAnalyses();
-          refetchPatterns();
-          console.log(`[Chess DNA] Sync ${tc}: ${newIds.length} new games imported & analyzed`);
-        }
-      }
-
-      setSyncStatus(null);
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- syncTriggeredRef prevents re-runs; refetch/analysis fns are stable
-  }, [effectiveStage, settings.chesscomUsername, settings.bulkImportDone, settings.analysisDepth]);
+  // Note: Game sync is now handled globally by useChessComSync in ChessDataContext.
+  // The old per-page-load sync effect has been removed.
 
   const handleDimensionClick = useCallback((id: string) => {
     document.getElementById(`dim-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -268,11 +170,16 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
   ) : null;
 
   /* --- S0: Connect your chess.com account --- */
+  // Don't flash S0 while data is still loading — the user may already have games
+  if (effectiveStage === 0 && dataLoading) {
+    return null; // Show nothing until data loads
+  }
   if (effectiveStage === 0) {
     return (
       <>{adminNav}<Stage0Connect
         settings={settings}
         onSettingsChange={updateSettings}
+        isGuest={isGuest}
         onImportComplete={() => {
           console.log('[Chess DNA] onImportComplete — calling refetchGames, refetchAnalyses & refetchPatterns');
           refetchGames();
@@ -340,87 +247,40 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
     return (
       <>{adminNav}<Stage4GuidedWalkthrough
         patterns={patterns}
-        hasAI={hasAnyProvider(settings)}
-        totalGameCount={totalGameCount}
-        globalAnalyzedCount={globalAnalyzedCount}
-        globalAnalyzingCount={globalAnalyzingCount}
+        games={games}
+        analyses={analyses}
         onUpdateSettings={updateSettings}
         sampleText={sampleText}
+        isGuest={isGuest}
       /></>
     );
   }
 
   /* --- S5: Fully onboarded -- combined DNA view --- */
 
-  // Famous player benchmarks for S5 stat squares (combined)
-  const magnusScore = 95;
-  const hikaruScore = 93;
-
-  // Win stats from windowed games
-  const windowGames = windowedData.games;
-  const winCount = windowGames.filter(g => g.player?.result === 'win').length;
-  const winPct = windowGames.length > 0 ? Math.round((winCount / windowGames.length) * 100) : 0;
-
   // Windowed tier info -- so hero matches the radar
   const windowedTier = getTierForScore(windowedData.profile.overallRating);
   const windowedTierProgress = getTierProgress(windowedData.profile.overallRating);
   const windowedNextTier = getNextTier(windowedData.profile.overallRating);
 
-  const handleGenerateAudio = () => {
-    if (!hasAnyProvider(settings) || audioState.isGenerating) return;
-    const profileScores = windowedData.profile.dimensions.map((d) => ({
-      dimension: d.label,
-      score: d.score,
-    }));
-    audioControls.generateAndPlay(settings, windowedData.games, windowedAnalyses, windowedData.patterns, profileScores);
-  };
 
   return (
     <div className="pb-20">
       {adminNav}
 
-      {/* Progress / sync badge */}
-      <div className="mb-2">
-        <div className="inline-flex items-center gap-1.5 bg-chess-surface/80 backdrop-blur-md rounded-lg px-2.5 py-1.5 border border-chess-border/30 text-[11px]">
-          {syncStatus ? (() => {
-            const isImporting = syncStatus.phase === 'importing';
-            const done = isImporting ? syncStatus.imported : syncStatus.analyzed;
-            const total = isImporting ? syncStatus.total : syncStatus.analyzeTotal;
-            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-            return (
-              <>
-                <span className={`text-chess-accent ${!isImporting ? 'animate-pulse' : ''}`}>
-                  {isImporting ? '🔄' : '🧬'}
-                </span>
-                <span className="text-chess-text-secondary">
-                  {isImporting ? `Checking ${syncStatus.currentType}` : `Analyzing ${syncStatus.currentType}`}
-                </span>
-                {(!isImporting && total > 0) && (
-                  <span className="text-chess-accent font-semibold">{done}/{total} · {pct}%</span>
-                )}
-              </>
-            );
-          })() : globalAnalyzedCount < totalGameCount ? (
-            <>
-              <span className="text-chess-accent animate-pulse">🧬</span>
-              <span className="text-chess-text-secondary">Analyzing</span>
-              <span className="text-chess-accent font-semibold">{globalAnalyzedCount}/{totalGameCount}</span>
-              <div className="w-16 bg-chess-muted/40 rounded-full h-1 overflow-hidden">
-                <div className="bg-chess-accent h-full rounded-full transition-all duration-500" style={{ width: `${totalGameCount > 0 ? (globalAnalyzedCount / totalGameCount) * 100 : 0}%` }} />
-              </div>
-            </>
-          ) : (
-            <span className="text-chess-text-secondary">{globalAnalyzedCount} games analyzed</span>
-          )}
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className={`text-chess-accent hover:text-chess-text font-semibold transition-colors ml-1 ${refreshing ? 'animate-spin' : ''}`}
-          >
-            ↻
-          </button>
+      {/* Progress badge — only when analysis is in progress */}
+      {globalAnalyzedCount < totalGameCount && (
+        <div className="mb-2">
+          <div className="border-beam inline-flex items-center gap-1.5 bg-chess-surface/80 backdrop-blur-md rounded-lg px-2.5 py-1.5 border border-chess-border/30 text-[11px]">
+            <span className="text-chess-accent animate-pulse">{'\uD83E\uDDEC'}</span>
+            <span className="text-chess-text-secondary">{t('overview_analyzing')}</span>
+            <span className="text-chess-accent font-semibold">{globalAnalyzedCount}/{totalGameCount}</span>
+            <div className="w-16 bg-chess-muted/40 rounded-full h-1 overflow-hidden">
+              <div className="bg-chess-accent h-full rounded-full transition-all duration-500" style={{ width: `${totalGameCount > 0 ? (globalAnalyzedCount / totalGameCount) * 100 : 0}%` }} />
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Score hero + radar — gate on data loaded to prevent number flash */}
       {dataLoading ? (
@@ -428,37 +288,10 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
           <div className="w-6 h-6 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" />
           <span className="text-sm text-gray-500">Loading your Chess DNA...</span>
         </div>
-      ) : analyzedCount < 5 ? (
-        <div className="flex flex-col items-center gap-4 py-10 animate-fade-in">
-          <div className="text-4xl animate-pulse" style={{ filter: 'drop-shadow(0 0 12px rgba(74,222,128,0.5))' }}>
-            {'\uD83E\uDDEC'}
-          </div>
-          <h2 className="text-lg font-black text-chess-text">Building your Chess DNA</h2>
-          <p className="text-sm text-gray-400 text-center max-w-xs">
-            Need at least 5 analyzed games for an accurate profile.{' '}
-            {globalAnalyzedCount < totalGameCount
-              ? `Analyzing ${globalAnalyzedCount}/${totalGameCount}…`
-              : `Only ${analyzedCount} analyzed so far.`}
-          </p>
-          <div className="w-48 bg-chess-muted/40 rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-chess-accent h-full rounded-full transition-all duration-700"
-              style={{ width: `${Math.min((analyzedCount / 5) * 100, 100)}%` }}
-            />
-          </div>
-          <span className="text-[10px] text-gray-500">{analyzedCount}/5 games ready</span>
-        </div>
       ) : (
         <>
           {/* Score hero -- uses WINDOWED profile to match the radar below */}
           <ScoreHero profile={windowedData.profile} tier={windowedTier} tierProgress={windowedTierProgress} nextTier={windowedNextTier} playerElo={playerElo} totalAnalyzed={analyzedCount} />
-
-          {/* Training plan banner */}
-          <TrainingPlanBanner
-            profile={windowedData.profile}
-            patterns={windowedData.patterns}
-            onNavigateToExercises={() => navigate('/training')}
-          />
 
           {/* Time window tabs */}
           <TimeWindowTabs
@@ -467,9 +300,10 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
             analyzedGameCount={analyzedCount}
           />
 
-          {/* Chart Gallery */}
-          <div className="space-y-4">
-            <div>
+          {/* Desktop: two-column grid / Mobile: single column */}
+          <div className="md:grid md:grid-cols-[3fr_2fr] md:gap-6 space-y-4 md:space-y-0">
+            {/* Left column: Charts */}
+            <div className="space-y-4">
               <ChartGallery
                 games={windowedData.games}
                 analyses={windowedAnalyses}
@@ -479,130 +313,125 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
               />
             </div>
 
-            {/* Audio Summary */}
-            {hasAnyProvider(settings) && windowedData.games.length >= 3 && (
-              <SummaryAudioSection
-                analyzedCount={windowedData.games.length}
-                onGenerate={handleGenerateAudio}
-              />
-            )}
+            {/* Right column: Latest Game, Share, Compare */}
+            <div className="space-y-4">
 
-            {/* Review Latest Game */}
+            {/* Review Latest Game + Audio */}
             {(() => {
               const latestGame = games
                 .filter(g => g.analysisStatus === 'complete')
                 .sort((a, b) => b.playedAt - a.playedAt)[0];
               if (!latestGame) return null;
               const latestAnalysis = allAnalyses.find(a => a.gameId === latestGame.id);
+              const audioIsForThisGame = audioState.script?.source?.type === 'game' && audioState.script.source.gameId === latestGame.id;
+              const hasAI = hasAnyProvider(settings) && latestAnalysis;
               return (
-                <button
-                  onClick={() => navigate(`/games/${latestGame.id}`)}
-                  className="w-full rounded-xl bg-chess-surface/30 border border-chess-border/30 p-3 text-left hover:border-chess-accent/30 transition-all"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Latest Game</span>
-                    <span className="text-[10px] text-chess-accent font-bold">Review {'\u2192'}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-sm font-bold ${latestGame.player.result === 'win' ? 'text-chess-accent' : latestGame.player.result === 'loss' ? 'text-red-400' : 'text-gray-400'}`}>
-                      {latestGame.player.result.toUpperCase()}
-                    </span>
-                    <span className="text-sm text-chess-text">vs {latestGame.opponent.username}</span>
-                    <span className="text-xs text-gray-500">({latestGame.opponent.rating})</span>
-                    {latestAnalysis && (
-                      <span className="ml-auto text-xs text-gray-400">{latestAnalysis.summary.accuracy}% acc</span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-gray-500 mt-0.5">
-                    {latestGame.opening?.name ?? 'Unknown'} {'\u00B7'} {latestGame.timeClass}
-                  </div>
-                </button>
+                <div className="rounded-xl bg-chess-surface/30 border border-chess-border/30 p-3">
+                  <button
+                    onClick={() => navigate(`/games/${latestGame.id}`)}
+                    className="w-full text-left hover:opacity-80 transition-opacity"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">{t('overview_latest_game')}</span>
+                      <span className="text-xs text-chess-accent font-bold">{t('overview_review')}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-sm font-bold ${latestGame.player.result === 'win' ? 'text-chess-accent' : latestGame.player.result === 'loss' ? 'text-red-400' : 'text-gray-400'}`}>
+                        {latestGame.player.result === 'win' ? t('result_win_full') : latestGame.player.result === 'loss' ? t('result_loss_full') : t('result_draw_full')}
+                      </span>
+                      <span className="text-sm text-chess-text">vs {latestGame.opponent.username}</span>
+                      <span className="text-xs text-gray-500">({latestGame.opponent.rating})</span>
+                      {latestAnalysis && (
+                        <span className="ml-auto text-xs text-gray-400">{latestAnalysis.summary.accuracy}% acc</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {latestGame.opening?.name ?? 'Unknown'} {'\u00B7'} {latestGame.timeClass}
+                    </div>
+                  </button>
+                  {/* Audio button — always visible when AI available */}
+                  {hasAI && (
+                    <div className="mt-2 pt-2 border-t border-chess-border/20">
+                      {audioState.isGenerating ? (
+                        <div className="flex items-center gap-2 text-xs text-chess-accent">
+                          <span className="w-3 h-3 border-[1.5px] border-chess-accent border-t-transparent rounded-full animate-spin" />
+                          <span>Generating audio{audioState.genProgress ? ` (${audioState.genProgress.done}/${audioState.genProgress.total})` : '...'}</span>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (audioIsForThisGame) {
+                              audioState.isPlaying ? audioControls.pause() : audioControls.play();
+                            } else {
+                              audioControls.generateGameAndPlay(settings, latestGame, latestAnalysis);
+                            }
+                          }}
+                          className="flex items-center gap-1.5 text-xs text-chess-accent hover:text-chess-accent/80 transition-colors"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                            {audioIsForThisGame && audioState.isPlaying
+                              ? <><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></>
+                              : <polygon points="5,3 19,12 5,21" />}
+                          </svg>
+                          {audioIsForThisGame ? (audioState.isPlaying ? 'Pause' : 'Resume') : t('overview_listen_recap')}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               );
             })()}
-
-            {/* Stat Squares -- collapsible */}
-            <div className="rounded-xl border border-chess-border/30 overflow-hidden">
-              <button
-                onClick={() => setStatsExpanded(e => !e)}
-                className="w-full flex items-center justify-between px-3 py-2.5 bg-chess-surface/20 hover:bg-chess-surface/30 transition-colors"
-              >
-                <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Your Stats</span>
-                <span className="text-gray-500 text-xs">{statsExpanded ? '\u25B2' : '\u25BC'}</span>
-              </button>
-              {statsExpanded && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3">
-                  {/* Percentile */}
-                  <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
-                    <div className="text-lg mb-0.5">{'\uD83D\uDCCA'}</div>
-                    <div className="text-2xl font-black text-chess-text">Top {Math.max(1, 100 - windowedPercentile)}%</div>
-                    <div className="text-[10px] text-gray-500">among {getRatingRangeLabel(playerElo)}</div>
-                  </div>
-
-                  {/* vs World's Best */}
-                  <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
-                    <div className="text-lg mb-0.5">{'\uD83C\uDF0D'}</div>
-                    <div className="text-[10px] text-gray-500 mb-0.5">vs World's Best</div>
-                    <div className="flex items-center justify-center gap-2">
-                      <span className="text-[10px] text-gray-400">Magnus <span className="font-bold text-chess-text">{magnusScore}</span></span>
-                      <span className="text-gray-600">{'\u00B7'}</span>
-                      <span className="text-[10px] text-gray-400">Hikaru <span className="font-bold text-chess-text">{hikaruScore}</span></span>
-                    </div>
-                    <div className="text-[10px] text-gray-500 mt-0.5">
-                      {Math.min(magnusScore, hikaruScore) - windowedData.profile.overallRating > 0
-                        ? `${Math.min(magnusScore, hikaruScore) - windowedData.profile.overallRating} pts to beat both`
-                        : 'You beat them both!'}
-                    </div>
-                  </div>
-
-                  {/* Win Rate */}
-                  <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
-                    <div className="text-lg mb-0.5">{'\u2694\uFE0F'}</div>
-                    <div className="text-[10px] text-gray-500 mb-0.5">Last {windowGames.length} Games</div>
-                    <div className="text-2xl font-black text-chess-text">{winPct}%</div>
-                    <div className="text-[10px] text-gray-500">{winCount}W {'\u00B7'} {windowGames.filter(g => g.player?.result === 'loss').length}L {'\u00B7'} {windowGames.filter(g => g.player?.result === 'draw').length}D</div>
-                    {games.length > 0 && (
-                      <button onClick={() => navigate('/games')} className="text-[9px] text-chess-accent hover:underline mt-1">
-                        See all {games.length} games {'\u2192'}
-                      </button>
-                    )}
-                  </div>
-
-                  {/* ELO */}
-                  <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
-                    <div className="text-lg mb-0.5">{'\uD83D\uDCC8'}</div>
-                    <div className="text-[10px] text-gray-500 mb-0.5">Your ELO</div>
-                    <div className="text-2xl font-black text-chess-text">{playerElo}</div>
-                    <div className="text-[10px] text-gray-500">{getRatingRangeLabel(playerElo)}</div>
-                  </div>
-                </div>
-              )}
-            </div>
 
             {/* Share button */}
             <ShareButton profile={windowedData.profile} tier={windowedTier} playerElo={playerElo} />
 
-            {/* Compare with friends */}
-            <div className="mt-4">
-              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">
-                Compare with Friends
-              </h3>
-              <FriendCompare />
+            {/* Settings shortcut */}
+            <div className="mt-4 md:mt-0">
+              <button
+                onClick={() => navigate('/settings')}
+                className="w-full bg-chess-surface rounded-lg px-4 py-3 border border-chess-border/20 flex items-center gap-3 hover:border-chess-border/40 transition-all group"
+              >
+                <span className="text-lg">⚙️</span>
+                <div className="flex-1 text-left">
+                  <div className="text-sm font-bold text-chess-text">{t('overview_settings')}</div>
+                  <div className="text-xs text-gray-500">{t('overview_settings_sub')}</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-500 group-hover:text-chess-accent transition-colors rtl:rotate-180"><path d="M9 18l6-6-6-6"/></svg>
+              </button>
             </div>
-          </div>
+
+            {/* Sign Out */}
+            <button
+              onClick={() => base44.auth.logout()}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm text-gray-500 hover:text-red-400 transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              {t('settings_sign_out')}
+            </button>
+            </div>{/* end right column */}
+          </div>{/* end grid */}
         </>
       )}
 
-      {/* Sticky bottom CTA — above bottom nav bar (z-50, ~60px tall) */}
-      <div className="fixed bottom-[60px] left-0 right-0 z-[51] bg-chess-bg/95 backdrop-blur-md px-3 py-2">
+      {/* Sticky bottom CTA — above bottom nav bar (account for guest signup bar height) */}
+      <div className={`fixed left-0 right-0 z-[51] bg-chess-bg/95 backdrop-blur-md px-3 py-2 ${isGuest ? 'bottom-[100px]' : 'bottom-[60px]'}`}>
         <div className="max-w-6xl mx-auto">
           <button
-            onClick={() => navigate('/training')}
-            className="w-full bg-chess-accent text-chess-bg py-3 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_12px_rgba(74,222,128,0.2)]"
+            onClick={() => navigate('/timemachine')}
+            className="shimmer-btn w-full bg-chess-accent text-chess-bg py-3 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_12px_rgba(74,222,128,0.2)] flex items-center justify-center gap-2"
           >
-            Let's get better {'\u2192'}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 22h14" /><path d="M5 2h14" />
+              <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" />
+              <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+            </svg>
+            {t('overview_practice_mistakes')}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="rtl:rotate-180"><path d="M9 18l6-6-6-6"/></svg>
           </button>
         </div>
       </div>
+      <DataAttribution />
     </div>
   );
 }
@@ -619,16 +448,20 @@ function Stage0Connect({
   settings: _settings,
   onSettingsChange,
   onImportComplete,
+  isGuest = false,
 }: {
   settings: UserSettings;
   onSettingsChange: (patch: Partial<UserSettings>) => Promise<void>;
   onImportComplete: () => void;
+  isGuest?: boolean;
 }) {
-  void _settings; // Available for future use
+  const { t } = useT();
+  const navigate = useNavigate();
+  const [showForm, setShowForm] = useState(false);
+  const [platform] = useState<'chesscom' | 'lichess'>('chesscom');
   const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showUsernameHelp, setShowUsernameHelp] = useState(false);
   const [fetchState, setFetchState] = useState<{
     phase: 'idle' | 'validating' | 'fetching' | 'done';
     fetched: number;
@@ -644,66 +477,95 @@ function Stage0Connect({
     setFetchState({ phase: 'validating', fetched: 0, total: 0 });
 
     try {
-      const resp = await fetch(`${CHESS_COM_API_BASE}/player/${trimmed.toLowerCase()}`, {
-        headers: { Accept: 'application/json' },
-      });
-      if (!resp.ok) {
-        setError('Username not found on chess.com');
-        setFetchState({ phase: 'idle', fetched: 0, total: 0 });
-        setLoading(false);
-        return;
-      }
+      if (platform === 'chesscom') {
+        // Chess.com flow
+        const resp = await fetchChessCom(`${CHESS_COM_API_BASE}/player/${trimmed.toLowerCase()}`, {
+          headers: { Accept: 'application/json' },
+        });
+        if (!resp.ok) {
+          setError('Username not found on Chess.com');
+          setFetchState({ phase: 'idle', fetched: 0, total: 0 });
+          setLoading(false);
+          return;
+        }
 
-      // Import 5 games with fallback: rapid → blitz → bullet → all
-      setFetchState({ phase: 'fetching', fetched: 0, total: 5 });
+        setFetchState({ phase: 'fetching', fetched: 0, total: 5 });
+        const fallbackOrder: Array<'rapid' | 'blitz' | 'bullet' | 'all'> = ['rapid', 'blitz', 'bullet', 'all'];
+        let onboardingIds: string[] = [];
+        let usedTimeClass = 'rapid';
 
-      const fallbackOrder: Array<'rapid' | 'blitz' | 'bullet' | 'all'> = ['rapid', 'blitz', 'bullet', 'all'];
-      let onboardingIds: string[] = [];
-      let usedTimeClass = 'rapid';
+        for (const tc of fallbackOrder) {
+          onboardingIds = await importChessComGames(trimmed, {
+            timeClass: tc, maxGames: 5, guest: isGuest,
+            onProgress: (progress) => {
+              setFetchState({
+                phase: progress.done ? 'done' : 'fetching',
+                fetched: progress.fetched,
+                total: progress.total || 5,
+                error: progress.error,
+              });
+            },
+          });
+          if (onboardingIds.length > 0) { usedTimeClass = tc; break; }
+        }
 
-      for (const tc of fallbackOrder) {
-        onboardingIds = await importChessComGames(trimmed, {
-          timeClass: tc,
-          maxGames: 5,
+        await onSettingsChange({
+          chesscomUsername: trimmed,
+          onboardingGameIds: onboardingIds,
+          onboardingTimeClass: usedTimeClass,
+        });
+        onImportComplete();
+
+        // Background import
+        (async () => {
+          try {
+            await importChessComGames(trimmed, { timeClass: 'rapid', maxGames: 30, guest: isGuest });
+            await importChessComGames(trimmed, { timeClass: 'blitz', maxGames: 30, guest: isGuest });
+            await importChessComGames(trimmed, { timeClass: 'bullet', maxGames: 30, guest: isGuest });
+          } catch { /* ignore */ } finally {
+            onSettingsChange({ bulkImportDone: true });
+          }
+        })();
+      } else {
+        // Lichess flow
+        setFetchState({ phase: 'fetching', fetched: 0, total: 5 });
+        const onboardingIds = await importLichessGames(trimmed, {
+          maxGames: 5, guest: isGuest,
           onProgress: (progress) => {
             setFetchState({
-              phase: progress.done ? 'done' : 'fetching',
+              phase: progress.phase === 'done' ? 'done' : progress.phase === 'error' ? 'idle' : 'fetching',
               fetched: progress.fetched,
               total: progress.total || 5,
               error: progress.error,
             });
           },
         });
-        if (onboardingIds.length > 0) {
-          usedTimeClass = tc;
-          break;
+
+        if (onboardingIds.length === 0) {
+          setError(`Username "${trimmed}" not found on Lichess`);
+          setFetchState({ phase: 'idle', fetched: 0, total: 0 });
+          setLoading(false);
+          return;
         }
+
+        await onSettingsChange({
+          lichessUsername: trimmed,
+          onboardingGameIds: onboardingIds,
+          onboardingTimeClass: 'rapid',
+        });
+        onImportComplete();
+
+        // Background import
+        (async () => {
+          try {
+            await importLichessGames(trimmed, { maxGames: 30, timeClass: 'rapid', guest: isGuest });
+            await importLichessGames(trimmed, { maxGames: 30, timeClass: 'blitz', guest: isGuest });
+            await importLichessGames(trimmed, { maxGames: 30, timeClass: 'bullet', guest: isGuest });
+          } catch { /* ignore */ } finally {
+            onSettingsChange({ bulkImportDone: true });
+          }
+        })();
       }
-
-      // Save username + onboarding metadata
-      await onSettingsChange({
-        chesscomUsername: trimmed,
-        onboardingGameIds: onboardingIds,
-        onboardingTimeClass: usedTimeClass,
-      });
-
-      // Notify ChessDataContext so it refetches games → totalGameCount > 0 → stage transitions to S1
-      onImportComplete();
-
-      // Continue importing remaining games in background
-      (async () => {
-        try {
-          await importChessComGames(trimmed, { timeClass: 'rapid', maxGames: 30 });
-          await importChessComGames(trimmed, { timeClass: 'blitz', maxGames: 30 });
-          await importChessComGames(trimmed, { timeClass: 'bullet', maxGames: 30 });
-        } catch (err) {
-          console.warn('[Chess DNA] Background import failed:', err);
-        } finally {
-          onSettingsChange({ bulkImportDone: true });
-          console.log('[Chess DNA] Background import complete — bulkImportDone set');
-        }
-      })();
-
     } catch {
       setError('Could not connect. Check your internet.');
       setFetchState({ phase: 'idle', fetched: 0, total: 0 });
@@ -715,135 +577,192 @@ function Stage0Connect({
   const isFetching = fetchState.phase === 'fetching' || fetchState.phase === 'validating';
   const isDone = fetchState.phase === 'done';
 
-  return (
-    <div className="max-w-md mx-auto py-12">
-      <div className="text-center mb-8">
-        <div className="text-5xl mb-4 glow-green-lg">{'\uD83E\uDDEC'}</div>
-        <h2 className="text-xl font-black mb-2">Welcome to <span className="text-chess-accent glow-green">Chess DNA</span></h2>
-        <p className="text-[10px] text-chess-accent/50 uppercase tracking-[0.2em] mb-3">AI-Powered Coach</p>
-        <p className="text-gray-400 text-sm max-w-xs mx-auto">
-          Enter your <span className="font-bold text-chess-text">Chess.com</span> username and we'll analyze your recent games to build your personalized Chess DNA profile.
-        </p>
-        <p className="text-[10px] text-gray-500 mt-2">No password needed {'\u2014'} we only read public game data.</p>
-      </div>
-
-      <div className="bg-chess-surface rounded-xl p-4 border border-chess-border/30 mb-4">
-        <div className="flex items-center gap-1.5 mb-2">
-          <label className="text-[10px] text-gray-500 uppercase tracking-widest">
-            Chess.com username
-          </label>
-          <button
-            onClick={() => setShowUsernameHelp(h => !h)}
-            className="w-4 h-4 rounded-full bg-chess-muted/60 text-gray-400 text-[10px] font-bold flex items-center justify-center hover:bg-chess-muted hover:text-chess-text-secondary transition-colors"
-            title="How to find your username"
-          >
-            ?
-          </button>
-        </div>
-        {showUsernameHelp && (
-          <div className="bg-chess-bg/50 rounded-lg p-3 mb-3 border border-chess-border/30 text-xs text-gray-400 space-y-1.5">
-            <p className="font-medium text-chess-text-secondary">How to find your username:</p>
-            <p>1. Go to <span className="font-bold text-chess-text">chess.com</span> and log in</p>
-            <p>2. Click your profile icon (top right)</p>
-            <p>3. Your username is shown at the top of your profile</p>
-            <p>4. It's also in the URL: chess.com/member/<span className="text-chess-accent">your_username</span></p>
+  // ── Landing hero (first thing users see) ──
+  if (!showForm) {
+    return (
+      <div className="min-h-[80vh] flex items-center justify-center px-6">
+        <div className="max-w-lg text-center">
+          {/* Language picker */}
+          <div className="flex justify-center gap-2 mb-10">
+            {SUPPORTED_LANGUAGES.map((lang) => {
+              const currentLang = (_settings as unknown as Record<string, unknown>).language as string | undefined;
+              return (
+                <button
+                  key={lang.code}
+                  onClick={() => { onSettingsChange({ language: lang.code } as Partial<UserSettings>); try { localStorage.setItem('chess-dna-language', lang.code); } catch {} }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    (currentLang ?? 'en') === lang.code
+                      ? 'bg-chess-accent/20 text-chess-accent border border-chess-accent/30'
+                      : 'bg-chess-surface/50 text-gray-400 border border-chess-border/20 hover:text-chess-text'
+                  }`}
+                >
+                  {lang.label}
+                </button>
+              );
+            })}
           </div>
-        )}
-        <div className="flex gap-2">
+
+          <div className="mb-6 animate-scale-in flex justify-center">
+            <img src="/favicon.png" alt="Chess DNA" width={96} height={96} className="rounded-2xl" />
+          </div>
+          <h1 className="text-4xl font-bold mb-3 animate-fade-in-up">{t('s0_title')}</h1>
+          <p className="text-chess-text text-xl font-medium mb-3 animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
+            {t('s0_subtitle')}
+          </p>
+          <p className="text-chess-text-secondary text-base mb-8 animate-fade-in-up" style={{ animationDelay: '0.2s' }}>
+            {t('s0_desc')}
+          </p>
+
+          <button
+            onClick={() => setShowForm(true)}
+            className="bg-chess-accent text-chess-bg font-semibold px-8 py-3 rounded-xl text-lg hover:opacity-90 transition-all shadow-lg animate-fade-in-up"
+            style={{ animationDelay: '0.3s' }}
+          >
+            {t('s0_get_started')}
+          </button>
+
+          <div className="mt-12 grid grid-cols-3 gap-6 text-center animate-fade-in-up" style={{ animationDelay: '0.4s' }}>
+            <div>
+              <div className="text-2xl mb-1">
+                <svg className="inline-block text-chess-accent" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="12 2 19.5 8 17.5 17 6.5 17 4.5 8" opacity="0.3" fill="currentColor" />
+                  <polygon points="12 6 16 9.5 14.8 14.5 9.2 14.5 8 9.5" opacity="0.15" fill="currentColor" />
+                  <polygon points="12 2 19.5 8 17.5 17 6.5 17 4.5 8" />
+                  <line x1="12" y1="2" x2="12" y2="12" /><line x1="19.5" y1="8" x2="12" y2="12" />
+                  <line x1="17.5" y1="17" x2="12" y2="12" /><line x1="6.5" y1="17" x2="12" y2="12" />
+                  <line x1="4.5" y1="8" x2="12" y2="12" />
+                </svg>
+              </div>
+              <p className="text-chess-text-tertiary text-xs">{t('s0_reveal')}</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-1">
+                <svg className="inline-block text-chess-accent" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  <path d="M8 8l2 4 2-3 2 2" opacity="0.8" />
+                </svg>
+              </div>
+              <p className="text-chess-text-tertiary text-xs">{t('s0_patterns')}</p>
+            </div>
+            <div>
+              <div className="text-2xl mb-1">
+                <svg className="inline-block text-chess-accent" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 1l4 4-4 4" /><path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                  <path d="M7 23l-4-4 4-4" /><path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                </svg>
+              </div>
+              <p className="text-chess-text-tertiary text-xs">{t('s0_practice')}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Username entry form ──
+  return (
+    <div className="min-h-[80vh] flex items-center justify-center px-6">
+      <div className="max-w-md w-full">
+        <div className="text-center mb-8">
+          <div className="mb-4 flex justify-center">
+            <svg className="w-12 h-12 text-chess-accent" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <g transform="rotate(45 12 12)">
+                <path d="M8 2c0 6.5 8 12.5 8 19" />
+                <path d="M16 2c0 6.5-8 12.5-8 19" />
+                <line x1="9.2" y1="5.5" x2="14.8" y2="5.5" />
+                <line x1="11" y1="8.5" x2="13" y2="8.5" />
+                <line x1="11" y1="14.5" x2="13" y2="14.5" />
+                <line x1="9.2" y1="17.5" x2="14.8" y2="17.5" />
+              </g>
+            </svg>
+          </div>
+          <h2 className="text-xl font-black mb-2">{t('onboarding_welcome')} <span className="text-chess-accent glow-green">Chess DNA</span></h2>
+          <p className="text-gray-400 text-sm max-w-xs mx-auto">{t('onboarding_desc')}</p>
+          <p className="text-xs text-gray-500 mt-2">{t('onboarding_no_password')}</p>
+        </div>
+
+        {/* Platform — Chess.com only */}
+        <div className="flex gap-2 mb-4">
+          <div className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium bg-chess-accent/10 text-chess-accent border border-chess-accent/30">
+            <img src="/logos/chesscom.png" alt="" className="w-4 h-4 rounded-sm" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+            Chess.com
+          </div>
+        </div>
+
+        <div className="bg-chess-surface rounded-xl p-4 border border-chess-border/30 mb-4">
+          <label className="text-xs text-gray-500 uppercase tracking-widest block mb-2">
+            {t('onboarding_username_label')}
+          </label>
           <input
             type="text"
             value={username}
             onChange={(e) => { setUsername(e.target.value); setError(null); }}
             onKeyDown={(e) => e.key === 'Enter' && !isFetching && handleConnect()}
-            placeholder="your_username"
+            placeholder={t('onboarding_username_placeholder')}
             disabled={isFetching || isDone}
-            className="flex-1 bg-chess-bg border border-chess-border/40 rounded-lg px-3 py-2 text-sm text-chess-text placeholder:text-gray-600 focus:outline-none focus:border-chess-accent/50 disabled:opacity-50"
+            className="w-full bg-chess-bg border border-chess-border/40 rounded-lg px-3 py-2 text-sm text-chess-text placeholder:text-gray-600 focus:outline-none focus:border-chess-accent/50 disabled:opacity-50"
           />
+          {error && <p className="text-chess-blunder text-xs mt-2">{error}</p>}
         </div>
-        {error && <p className="text-chess-blunder text-xs mt-2">{error}</p>}
+
+        <button
+          onClick={handleConnect}
+          disabled={loading || isFetching || isDone || !username.trim()}
+          className="w-full bg-chess-accent text-chess-bg py-3 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_12px_rgba(74,222,128,0.25)] disabled:opacity-50 mb-4"
+        >
+          {loading && !isFetching ? t('onboarding_connecting') : t('onboarding_get_games')}
+        </button>
+
+        {fetchState.phase === 'validating' && (
+          <div className="bg-chess-surface/50 rounded-xl p-4 border border-chess-border/30 mb-4 text-center">
+            <div className="text-sm text-gray-400 animate-pulse">{t('onboarding_validating')}</div>
+          </div>
+        )}
+
+        {fetchState.phase === 'fetching' && (
+          <div className="bg-chess-surface/50 rounded-xl p-4 border border-chess-border/30 mb-4">
+            <div className="flex justify-between text-[11px] text-gray-400 mb-2">
+              <span>Importing games...</span>
+              <span>{fetchState.fetched} / {fetchState.total || 5}</span>
+            </div>
+            <div className="w-full bg-chess-muted/60 rounded-full h-2 overflow-hidden">
+              <div className="bg-chess-accent h-full rounded-full transition-all duration-500" style={{ width: `${(fetchState.fetched / (fetchState.total || 5)) * 100}%` }} />
+            </div>
+          </div>
+        )}
+
+        {isDone && !fetchState.error && (
+          <div className="bg-chess-accent/5 rounded-xl p-4 border border-chess-accent/20 mb-4 text-center">
+            <div className="text-2xl mb-1">{'\u2713'}</div>
+            <div className="text-sm font-bold text-chess-text">Games imported! Analysis starting...</div>
+            <p className="text-xs text-gray-400 mt-1">This page will update automatically once analysis begins.</p>
+          </div>
+        )}
+
+        {isDone && fetchState.error && (
+          <div className="bg-chess-blunder/5 rounded-xl p-4 border border-chess-blunder/20 mb-4 text-center">
+            <div className="text-sm text-chess-blunder">{fetchState.error}</div>
+          </div>
+        )}
+
+        {!isFetching && !isDone && (
+          <div className="mt-4 space-y-2">
+            <button
+              onClick={() => navigate('/settings')}
+              className="w-full flex items-center gap-3 bg-chess-surface/30 rounded-xl p-3 border border-chess-border/30 hover:border-chess-accent/30 transition-colors"
+            >
+              <span className="text-lg">{'\u2191'}</span>
+              <div className="flex-1 text-left">
+                <div className="text-sm font-medium text-chess-text">Upload PGN</div>
+                <div className="text-[10px] text-gray-500">Paste or upload .pgn files from any platform</div>
+              </div>
+              <span className="text-gray-500">{'\u203A'}</span>
+            </button>
+          </div>
+        )}
+
+        <p className="text-xs text-gray-600 text-center mt-6">{t('onboarding_privacy')}</p>
       </div>
-
-      <button
-        onClick={handleConnect}
-        disabled={loading || isFetching || isDone || !username.trim()}
-        className="w-full bg-chess-accent text-chess-bg py-3 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_12px_rgba(74,222,128,0.25)] disabled:opacity-50 mb-4"
-      >
-        {loading && !isFetching ? 'Connecting...' : 'Get and analyze my games'}
-      </button>
-
-      {fetchState.phase === 'validating' && (
-        <div className="bg-chess-surface/50 rounded-xl p-4 border border-chess-border/30 mb-4 text-center">
-          <div className="text-sm text-gray-400 animate-pulse">Validating username...</div>
-        </div>
-      )}
-
-      {fetchState.phase === 'fetching' && (
-        <div className="bg-chess-surface/50 rounded-xl p-4 border border-chess-border/30 mb-4">
-          <div className="flex justify-between text-[11px] text-gray-400 mb-2">
-            <span>Importing your rapid games...</span>
-            <span>{fetchState.fetched} / {fetchState.total || 5}</span>
-          </div>
-          <div className="w-full bg-chess-muted/60 rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-chess-accent h-full rounded-full transition-all duration-500"
-              style={{ width: `${(fetchState.fetched / (fetchState.total || 5)) * 100}%` }}
-            />
-          </div>
-          <p className="text-[10px] text-gray-500 mt-2">Fetching your 5 most recent rapid games...</p>
-        </div>
-      )}
-
-      {isDone && !fetchState.error && (
-        <div className="bg-chess-accent/5 rounded-xl p-4 border border-chess-accent/20 mb-4 text-center">
-          <div className="text-2xl mb-1">{'\u2713'}</div>
-          <div className="text-sm font-bold text-chess-text">
-            Games imported! Analysis starting...
-          </div>
-          <p className="text-[10px] text-gray-400 mt-1">
-            This page will update automatically once analysis begins.
-          </p>
-        </div>
-      )}
-
-      {isDone && fetchState.error && (
-        <div className="bg-chess-blunder/5 rounded-xl p-4 border border-chess-blunder/20 mb-4 text-center">
-          <div className="text-sm text-chess-blunder">{fetchState.error}</div>
-          <p className="text-[10px] text-gray-400 mt-1">
-            You can still play on chess.com {'\u2014'} games will be detected automatically.
-          </p>
-        </div>
-      )}
-
-      {!isFetching && !isDone && (
-        <div className="space-y-2">
-          <p className="text-[10px] text-gray-500 uppercase tracking-widest px-1">Other platforms</p>
-          <button disabled className="w-full flex items-center gap-3 bg-chess-surface/30 rounded-xl p-3 border border-chess-border/30 opacity-40 cursor-not-allowed">
-            <span className="text-lg">{'\u265E'}</span>
-            <div className="flex-1 text-left">
-              <div className="text-sm font-medium text-gray-400">Lichess</div>
-            </div>
-            <span className="text-[9px] bg-chess-accent/10 text-chess-accent px-2 py-0.5 rounded-full font-medium">Soon</span>
-          </button>
-          <button disabled className="w-full flex items-center gap-3 bg-chess-surface/30 rounded-xl p-3 border border-chess-border/30 opacity-40 cursor-not-allowed">
-            <span className="text-lg">{'\u265A'}</span>
-            <div className="flex-1 text-left">
-              <div className="text-sm font-medium text-gray-400">Chess24</div>
-            </div>
-            <span className="text-[9px] bg-chess-accent/10 text-chess-accent px-2 py-0.5 rounded-full font-medium">Soon</span>
-          </button>
-          <button disabled className="w-full flex items-center gap-3 bg-chess-surface/30 rounded-xl p-3 border border-chess-border/30 opacity-40 cursor-not-allowed">
-            <span className="text-lg">{'\u265C'}</span>
-            <div className="flex-1 text-left">
-              <div className="text-sm font-medium text-gray-400">Chess.org</div>
-            </div>
-            <span className="text-[9px] bg-chess-accent/10 text-chess-accent px-2 py-0.5 rounded-full font-medium">Soon</span>
-          </button>
-        </div>
-      )}
-
-      <p className="text-[10px] text-gray-600 text-center mt-6">
-        We only read public game data. Nothing is stored on our servers.
-      </p>
     </div>
   );
 }
@@ -856,7 +775,7 @@ function Stage1Analysis({
   games,
   analyzedCount,
   analyzingCount,
-  settings,
+  settings: _settings,
   onUpdateSettings,
 }: {
   games: GameRecord[];
@@ -865,6 +784,7 @@ function Stage1Analysis({
   settings: UserSettings;
   onUpdateSettings: (patch: Partial<UserSettings>) => Promise<void>;
 }) {
+  const { t } = useT();
   const totalGames = games.length;
   const [showBurst, setShowBurst] = useState(false);
 
@@ -890,10 +810,14 @@ function Stage1Analysis({
       } else if (event.type === 'complete') {
         setLocalAnalyzed((prev) => prev + 1);
         setMoveProgress(null);
+      } else if (event.type === 'all_complete') {
+        // Force local count to match total — guarantees canUnlock triggers
+        setLocalAnalyzed(totalGames);
+        setMoveProgress(null);
       }
     });
     return unsub;
-  }, []);
+  }, [totalGames]);
 
   // Calculate smooth progress: completed games + fractional progress of current game
   // Use the higher of entity-based count vs local event-based count for real-time feel
@@ -936,11 +860,11 @@ function Stage1Analysis({
         )}
 
         <div className="animate-scale-in">
-          <div className="text-6xl mb-4" style={{ filter: 'drop-shadow(0 0 20px rgba(74,222,128,0.6))' }}>
-            {'\uD83E\uDDEC'}
+          <div className="mb-4" style={{ filter: 'drop-shadow(0 0 20px rgba(74,222,128,0.6))' }}>
+            <svg className="inline-block text-chess-accent" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><g transform="rotate(45 12 12)"><path d="M8 2c0 6.5 8 12.5 8 19" /><path d="M16 2c0 6.5-8 12.5-8 19" /><line x1="9.2" y1="5.5" x2="14.8" y2="5.5" /><line x1="11" y1="8.5" x2="13" y2="8.5" /><line x1="11" y1="14.5" x2="13" y2="14.5" /><line x1="9.2" y1="17.5" x2="14.8" y2="17.5" /></g></svg>
           </div>
           <h2 className="text-2xl font-black mb-2 text-chess-text">
-            {allDone ? 'Analysis Complete!' : 'Your Chess DNA is Ready!'}
+            {allDone ? t('overview_analysis_complete') : 'Your Chess DNA is Ready!'}
           </h2>
           <p className="text-gray-400 text-sm mb-8 max-w-xs mx-auto">
             {effectiveAnalyzedForGate} game{effectiveAnalyzedForGate !== 1 ? 's' : ''} analyzed.
@@ -952,7 +876,7 @@ function Stage1Analysis({
             disabled={showBurst}
             className="bg-chess-accent text-chess-bg px-8 py-4 rounded-2xl text-lg font-black hover:brightness-110 transition-all animate-pulse-glow disabled:opacity-80"
           >
-            Unlock your Chess DNA
+            {t('overview_unlock')}
           </button>
 
           {!allDone && remainingAfterUnlock > 0 && (
@@ -962,8 +886,8 @@ function Stage1Analysis({
             </p>
           )}
 
-          <p className="text-[10px] text-gray-500 mt-3">
-            Discover your 8-dimension skill profile, rank tier, and how you compare
+          <p className="text-xs text-gray-500 mt-3">
+            {t('overview_unlock_sub')}
           </p>
         </div>
       </div>
@@ -972,13 +896,15 @@ function Stage1Analysis({
 
   // Still analyzing
   return (
-    <div className="max-w-md mx-auto text-center py-12">
+    <div className="max-w-md mx-auto text-center min-h-[70vh] flex flex-col items-center justify-center py-12">
       {/* Orbiting chess pieces */}
       <div className="relative w-40 h-40 mx-auto mb-8">
         {/* Center DNA icon */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-4xl animate-pulse" style={{ filter: 'drop-shadow(0 0 12px rgba(74,222,128,0.5))' }}>
-            {'\uD83E\uDDEC'}
+          <div className="animate-pulse" style={{ filter: 'drop-shadow(0 0 12px rgba(74,222,128,0.5))' }}>
+            <svg className="text-chess-accent" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <g transform="rotate(45 12 12)"><path d="M8 2c0 6.5 8 12.5 8 19" /><path d="M16 2c0 6.5-8 12.5-8 19" /><line x1="9.2" y1="5.5" x2="14.8" y2="5.5" /><line x1="11" y1="8.5" x2="13" y2="8.5" /><line x1="11" y1="14.5" x2="13" y2="14.5" /><line x1="9.2" y1="17.5" x2="14.8" y2="17.5" /></g>
+            </svg>
           </div>
         </div>
 
@@ -999,7 +925,7 @@ function Stage1Analysis({
 
       <h2 className="text-xl font-black mb-2">Decoding your Chess DNA</h2>
       <p className="text-gray-400 text-sm mb-6 max-w-xs mx-auto">
-        Stockfish is analyzing every move from {totalGames} game{totalGames !== 1 ? 's' : ''}.
+        Analyzing every move from {totalGames} game{totalGames !== 1 ? 's' : ''}.
       </p>
 
       {/* Circular progress */}
@@ -1016,7 +942,7 @@ function Stage1Analysis({
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="text-2xl font-black text-chess-accent">{Math.round(progressPct)}%</span>
-          <span className="text-[9px] text-gray-500">{effectiveAnalyzed}/{progressTarget}</span>
+          <span className="text-[11px] text-gray-500">{effectiveAnalyzed}/{progressTarget}</span>
         </div>
       </div>
 
@@ -1039,10 +965,10 @@ function Stage1Analysis({
       <p className="text-xs text-gray-500 mb-4">
         {totalGames > MIN_GAMES_FOR_UNLOCK
           ? 'You can unlock after 5 games — the rest will continue in the background'
-          : 'Usually takes 5-10 minutes'}
+          : 'Usually takes a few minutes'}
       </p>
 
-      <p className="text-[10px] text-gray-600 mt-4">Feel free to close this tab and come back later.</p>
+      <p className="text-xs text-gray-600 mt-4">Feel free to close this tab and come back later.</p>
     </div>
   );
 }
@@ -1056,8 +982,8 @@ function Stage2RadarReveal({
   tierProgress,
   nextTier,
   playerElo,
-  strongest,
-  weakest,
+  strongest: _strongest,
+  weakest: _weakest,
   overallPercentile,
   games,
   analyses,
@@ -1083,7 +1009,9 @@ function Stage2RadarReveal({
   onboardingTimeClass?: string | null;
 }) {
   // Compute patterns inline so S2 radar reflects real data (not stored patterns which may be empty)
+  const { t } = useT();
   const { theme } = useTheme();
+  const { isGuest } = useAuth();
   const s2Patterns = useMemo(() => computePatternsFromGames(games, analyses, 1), [games, analyses]);
   const s2Profile = useMemo(() => calculateSkillProfile(s2Patterns, games, analyses), [s2Patterns, games, analyses]);
 
@@ -1153,10 +1081,10 @@ function Stage2RadarReveal({
   // After reveal: show score + stats + sticky unlock CTA
   return (
     <div className="max-w-2xl mx-auto animate-fade-in pb-20">
-      {/* Background analysis banner — top of page so it doesn't overlap */}
+      {/* Background analysis banner */}
       {globalAnalyzedCount < totalGameCount && (
-        <div className="flex items-center gap-3 rounded-xl bg-chess-surface/30 border border-chess-accent/10 px-4 py-2.5 mb-4 animate-fade-in">
-          <div className="text-sm animate-spin-slow">{'\uD83E\uDDEC'}</div>
+        <div className="border-beam flex items-center gap-3 rounded-xl bg-chess-surface/30 border border-chess-accent/10 px-4 py-2.5 mb-4 animate-fade-in">
+          <svg className="text-chess-accent animate-spin-slow w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><g transform="rotate(45 12 12)"><path d="M8 2c0 6.5 8 12.5 8 19" /><path d="M16 2c0 6.5-8 12.5-8 19" /><line x1="9.2" y1="5.5" x2="14.8" y2="5.5" /><line x1="11" y1="8.5" x2="13" y2="8.5" /><line x1="11" y1="14.5" x2="13" y2="14.5" /><line x1="9.2" y1="17.5" x2="14.8" y2="17.5" /></g></svg>
           <div className="flex-1 min-w-0">
             <div className="text-xs text-chess-text-secondary font-medium">
               Analyzing {globalAnalyzingCount > 0 ? `game ${globalAnalyzedCount + 1}` : ''} {'\u2014'} {globalAnalyzedCount}/{totalGameCount} done
@@ -1165,7 +1093,7 @@ function Stage2RadarReveal({
               <div className="bg-chess-accent h-full rounded-full transition-all duration-500" style={{ width: `${(globalAnalyzedCount / totalGameCount) * 100}%` }} />
             </div>
           </div>
-          <span className="text-[10px] text-gray-500 shrink-0">Profile keeps improving</span>
+          <span className="text-xs text-gray-500 shrink-0">Profile keeps improving</span>
         </div>
       )}
 
@@ -1179,7 +1107,7 @@ function Stage2RadarReveal({
             <div className="text-5xl font-black" style={{ color: getTierColor(tier, theme) }}>
               {s2Profile.overallRating}
             </div>
-            <div className="text-sm font-bold text-gray-400">{tier.name} Tier</div>
+            <div className="text-sm font-bold text-gray-400">{translateTierName(tier.id, t)}</div>
           </div>
         </div>
         {nextTier && (
@@ -1190,7 +1118,7 @@ function Stage2RadarReveal({
                 style={{ width: `${tierProgress}%`, backgroundColor: getTierColor(tier, theme), boxShadow: `0 0 8px ${getTierGlowColor(tier, theme)}` }}
               />
             </div>
-            <span className="text-[10px] text-gray-500 shrink-0">
+            <span className="text-xs text-gray-500 shrink-0">
               {pointsToNextTier(s2Profile.overallRating)} to {nextTier.icon}
             </span>
           </div>
@@ -1209,7 +1137,7 @@ function Stage2RadarReveal({
           onClick={() => setS2StatsExpanded(e => !e)}
           className="w-full flex items-center justify-between px-3 py-2.5 bg-chess-surface/20 hover:bg-chess-surface/30 transition-colors"
         >
-          <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Your {onboardingTimeClass ? `${onboardingTimeClass} ` : ''}Stats</span>
+          <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">{t('overview_your_stats')}{onboardingTimeClass ? ` (${onboardingTimeClass})` : ''}</span>
           <span className="text-gray-500 text-xs">{s2StatsExpanded ? '\u25B2' : '\u25BC'}</span>
         </button>
         {s2StatsExpanded && (
@@ -1217,22 +1145,22 @@ function Stage2RadarReveal({
             {/* Percentile */}
             <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
               <div className="text-lg mb-0.5">{'\uD83D\uDCCA'}</div>
-              <div className="text-2xl font-black text-chess-text">Top {Math.max(1, 100 - overallPercentile)}%</div>
-              <div className="text-[10px] text-gray-500">among {getRatingRangeLabel(playerElo)}</div>
+              <div className="text-2xl font-black text-chess-text">{t('overview_top_pct', { pct: Math.max(1, 100 - overallPercentile) })}</div>
+              <div className="text-xs text-gray-500">among {getRatingRangeLabel(playerElo)}</div>
             </div>
 
             {/* vs World's Best */}
             <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
               <div className="text-lg mb-0.5">{'\uD83C\uDF0D'}</div>
-              <div className="text-[10px] text-gray-500 mb-0.5">vs World's Best</div>
+              <div className="text-xs text-gray-500 mb-0.5">{t('overview_vs_worlds_best')}</div>
               <div className="flex items-center justify-center gap-2">
-                <span className="text-[10px] text-gray-400">Magnus <span className="font-bold text-chess-text">{magnusScore}</span></span>
+                <span className="text-xs text-gray-400">Magnus <span className="font-bold text-chess-text">{magnusScore}</span></span>
                 <span className="text-gray-600">{'\u00B7'}</span>
-                <span className="text-[10px] text-gray-400">Hikaru <span className="font-bold text-chess-text">{hikaruScore}</span></span>
+                <span className="text-xs text-gray-400">Hikaru <span className="font-bold text-chess-text">{hikaruScore}</span></span>
               </div>
-              <div className="text-[10px] text-gray-500 mt-0.5">
+              <div className="text-xs text-gray-500 mt-0.5">
                 {Math.min(magnusScore, hikaruScore) - s2Profile.overallRating > 0
-                  ? `${Math.min(magnusScore, hikaruScore) - s2Profile.overallRating} pts to beat both`
+                  ? t('overview_pts_to_beat', { pts: Math.min(magnusScore, hikaruScore) - s2Profile.overallRating })
                   : 'You beat them both!'}
               </div>
             </div>
@@ -1240,17 +1168,17 @@ function Stage2RadarReveal({
             {/* Win Rate */}
             <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
               <div className="text-lg mb-0.5">{'\u2694\uFE0F'}</div>
-              <div className="text-[10px] text-gray-500 mb-0.5">{games.length} Games</div>
+              <div className="text-xs text-gray-500 mb-0.5">{t('overview_games_count', { count: games.length })}</div>
               <div className={`text-2xl font-black ${winPct >= 50 ? 'text-chess-accent' : 'text-chess-blunder'}`}>{winPct}%</div>
-              <div className="text-[10px] text-gray-500">{winCount}W {'\u00B7'} {games.filter(g => g.player?.result === 'loss').length}L {'\u00B7'} {games.filter(g => g.player?.result === 'draw').length}D</div>
+              <div className="text-xs text-gray-500">{winCount}W {'\u00B7'} {games.filter(g => g.player?.result === 'loss').length}L {'\u00B7'} {games.filter(g => g.player?.result === 'draw').length}D</div>
             </div>
 
             {/* ELO */}
             <div className="rounded-xl p-3 bg-chess-surface/30 border border-chess-border/30 text-center">
               <div className="text-lg mb-0.5">{'\uD83D\uDCC8'}</div>
-              <div className="text-[10px] text-gray-500 mb-0.5">Your ELO</div>
+              <div className="text-xs text-gray-500 mb-0.5">{t('overview_your_elo')}</div>
               <div className="text-2xl font-black text-chess-text">{playerElo}</div>
-              <div className="text-[10px] text-gray-500">{getRatingRangeLabel(playerElo)}</div>
+              <div className="text-xs text-gray-500">{getRatingRangeLabel(playerElo)}</div>
             </div>
           </div>
         )}
@@ -1259,8 +1187,8 @@ function Stage2RadarReveal({
       {/* Share button */}
       <ShareButton profile={s2Profile} tier={tier} playerElo={playerElo} />
 
-      {/* Sticky bottom CTA -- unlock patterns (no nav bar at S2) */}
-      <div className="fixed bottom-0 left-0 right-0 z-40 bg-chess-bg/95 backdrop-blur-md p-3">
+      {/* Sticky bottom CTA -- unlock patterns (above nav bar + guest CTA) */}
+      <div className={`fixed left-0 right-0 z-[51] bg-chess-bg/95 backdrop-blur-md px-3 py-2 ${isGuest ? 'bottom-[100px]' : 'bottom-[60px]'}`}>
         <div className="max-w-6xl mx-auto">
           <button
             onClick={handleUnlockPatterns}
@@ -1282,40 +1210,49 @@ function Stage2RadarReveal({
 
 function Stage4GuidedWalkthrough({
   patterns,
-  hasAI,
-  totalGameCount,
-  globalAnalyzedCount,
-  globalAnalyzingCount,
+  games,
+  analyses,
   onUpdateSettings,
   sampleText,
+  isGuest = false,
 }: {
-  patterns: CurrentPatterns | null;
-  hasAI: boolean;
-  totalGameCount: number;
-  globalAnalyzedCount: number;
-  globalAnalyzingCount: number;
+  patterns: CurrentPatterns;
+  games: GameRecord[];
+  analyses: GameAnalysis[];
   onUpdateSettings: (partial: Partial<UserSettings>) => Promise<void>;
   sampleText?: string;
+  isGuest?: boolean;
 }) {
-  const navigate = useNavigate();
+  const { t } = useT();
   const [step, setStep] = useState(0);
-  const [expandedPattern, setExpandedPattern] = useState<string | null>(null);
-  const totalSteps = 3; // Removed step 0 (radar), now: Patterns -> Training -> Puzzles
+  const [showAuthPrompt, setShowAuthPrompt] = useState(false);
+  const totalSteps = 2;
 
-  const topPattern = patterns?.patterns[0];
+  // Compute patterns inline if stored patterns are empty (common during onboarding)
+  const effectivePatterns = useMemo(() => {
+    if (patterns.patterns.length > 0) return patterns.patterns;
+    const computed = computePatternsFromGames(games, analyses, 1);
+    return computed.patterns;
+  }, [patterns, games, analyses]);
+  const topPatterns = effectivePatterns.slice(0, 5);
 
   const handleFinish = () => {
+    if (isGuest) {
+      // Guest: show auth prompt instead of completing
+      setShowAuthPrompt(true);
+      return;
+    }
     onUpdateSettings({ guidedWalkthroughDone: true });
   };
 
-  // Classify pattern into skill category
-  const getPatternSkillCategory = (themeStr: string): { label: string; color: string } => {
-    const defensePatterns = ['missed_defense', 'hanging_pieces', 'back_rank_weakness', 'king_safety'];
-    const attackPatterns = ['missed_tactic', 'missed_fork', 'missed_pin', 'missed_skewer', 'missed_discovery', 'premature_attack'];
-    if (defensePatterns.some(d => themeStr.includes(d))) return { label: 'Defence', color: 'text-blue-400' };
-    if (attackPatterns.some(a => themeStr.includes(a))) return { label: 'Attack', color: 'text-red-400' };
-    return { label: 'Positional', color: 'text-purple-400' };
-  };
+  // Guest auth prompt
+  if (showAuthPrompt) {
+    return (
+      <div className="max-w-md mx-auto mt-12">
+        <AuthPrompt onSkip={() => onUpdateSettings({ guidedWalkthroughDone: true })} />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -1331,238 +1268,123 @@ function Stage4GuidedWalkthrough({
         ))}
       </div>
 
-      {/* Step 0: Your Patterns (was Step 1 -- now first) */}
+      {/* Step 0: Deep Game Analysis */}
       {step === 0 && (
         <div className="animate-fade-in">
           <div className="text-center mb-6">
-            <div className="text-3xl mb-2">{'\uD83D\uDD0D'}</div>
-            <h2 className="text-xl font-black mb-1">Your Patterns</h2>
+            <div className="text-3xl mb-2">{'\uD83D\uDD2C'}</div>
+            <h2 className="text-xl font-black mb-1">{t('s4_deep_analysis_title')}</h2>
             <p className="text-sm text-gray-400 max-w-md mx-auto">
-              {patterns && patterns.patterns.length > 0
-                ? 'We analyzed your games and found recurring patterns. These are the areas where focused practice will have the biggest impact.'
-                : 'We\u2019re still analyzing your games to find recurring patterns. Once ready, you\u2019ll see the areas where focused practice will have the biggest impact.'}
+              {t('s4_deep_analysis_desc')}
             </p>
             {sampleText && (
-              <p className="text-[10px] text-chess-accent/50 uppercase tracking-widest mt-2">{sampleText}</p>
+              <p className="text-xs text-chess-accent/50 uppercase tracking-widest mt-2">{sampleText}</p>
             )}
-          </div>
-
-          {patterns && patterns.patterns.length > 0 ? (
-            <div className="space-y-2 mb-6">
-              {patterns.patterns.slice(0, 5).map((p, i) => {
-                const skillCat = getPatternSkillCategory(p.theme);
-                const isExpanded = expandedPattern === p.theme;
-                return (
-                  <div
-                    key={p.theme}
-                    className="rounded-xl bg-chess-surface/30 border border-chess-border/30 animate-fade-in-up overflow-hidden"
-                    style={{ animationDelay: `${i * 150}ms` }}
-                  >
-                    <button
-                      onClick={() => setExpandedPattern(isExpanded ? null : p.theme)}
-                      className="w-full flex items-center gap-3 p-3 text-left hover:bg-chess-surface/50 transition-colors"
-                    >
-                      <div className="w-8 h-8 rounded-lg bg-chess-blunder/10 flex items-center justify-center text-chess-blunder text-sm font-bold">
-                        {i + 1}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-semibold text-chess-text">{getThemeLabel(p.theme)}</div>
-                        <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                          <span>{p.occurrences} occurrences across {p.gamesAffected} games</span>
-                          <span className={`font-bold ${skillCat.color}`}>{skillCat.label}</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="text-xs font-bold text-chess-blunder">{p.severity}cp</div>
-                        <span className={`text-gray-500 text-xs transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}>{'\u25BC'}</span>
-                      </div>
-                    </button>
-
-                    {/* Expanded detail for one pattern */}
-                    {isExpanded && (
-                      <div className="px-4 pb-4 border-t border-chess-border/20 animate-fade-in">
-                        <div className="mt-3 space-y-3">
-                          <div>
-                            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">What is this?</div>
-                            <p className="text-xs text-chess-text-secondary leading-relaxed">
-                              {p.theme.includes('tactic') && 'A tactical pattern where you miss winning combinations like forks, pins, or skewers during critical moments.'}
-                              {p.theme.includes('time') && 'Time management issues where you either move too quickly in complex positions or run low on time.'}
-                              {p.theme.includes('endgame') && 'Endgame technique weakness \u2014 converting advantages or holding difficult endings needs improvement.'}
-                              {p.theme.includes('opening') && 'Opening preparation gaps \u2014 you may be entering unfamiliar positions or missing key theoretical moves.'}
-                              {!p.theme.includes('tactic') && !p.theme.includes('time') && !p.theme.includes('endgame') && !p.theme.includes('opening') &&
-                                `This pattern appears when you consistently lose material or positional advantage in similar types of positions. It occurred ${p.occurrences} times with an average centipawn loss of ${p.severity}.`}
-                            </p>
-                          </div>
-                          <div className="flex gap-4">
-                            <div>
-                              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">Avg Loss</div>
-                              <div className="text-sm font-bold text-chess-blunder">{p.severity}cp</div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">Games</div>
-                              <div className="text-sm font-bold text-chess-text">{p.gamesAffected}</div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">Skill</div>
-                              <div className={`text-sm font-bold ${skillCat.color}`}>{skillCat.label}</div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">Trend</div>
-                              <div className={`text-sm font-bold ${
-                                p.trend === 'improving' ? 'text-chess-accent' : p.trend === 'worsening' ? 'text-chess-blunder' : 'text-gray-500'
-                              }`}>
-                                {p.trend === 'improving' ? '\u2197 Improving' : p.trend === 'worsening' ? '\u2198 Worsening' : '\u2192 Stable'}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="rounded-xl p-6 bg-chess-surface/30 border border-chess-border/30 text-center mb-6">
-              <div className="text-2xl mb-3 animate-spin-slow">{'\uD83E\uDDEC'}</div>
-              <div className="text-sm text-chess-text-secondary font-medium mb-2">
-                Still analyzing your games...
-              </div>
-              <div className="text-xs text-gray-500 mb-3">
-                {globalAnalyzedCount}/{totalGameCount} games analyzed
-                {globalAnalyzingCount > 0 && ` \u00B7 analyzing now...`}
-              </div>
-              <div className="w-full max-w-xs mx-auto bg-chess-muted/40 rounded-full h-1.5 overflow-hidden">
-                <div
-                  className="bg-chess-accent h-full rounded-full transition-all duration-700"
-                  style={{ width: `${totalGameCount > 0 ? (globalAnalyzedCount / totalGameCount) * 100 : 0}%` }}
-                />
-              </div>
-              <p className="text-[10px] text-gray-600 mt-3">
-                Patterns will appear once enough games are analyzed.
-              </p>
-            </div>
-          )}
-
-          <button
-            onClick={() => setStep(1)}
-            disabled={!patterns || patterns.patterns.length === 0}
-            className={`w-full py-3 rounded-xl text-sm font-black transition-all ${
-              patterns && patterns.patterns.length > 0
-                ? 'bg-chess-accent text-chess-bg hover:brightness-110 shadow-[0_0_12px_rgba(74,222,128,0.25)]'
-                : 'bg-chess-muted/50 text-gray-500 cursor-not-allowed'
-            }`}
-          >
-            {patterns && patterns.patterns.length > 0
-              ? `Next: Training ${'\u2192'}`
-              : `Waiting for patterns... (${globalAnalyzedCount}/${totalGameCount})`}
-          </button>
-        </div>
-      )}
-
-      {/* Step 1: How Training Works */}
-      {step === 1 && (
-        <div className="animate-fade-in">
-          <div className="text-center mb-6">
-            <div className="text-3xl mb-2">{'\uD83D\uDCD6'}</div>
-            <h2 className="text-xl font-black mb-1">Getting Better</h2>
-            <p className="text-sm text-gray-400 max-w-md mx-auto">
-              {hasAI
-                ? 'The "Getting Better" tab has lessons and puzzles targeting your weakness patterns.'
-                : 'With an AI provider set up, the "Getting Better" tab gives you personalized lessons and puzzles.'}
-            </p>
           </div>
 
           <div className="space-y-3 mb-6">
             <WalkthroughStep
               number={1}
-              title="Click a pattern"
-              desc="From your DNA view, click 'Lesson' or 'Practice' on any pattern to start training."
-              icon={'\u25C8'}
+              title={t('s4_step_import_title')}
+              desc={t('s4_step_import_desc')}
+              icon={'\u2693'}
             />
             <WalkthroughStep
               number={2}
-              title="Study & Practice"
-              desc={topPattern
-                ? `We'll create content about "${getThemeLabel(topPattern.theme)}" \u2014 your most common pattern.`
-                : 'Lessons explain the concept; puzzles let you practice finding the right move.'}
-              icon={'\u2728'}
+              title={t('s4_step_quality_title')}
+              desc={t('s4_step_quality_desc')}
+              icon={'\uD83C\uDFA8'}
             />
             <WalkthroughStep
               number={3}
-              title="Track progress"
-              desc="Your radar updates as you play more games. Watch your weak areas improve!"
+              title={t('s4_step_progress_title')}
+              desc={t('s4_step_progress_desc')}
               icon={'\uD83D\uDCC8'}
             />
           </div>
 
-          {!hasAI && (
-            <div className="rounded-xl p-3 bg-yellow-500/5 border border-yellow-500/20 text-center mb-3">
-              <div className="text-xs text-yellow-400">
-                Add an AI API key in Account settings to enable training.
-              </div>
-              <button
-                onClick={() => navigate('/settings')}
-                className="text-[11px] text-yellow-300 hover:underline mt-1"
-              >
-                Go to Account {'\u2192'}
-              </button>
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <button onClick={() => setStep(0)} className="flex-1 text-xs text-gray-500 py-2 hover:text-chess-text-secondary transition-colors">{'\u2190'} Back</button>
-            <button
-              onClick={() => setStep(2)}
-              className="flex-1 bg-chess-accent text-chess-bg py-3 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_12px_rgba(74,222,128,0.25)]"
-            >
-              Next: Puzzles {'\u2192'}
-            </button>
-          </div>
+          <button
+            onClick={() => setStep(1)}
+            className="w-full bg-chess-accent text-chess-bg py-3 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_12px_rgba(74,222,128,0.25)]"
+          >
+            {t('s4_next_time_machine')} {'\u2192'}
+          </button>
         </div>
       )}
 
-      {/* Step 2: Puzzle Experience */}
-      {step === 2 && (
+      {/* Step 1: Time Machine */}
+      {step === 1 && (
         <div className="animate-fade-in">
           <div className="text-center mb-6">
-            <div className="text-3xl mb-2">{'\uD83E\uDDE9'}</div>
-            <h2 className="text-xl font-black mb-1">Practice Puzzles</h2>
+            <div className="text-3xl mb-2">{'\u23F3'}</div>
+            <h2 className="text-xl font-black mb-1">{t('s4_time_machine_title')}</h2>
             <p className="text-sm text-gray-400 max-w-md mx-auto">
-              Puzzles are interactive {'\u2014'} find the best move by playing on the board. They target your exact weaknesses.
+              {t('s4_time_machine_desc')}
             </p>
           </div>
 
           <div className="space-y-3 mb-6">
             <WalkthroughStep
               number={1}
-              title="Open a puzzle"
-              desc="Puzzles appear in the 'Getting Better' tab, organized by pattern."
-              icon={'\uD83E\uDDE9'}
+              title={t('s4_step_find_mistakes_title')}
+              desc={t('s4_step_find_mistakes_desc')}
+              icon={'\uD83D\uDD0D'}
             />
             <WalkthroughStep
               number={2}
-              title="Find the best move"
-              desc="The board fills the screen. Drag pieces to make your move, use hints if stuck."
+              title={t('s4_step_go_back_title')}
+              desc={t('s4_step_go_back_desc')}
               icon={'\u265F'}
             />
             <WalkthroughStep
               number={3}
-              title="Learn from mistakes"
-              desc="Each puzzle includes an explanation of why the move is best."
-              icon={'\uD83E\uDDE0'}
+              title={t('s4_step_rank_title')}
+              desc={t('s4_step_rank_desc')}
+              icon={'\uD83C\uDFC6'}
             />
           </div>
 
+          {/* User's detected patterns */}
+          {topPatterns.length > 0 && (
+            <div className="mb-6">
+              <p className="text-[11px] text-gray-400 mb-2 px-0.5">{t('s4_your_patterns')}</p>
+              <div className="space-y-1.5">
+                {topPatterns.map((p, i) => {
+                  const sev = p.severity >= 200 ? { color: 'text-red-400', bg: 'bg-red-500/10' }
+                    : p.severity >= 100 ? { color: 'text-orange-400', bg: 'bg-orange-500/10' }
+                    : { color: 'text-amber-400', bg: 'bg-amber-500/10' };
+                  return (
+                    <div
+                      key={p.theme}
+                      className="rounded-xl bg-gradient-to-r from-white/[0.04] to-transparent animate-fade-in-up"
+                      style={{ animationDelay: `${i * 100}ms` }}
+                    >
+                      <div className="px-3 py-2.5 flex items-center gap-2.5">
+                        <span className="text-[14px] font-black text-gray-600 w-5 text-center shrink-0">{i + 1}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[13px] font-black text-chess-text">{getThemeLabel(p.theme)}</div>
+                          <div className="text-[10px] text-gray-500">
+                            {t('s4_pattern_games', { games: String(p.gamesAffected) })} | {t('s4_pattern_occurrences', { count: String(p.occurrences) })}
+                          </div>
+                        </div>
+                        <div className={`text-[13px] font-black ${sev.color}`}>{'\u2212'}{p.severity}<span className="text-[10px] font-bold"> CP</span></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="flex gap-2">
-            <button onClick={() => setStep(1)} className="flex-1 text-xs text-gray-500 py-2 hover:text-chess-text-secondary transition-colors">{'\u2190'} Back</button>
+            <button onClick={() => setStep(0)} className="flex-1 text-xs text-gray-500 py-2 hover:text-chess-text-secondary transition-colors">{'\u2190'} {t('s4_back')}</button>
             <button
               onClick={handleFinish}
-              className="flex-1 relative overflow-hidden bg-gradient-to-r from-chess-accent to-emerald-400 text-chess-bg py-4 rounded-2xl text-base font-black hover:brightness-110 transition-all shadow-[0_0_30px_rgba(74,222,128,0.35)] group"
+              className="flex-1 relative overflow-hidden bg-gradient-to-r from-chess-accent to-emerald-400 text-chess-bg py-2.5 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_20px_rgba(74,222,128,0.25)] group"
             >
               <span className="relative z-10 flex items-center justify-center gap-2">
-                <span className="text-lg">{'\uD83E\uDDEC'}</span>
-                My Chess DNA {'\u2192'}
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><g transform="rotate(45 12 12)"><path d="M8 2c0 6.5 8 12.5 8 19" /><path d="M16 2c0 6.5-8 12.5-8 19" /><line x1="9.2" y1="5.5" x2="14.8" y2="5.5" /><line x1="11" y1="8.5" x2="13" y2="8.5" /><line x1="11" y1="14.5" x2="13" y2="14.5" /><line x1="9.2" y1="17.5" x2="14.8" y2="17.5" /></g></svg>
+                {t('s4_finish')} {'\u2192'}
               </span>
               <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
             </button>
@@ -1613,6 +1435,7 @@ function ShareButton({
   tier: ReturnType<typeof getTierForScore>;
   playerElo: number;
 }) {
+  const { t } = useT();
   const [showShare, setShowShare] = useState(false);
 
   const shareText = `\uD83E\uDDEC My Chess DNA: ${profile.overallRating} (${tier.name} Tier) \u00B7 ELO ${playerElo} \u00B7 Discover yours at chessdna.com`;
@@ -1683,7 +1506,7 @@ function ShareButton({
             <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
             <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
           </svg>
-          Share your DNA
+          {t('overview_share_dna')}
         </button>
 
         {showShare && (
@@ -1696,7 +1519,7 @@ function ShareButton({
                 title={link.name}
               >
                 {link.icon}
-                <span className="text-[9px]">{link.name}</span>
+                <span className="text-[11px]">{link.name}</span>
               </button>
             ))}
           </div>
@@ -1727,41 +1550,51 @@ function ScoreHero({
 }) {
   const [showInfo, setShowInfo] = useState(false);
   const { theme } = useTheme();
+  const { t } = useT();
+
+  const tierColor = getTierColor(tier, theme);
+  const tierGlow = getTierGlowColor(tier, theme);
 
   return (
     <div className="mb-6">
-      <div className="flex items-center gap-4 mb-2">
-        <span className="text-5xl" style={{ filter: `drop-shadow(0 0 16px ${getTierGlowColor(tier, theme)})` }}>
-          {tier.icon}
-        </span>
-        <div>
-          <div className="flex items-baseline gap-3">
-            <span className="text-4xl font-black" style={{ color: getTierColor(tier, theme) }}>{profile.overallRating}</span>
-            <span className="text-sm font-bold text-gray-400">{tier.name}</span>
-            <button
-              onClick={() => setShowInfo(true)}
-              className="text-gray-500 hover:text-chess-accent transition-colors ml-1"
-              title="How is this calculated?"
-            >
-              <span className="text-[10px] border border-gray-500/40 rounded-full w-4 h-4 inline-flex items-center justify-center hover:border-chess-accent/40">i</span>
-            </button>
-          </div>
-          <p className="text-xs text-gray-500 mt-0.5">{tier.funTitle} {'\u00B7'} ELO {playerElo} {'\u00B7'} {totalAnalyzed} games</p>
-        </div>
-      </div>
-      {nextTier && (
-        <div className="flex items-center gap-3">
-          <div className="flex-1 bg-chess-muted/50 rounded-full h-1.5 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-700"
-              style={{ width: `${tierProgress}%`, backgroundColor: getTierColor(tier, theme), boxShadow: `0 0 8px ${getTierGlowColor(tier, theme)}` }}
-            />
-          </div>
-          <span className="text-[10px] text-gray-500 shrink-0">
-            {pointsToNextTier(profile.overallRating)} to {nextTier.icon} {nextTier.name}
+      {/* Neon Gradient Card wrapping the tier display */}
+      <div
+        className="neon-card px-5 py-4 mb-3"
+        style={{ '--neon-color-a': tierColor, '--neon-color-b': '#4ade80' } as React.CSSProperties}
+      >
+        <div className="flex items-center gap-4">
+          <span className="text-5xl" style={{ filter: `drop-shadow(0 0 16px ${tierGlow})` }}>
+            {tier.icon}
           </span>
+          <div>
+            <div className="flex items-baseline gap-3">
+              <NumberTicker value={profile.overallRating} className="text-4xl font-black" style={{ color: tierColor }} delay={200} />
+              <span className="text-sm font-bold text-gray-400" style={{ color: tierColor }}>{translateTierName(tier.id, t)}</span>
+              <button
+                onClick={() => setShowInfo(true)}
+                className="text-gray-500 hover:text-chess-accent transition-colors ml-1"
+                title="How is this calculated?"
+              >
+                <span className="text-xs border border-gray-500/40 rounded-full w-4 h-4 inline-flex items-center justify-center hover:border-chess-accent/40">i</span>
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">{translateTierTitle(tier.id, t)} {'\u00B7'} ELO {playerElo} {'\u00B7'} {totalAnalyzed} {t('common_games')}</p>
+          </div>
         </div>
-      )}
+        {nextTier && (
+          <div className="flex items-center gap-3 mt-3">
+            <div className="flex-1 bg-chess-muted/50 rounded-full h-1.5 overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-700"
+                style={{ width: `${tierProgress}%`, backgroundColor: tierColor, boxShadow: `0 0 8px ${tierGlow}` }}
+              />
+            </div>
+            <span className="text-xs text-gray-500 shrink-0">
+              {t('overview_points_to_next', { points: String(pointsToNextTier(profile.overallRating)), tier: `${nextTier.icon} ${translateTierName(nextTier.id, t)}` })}
+            </span>
+          </div>
+        )}
+      </div>
       {showInfo && <ScoringInfoPopup profile={profile} onClose={() => setShowInfo(false)} />}
     </div>
   );
@@ -1771,48 +1604,50 @@ function ScoreHero({
  *  Scoring Info Popup
  * ================================================================ */
 
-const CATEGORY_INFO: Record<string, { icon: string; what: string; how: string }> = {
-  openings: {
-    icon: '\uD83D\uDCD6',
-    what: 'How well you handle the opening phase \u2014 following principles and developing pieces.',
-    how: 'Blends opening mistake patterns with your opening phase accuracy. Fewer opening errors + higher accuracy = higher score.',
-  },
-  tactics: {
-    icon: '\u2694\uFE0F',
-    what: 'Your ability to spot forks, pins, skewers, and winning combinations.',
-    how: 'Blends missed tactical patterns with your middlegame accuracy. This is the strictest category \u2014 tactical mistakes are penalized most heavily.',
-  },
-  defense: {
-    icon: '\uD83D\uDEE1\uFE0F',
-    what: 'How well you protect pieces and your king \u2014 avoiding hanging pieces and back-rank threats.',
-    how: 'Blends defensive mistake patterns (hanging pieces, king safety) with your overall accuracy.',
-  },
-  positional: {
-    icon: '\u265F\uFE0F',
-    what: 'Your understanding of pawn structure, piece placement, and space control.',
-    how: 'Blends positional error patterns with your middlegame accuracy. More pawn structure and piece activity mistakes = lower score.',
-  },
-  endgame: {
-    icon: '\uD83C\uDFC1',
-    what: 'Your technique in endgames \u2014 king activity, pawn promotion, and converting advantages.',
-    how: 'Blends endgame mistake patterns with your endgame phase accuracy.',
-  },
-  calculation: {
-    icon: '\uD83E\uDDEE',
-    what: 'How precisely you calculate \u2014 finding the best move consistently.',
-    how: 'Based on your overall accuracy and best-move rate across all positions. Reflects raw calculation ability independent of specific pattern types.',
-  },
-  time_management: {
-    icon: '\u23F1\uFE0F',
-    what: 'How well you manage your clock \u2014 maintaining steady play and avoiding rushed decisions.',
-    how: 'Based on time-pressure blunders and consistency of accuracy across game phases. Steady accuracy = good timing.',
-  },
-  resilience: {
-    icon: '\uD83D\uDCAA',
-    what: 'How well you perform under pressure \u2014 avoiding blunders in critical moments.',
-    how: 'Based on your overall blunder rate. Fewer blunders = higher resilience.',
-  },
-};
+function getCategoryInfo(t: (key: any) => string): Record<string, { icon: string; what: string; how: string }> {
+  return {
+    openings: {
+      icon: '\uD83D\uDCD6',
+      what: t('skill_openings_what'),
+      how: t('skill_openings_how'),
+    },
+    tactics: {
+      icon: '\u2694\uFE0F',
+      what: t('skill_tactics_what'),
+      how: t('skill_tactics_how'),
+    },
+    defense: {
+      icon: '\uD83D\uDEE1\uFE0F',
+      what: t('skill_defense_what'),
+      how: t('skill_defense_how'),
+    },
+    positional: {
+      icon: '\u265F\uFE0F',
+      what: t('skill_positional_what'),
+      how: t('skill_positional_how'),
+    },
+    endgame: {
+      icon: '\uD83C\uDFC1',
+      what: t('skill_endgame_what'),
+      how: t('skill_endgame_how'),
+    },
+    calculation: {
+      icon: '\uD83E\uDDEE',
+      what: t('skill_calculation_what'),
+      how: t('skill_calculation_how'),
+    },
+    time_management: {
+      icon: '\u23F1\uFE0F',
+      what: t('skill_time_management_what'),
+      how: t('skill_time_management_how'),
+    },
+    resilience: {
+      icon: '\uD83D\uDCAA',
+      what: t('skill_resilience_what'),
+      how: t('skill_resilience_how'),
+    },
+  };
+}
 
 function ScoringInfoPopup({
   profile,
@@ -1822,6 +1657,8 @@ function ScoringInfoPopup({
   onClose: () => void;
 }) {
   const { theme } = useTheme();
+  const { t } = useT();
+  const categoryInfo = getCategoryInfo(t);
 
   return (
     <div
@@ -1829,34 +1666,49 @@ function ScoringInfoPopup({
       onClick={onClose}
     >
       <div
-        className="bg-chess-bg border border-chess-border/40 rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto p-5 shadow-2xl"
+        className="bg-chess-bg border border-chess-border/40 rounded-2xl max-w-md md:max-w-3xl w-full max-h-[80vh] overflow-y-auto p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-black text-chess-text">How Your Score Works</h3>
+          <h3 className="text-lg font-black text-chess-text">{t('overview_score_title')}</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-chess-text-secondary text-lg">{'\u2715'}</button>
         </div>
 
-        {/* Overall explanation */}
-        <div className="rounded-xl bg-chess-surface/30 border border-chess-border/30 p-3 mb-4">
-          <div className="text-xs text-gray-400 mb-1 uppercase tracking-widest">Overall Score</div>
-          <p className="text-sm text-chess-text-secondary leading-relaxed">
-            Your overall score is a weighted average of 8 skill dimensions. Each dimension is scored 0{'\u2013'}99 based on patterns detected in your games and your accuracy metrics.
-          </p>
+        {/* Top row: Overall + Opponent Adjustment side by side on desktop */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
+          <div className="rounded-xl bg-chess-surface/30 border border-chess-border/30 p-3">
+            <div className="text-xs text-gray-400 mb-1 uppercase tracking-widest">{t('overview_overall_score')}</div>
+            <p className="text-[11px] text-chess-text-secondary leading-relaxed">
+              {t('overview_overall_desc')}
+            </p>
+          </div>
+          <div className="rounded-xl bg-chess-surface/30 border border-chess-border/30 p-3">
+            <div className="text-xs text-gray-400 mb-1 uppercase tracking-widest">{t('overview_opponent_adjusted')}</div>
+            <p className="text-[11px] text-chess-text-secondary leading-relaxed">
+              {t('overview_opponent_desc')}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1 text-[10px]">
+              {ALL_TIERS.map(t => (
+                <span key={t.id} className="px-1.5 py-0.5 rounded bg-chess-surface/40 text-gray-500">
+                  {t.icon} {t.name} {t.minScore}{'\u2013'}{t.maxScore}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Per-category breakdown */}
-        <div className="space-y-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {profile.dimensions.map((dim) => {
-            const info = CATEGORY_INFO[dim.id];
+            const info = categoryInfo[dim.id];
             if (!info) return null;
             const dimTier = getTierForScore(dim.score);
             return (
               <div key={dim.id} className="rounded-xl bg-chess-surface/20 border border-chess-border/20 p-3">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-sm">{info.icon}</span>
-                  <span className="text-sm font-bold text-chess-text">{dim.label}</span>
+                  <span className="text-sm font-bold text-chess-text">{t(`skill_${dim.id}` as any)}</span>
                   <span className="ml-auto text-sm font-black" style={{ color: getTierColor(dimTier, theme) }}>{dim.score}</span>
                 </div>
                 <p className="text-[11px] text-gray-400 leading-relaxed mb-1">{info.what}</p>
@@ -1866,213 +1718,18 @@ function ScoringInfoPopup({
           })}
         </div>
 
-        {/* How scoring works */}
-        <div className="mt-4 rounded-xl bg-chess-surface/20 border border-chess-border/20 p-3">
-          <div className="text-xs text-gray-400 mb-1 uppercase tracking-widest">Opponent-Adjusted Scoring</div>
-          <p className="text-[11px] text-gray-500 leading-relaxed">
-            Your scores are adjusted based on opponent strength. The same accuracy against a 1800-rated
-            opponent counts more than against an 800-rated opponent. This means your scores reflect
-            not just how well you play, but who you play against.
-          </p>
-        </div>
-
-        {/* Tier reference strip */}
-        <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">
-          {ALL_TIERS.map(t => (
-            <span key={t.id} className="px-2 py-0.5 rounded bg-chess-surface/30 text-gray-400">
-              {t.icon} {t.name} {t.minScore}{'\u2013'}{t.maxScore}
-            </span>
-          ))}
-        </div>
-
         {/* Close button */}
         <button
           onClick={onClose}
           className="w-full mt-4 py-2 rounded-xl bg-chess-surface/40 text-sm text-gray-400 hover:text-chess-text transition-colors"
         >
-          Got it
+          {t('overview_got_it')}
         </button>
       </div>
     </div>
   );
 }
 
-/* ================================================================
- *  Summary Audio Section (compact inline)
- * ================================================================ */
-
-function SummaryAudioSection({
-  analyzedCount,
-  onGenerate,
-}: {
-  analyzedCount: number;
-  onGenerate: () => void;
-}) {
-  const { state: audio, controls } = useAudioPlayer();
-
-  // Audio is active (playing or paused) — show "Now Playing" indicator
-  if (audio.script) {
-    return (
-      <div className="flex items-center justify-between bg-chess-surface/50 rounded-lg px-3 py-2.5 border border-chess-accent/30">
-        <div className="flex items-center gap-2">
-          <span className="text-base">{'\uD83C\uDF99'}</span>
-          <span className="text-xs text-chess-accent font-semibold">
-            {audio.isPlaying ? 'Now playing' : 'Paused'}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => audio.isPlaying ? controls.pause() : controls.play()}
-            className="flex items-center gap-1.5 bg-chess-accent/15 text-chess-accent px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-chess-accent/25 transition-all"
-          >
-            {audio.isPlaying ? (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
-                Pause
-              </>
-            ) : (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg>
-                Resume
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // Default: generate CTA
-  return (
-    <div className="flex items-center justify-between bg-chess-surface/50 rounded-lg px-3 py-2.5 border border-chess-border/20">
-      <div className="flex items-center gap-2">
-        <span className="text-base">{'\uD83C\uDF99'}</span>
-        <span className="text-xs text-chess-text-secondary">
-          Your <span className="font-bold text-chess-text">{analyzedCount}</span> games review
-        </span>
-      </div>
-
-      <div className="flex items-center gap-2">
-        {audio.error && (
-          <span className="text-[10px] text-chess-blunder">{audio.error}</span>
-        )}
-        <button
-          onClick={onGenerate}
-          disabled={audio.isGenerating}
-          className="flex items-center gap-1.5 bg-chess-accent text-chess-bg px-3 py-1.5 rounded-lg text-xs font-bold hover:brightness-110 transition-all disabled:opacity-50"
-        >
-          {audio.isGenerating ? (
-            <span className="animate-pulse">Generating...</span>
-          ) : (
-            <>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg>
-              Listen now
-            </>
-          )}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ================================================================
- *  Training Plan Banner (compact inline on Overview)
- * ================================================================ */
-
-const defaultPlanState: TrainingPlanState & Record<string, unknown> = {
-  options: [],
-  activeIndex: 0,
-  generatedAt: 0,
-};
-
-function TrainingPlanBanner({
-  profile,
-  patterns,
-  onNavigateToExercises,
-}: {
-  profile: ReturnType<typeof calculateSkillProfile>;
-  patterns: CurrentPatterns;
-  onNavigateToExercises: () => void;
-}) {
-  const { authResolved } = useAuth();
-  // RLS handles user scoping server-side
-  const singletonUserId = authResolved ? undefined : null;
-  const [planState, setPlanState] = useSingletonEntity<TrainingPlanState & Record<string, unknown>>('TrainingPlan', defaultPlanState, deserializeTrainingPlan as (raw: Record<string, unknown>) => TrainingPlanState & Record<string, unknown>, serializeTrainingPlan, singletonUserId);
-  const [exercises] = useEntityList<Exercise>('Exercise', undefined, deserializeExercise as (raw: unknown) => Exercise, !authResolved);
-  const [lessons] = useEntityList<Lesson>('Lesson', undefined, deserializeLesson as (raw: unknown) => Lesson, !authResolved);
-  const [snapshots] = useEntityList<PatternSnapshot>('PatternSnapshot', undefined, deserializePatternSnapshot as (raw: unknown) => PatternSnapshot, !authResolved);
-
-  // Auto-generate plan options if none exist
-  useEffect(() => {
-    if ((!planState || planState.options.length === 0) && profile.gamesUsed >= 3 && patterns.patterns.length > 0) {
-      const newState = generateTrainingPlanOptions(profile, patterns);
-      if (newState) setPlanState(newState as Partial<TrainingPlanState & Record<string, unknown>>);
-    }
-  }, [planState, profile, patterns, setPlanState]);
-
-  // Update active plan with progress
-  const activePlan = useMemo(() => {
-    if (!planState || planState.options.length === 0) return null;
-    const plan = planState.options[planState.activeIndex];
-    if (!plan) return null;
-    return updatePlanProgress(plan, exercises, lessons);
-  }, [planState, exercises, lessons]);
-
-  // Compute accuracy
-  const accuracy = useMemo(() => {
-    if (!activePlan) return null;
-    return computeTrainingAccuracy(activePlan, exercises, snapshots);
-  }, [activePlan, exercises, snapshots]);
-
-  if (!activePlan || activePlan.isComplete) return null;
-
-  const completedStages = activePlan.stages.filter(s => s.completedCount >= s.targetCount).length;
-  const totalStages = activePlan.stages.length;
-  const progressPct = (completedStages / totalStages) * 100;
-  const currentStage = activePlan.stages[activePlan.currentStageIndex];
-
-  return (
-    <div
-      className="mb-3 rounded-xl bg-chess-accent/[0.04] border border-chess-accent/15 px-4 py-2.5 cursor-pointer hover:bg-chess-accent/[0.07] transition-all"
-      onClick={onNavigateToExercises}
-    >
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs font-bold text-chess-text truncate mr-2">
-          {activePlan.targetPatternLabel}
-        </span>
-        <span className="text-[10px] text-chess-text-secondary shrink-0">
-          {completedStages}/{totalStages}
-        </span>
-      </div>
-      {/* Progress bar */}
-      <div className="w-full bg-chess-muted/50 rounded-full h-1 overflow-hidden mb-1.5">
-        <div
-          className="h-full rounded-full bg-chess-accent transition-all duration-500"
-          style={{ width: `${progressPct}%` }}
-        />
-      </div>
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] text-chess-text-secondary">
-          {currentStage && `${currentStage.label} (${currentStage.completedCount}/${currentStage.targetCount})`}
-          {accuracy && accuracy.practiceTotal > 0 && (
-            <> {'\u00B7'} Practice {accuracy.practiceAccuracy}%</>
-          )}
-          {accuracy && accuracy.gameAccuracyTrend.length > 0 && (
-            <> {'\u00B7'} Games {accuracy.gameAccuracy}%
-              {accuracy.gameAccuracyTrend.length >= 3 && (
-                accuracy.gameAccuracyTrend[accuracy.gameAccuracyTrend.length - 1] >
-                accuracy.gameAccuracyTrend[0] ? ' \u2197' : ' \u2198'
-              )}
-            </>
-          )}
-        </span>
-        <span className="text-[10px] text-chess-accent font-bold shrink-0 ml-2">
-          Continue &rarr;
-        </span>
-      </div>
-    </div>
-  );
-}
 
 /* ────────────────────────────────────────────────────────────
  *  Admin Stage Navigator — floating overlay for testing onboarding
@@ -2190,14 +1847,14 @@ function AdminStageNav({
 
   return (
     <div className="fixed bottom-20 right-3 z-50 flex items-center gap-1 bg-black/80 backdrop-blur-sm rounded-full px-2 py-1.5 border border-chess-border/40 shadow-lg">
-      <span className="text-[9px] text-gray-500 font-mono mr-1">
+      <span className="text-[11px] text-gray-500 font-mono mr-1">
         {isOverridden ? '⚙' : '●'} {currentStage}
       </span>
       {ADMIN_STAGES.map(({ label, value }) => (
         <button
           key={label}
           onClick={() => handleStageOverride(value)}
-          className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full transition-all ${
+          className={`text-xs font-mono px-1.5 py-0.5 rounded-full transition-all ${
             currentStage === value
               ? 'bg-chess-accent text-chess-bg font-bold'
               : 'text-gray-400 hover:text-chess-text hover:bg-white/10'
@@ -2209,7 +1866,7 @@ function AdminStageNav({
       {isOverridden && (
         <button
           onClick={() => onSetStage(null)}
-          className="text-[10px] text-red-400 hover:text-red-300 font-mono px-1 ml-0.5"
+          className="text-xs text-red-400 hover:text-red-300 font-mono px-1 ml-0.5"
           title={`Reset to auto (S${autoStage})`}
         >
           ✕
@@ -2219,7 +1876,7 @@ function AdminStageNav({
       <button
         onClick={handleFullReset}
         disabled={resetting}
-        className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full transition-all ${
+        className={`text-xs font-mono px-1.5 py-0.5 rounded-full transition-all ${
           resetting
             ? 'text-orange-300 animate-pulse cursor-wait'
             : 'text-orange-400 hover:text-orange-300 hover:bg-orange-400/10'
@@ -2230,7 +1887,7 @@ function AdminStageNav({
       </button>
       <button
         onClick={handleSwitchUser}
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded-full text-yellow-400 hover:text-yellow-300 hover:bg-yellow-400/10 transition-all"
+        className="text-xs font-mono px-1.5 py-0.5 rounded-full text-yellow-400 hover:text-yellow-300 hover:bg-yellow-400/10 transition-all"
         title="Sign out and log in as a different user"
       >
         👤

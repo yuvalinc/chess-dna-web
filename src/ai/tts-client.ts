@@ -108,7 +108,10 @@ export async function generateTTSAudio(
     const voice = turn.speaker === 'A'
       ? (settings.ttsVoiceA || 'nova')
       : (settings.ttsVoiceB || 'alloy');
-    const instructions = getInstructions(turn.speaker, script.style, settings.ttsLanguage);
+    // Derive TTS language from unified language setting
+    const lang = (settings as unknown as Record<string, unknown>).language as string | undefined;
+    const ttsLang = lang === 'he' ? 'Hebrew' : lang === 'es' ? 'Spanish' : (settings.ttsLanguage || 'English');
+    const instructions = getInstructions(turn.speaker, script.style, ttsLang);
 
     const buffer = await synthesizeSpeech(apiKey, turn.text, voice, model, instructions, signal);
 

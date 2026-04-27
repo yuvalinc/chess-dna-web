@@ -3,11 +3,15 @@
   "configurations": [
     {
       "name": "dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--host"],
-      "cwd": "/Users/yuval.incze/chess-dna-web",
-      "port": 5173,
-      "autoPort": true
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "runtimeArgs": ["node_modules/.bin/vite", "--host"],
+      "port": 5173
+    },
+    {
+      "name": "preview",
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "runtimeArgs": ["node_modules/.bin/vite", "preview", "--host"],
+      "port": 4173
     }
   ]
 }

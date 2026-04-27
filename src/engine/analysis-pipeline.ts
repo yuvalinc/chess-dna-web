@@ -14,9 +14,22 @@ import type { GameRecord } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
 import type { PatternExample, PatternSnapshot } from '@shared/types/patterns';
 import type { Lesson, Exercise } from '@shared/types/ai';
+import {
+  getGuestEntities, createGuestEntity, updateGuestEntity, deleteGuestEntity,
+  setGuestSingleton,
+} from '@shared/utils/guest-storage';
 
 // Helper to access Base44 entities
 const entities = base44.entities as Record<string, any>;
+
+/** Check if running in guest mode (no Base44 token) */
+function isGuestMode(): boolean {
+  try {
+    return !localStorage.getItem('base44_access_token') && !localStorage.getItem('token');
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Deserialize a raw Analysis record from Base44.
@@ -131,24 +144,57 @@ export function deserializeExercise(raw: unknown): Exercise {
 export async function runAnalysisPipeline(
   gameId: string,
   depth: number = 18,
+  force: boolean = false,
 ): Promise<GameAnalysis | null> {
+  const guest = isGuestMode();
+
   // Load game
   let game: GameRecord;
   try {
-    game = await entities.Game.get(gameId);
+    if (guest) {
+      const guestGames = getGuestEntities<GameRecord>('Game');
+      const found = guestGames.find(g => (g as any).id === gameId);
+      if (!found) throw new Error('Not found');
+      game = found;
+    } else {
+      game = await entities.Game.get(gameId);
+    }
   } catch {
-    console.error('[Chess DNA] Game not found:', gameId);
+    // Game not in current 5000-record API window — skip silently
+    console.warn('[Chess DNA] Game not in current window, skipping:', gameId);
     return null;
   }
 
-  if (game.analysisStatus === 'complete') {
+  if (game.analysisStatus === 'complete' && !force) {
     console.log('[Chess DNA] Game already analyzed:', gameId);
     return null;
   }
 
+  // Force re-analysis: delete existing Analysis entity
+  if (force) {
+    try {
+      if (guest) {
+        const guestAnalyses = getGuestEntities<{ gameId: string }>('Analysis');
+        const existing = guestAnalyses.find(a => a.gameId === gameId);
+        if (existing) deleteGuestEntity('Analysis', (existing as any).id);
+      } else {
+        const existingList = await entities.Analysis.list();
+        const existing = existingList.find((a: any) => a.gameId === gameId);
+        if (existing) await entities.Analysis.delete((existing as any).id);
+      }
+      console.log('[Chess DNA] Deleted existing analysis for re-analysis:', gameId);
+    } catch (err) {
+      console.warn('[Chess DNA] Failed to delete existing analysis:', err);
+    }
+  }
+
   // Mark as analyzing
   try {
-    await entities.Game.update(gameId, { analysisStatus: 'analyzing' });
+    if (guest) {
+      updateGuestEntity('Game', gameId, { analysisStatus: 'analyzing' });
+    } else {
+      await entities.Game.update(gameId, { analysisStatus: 'analyzing' });
+    }
   } catch (err) {
     console.warn('[Chess DNA] Failed to update game status:', err);
   }
@@ -165,27 +211,34 @@ export async function runAnalysisPipeline(
     });
 
     // Save analysis results
-    // Base44 `moves` field expects string[], so serialize each move object as JSON
-    // `summary` is typed as object in the schema, so pass it as-is
     try {
-      await entities.Analysis.create({
+      const analysisData = {
         gameId: analysis.gameId,
+        // Store chess.com gameId for stable matching across re-imports
+        chessGameId: (game as unknown as Record<string, unknown>).gameId as string | undefined,
         moves: analysis.moves.map((m: unknown) => JSON.stringify(m)),
         summary: analysis.summary,
         analyzedAt: analysis.analyzedAt,
         engineDepth: analysis.engineDepth,
         engineVersion: analysis.engineVersion,
-      });
+      };
+      if (guest) {
+        createGuestEntity('Analysis', analysisData);
+      } else {
+        await entities.Analysis.create(analysisData);
+      }
     } catch (err) {
       console.warn('[Chess DNA] Failed to save analysis entity:', err);
     }
 
     // Update game record
     try {
-      await entities.Game.update(gameId, {
-        analysisStatus: 'complete',
-        analyzedAt: Date.now(),
-      });
+      const gameUpdate = { analysisStatus: 'complete', analyzedAt: Date.now() };
+      if (guest) {
+        updateGuestEntity('Game', gameId, gameUpdate);
+      } else {
+        await entities.Game.update(gameId, gameUpdate);
+      }
     } catch (err) {
       console.warn('[Chess DNA] Failed to update game:', err);
     }
@@ -195,7 +248,6 @@ export async function runAnalysisPipeline(
       await updatePatterns(analysis, game);
     } catch (patternErr) {
       console.warn('[Chess DNA] Pattern generation failed:', patternErr);
-      // Non-fatal — analysis is still saved
     }
 
     // Broadcast completion
@@ -206,9 +258,12 @@ export async function runAnalysisPipeline(
   } catch (err) {
     console.error('[Chess DNA] Analysis failed:', err);
 
-    // Mark as error
     try {
-      await entities.Game.update(gameId, { analysisStatus: 'error' });
+      if (guest) {
+        updateGuestEntity('Game', gameId, { analysisStatus: 'error' });
+      } else {
+        await entities.Game.update(gameId, { analysisStatus: 'error' });
+      }
     } catch {
       // Best effort
     }
@@ -259,8 +314,14 @@ export async function runBatchAnalysis(
     if (result === null) {
       // Check if it was an error (not just "already analyzed")
       try {
-        const game = await entities.Game.get(gameId);
-        if (game.analysisStatus === 'error') {
+        let game: GameRecord;
+        if (isGuestMode()) {
+          const guestGames = getGuestEntities<GameRecord>('Game');
+          game = guestGames.find(g => (g as any).id === gameId) as GameRecord;
+        } else {
+          game = await entities.Game.get(gameId);
+        }
+        if (game?.analysisStatus === 'error') {
           consecutiveFailures++;
           console.warn(`[Chess DNA] Game ${gameId} failed (consecutive failures: ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})`);
 
@@ -311,24 +372,29 @@ async function updatePatterns(
   // Save pattern snapshot
   // Base44 arrays expect strings, so serialize theme objects
   let allSnapshots: PatternSnapshot[];
-  try {
-    // RLS handles user scoping server-side
-    const existing = await entities.PatternSnapshot.list();
-    allSnapshots = Array.isArray(existing)
-      ? existing.map(deserializePatternSnapshot)
-      : [];
-
-    await entities.PatternSnapshot.create({
-      ...snapshot,
-      themes: snapshot.themes.map((t: unknown) => JSON.stringify(t)),
-    });
-    allSnapshots.push(snapshot);
-  } catch {
-    // If PatternSnapshot entity doesn't exist, store in localStorage
+  if (isGuestMode()) {
+    // Guest: always use localStorage
     const stored = localStorage.getItem('chess-dna:pattern-snapshots');
     allSnapshots = stored ? JSON.parse(stored) : [];
     allSnapshots.push(snapshot);
     localStorage.setItem('chess-dna:pattern-snapshots', JSON.stringify(allSnapshots));
+  } else {
+    try {
+      const existing = await entities.PatternSnapshot.list();
+      allSnapshots = Array.isArray(existing)
+        ? existing.map(deserializePatternSnapshot)
+        : [];
+      await entities.PatternSnapshot.create({
+        ...snapshot,
+        themes: snapshot.themes.map((t: unknown) => JSON.stringify(t)),
+      });
+      allSnapshots.push(snapshot);
+    } catch {
+      const stored = localStorage.getItem('chess-dna:pattern-snapshots');
+      allSnapshots = stored ? JSON.parse(stored) : [];
+      allSnapshots.push(snapshot);
+      localStorage.setItem('chess-dna:pattern-snapshots', JSON.stringify(allSnapshots));
+    }
   }
 
   // Build pattern examples
@@ -362,22 +428,25 @@ async function updatePatterns(
   const patterns = computePatterns(allSnapshots, DEFAULT_WINDOW_SIZE, examplesByTheme);
 
   // Save current patterns
-  // Base44 arrays expect strings, so serialize pattern objects
-  const serializedPatterns = {
-    ...patterns,
-    patterns: patterns.patterns.map((p: unknown) => JSON.stringify(p)),
-  };
-  try {
-    // RLS handles user scoping server-side
-    const existingPatterns = await entities.Pattern.list();
-    if (Array.isArray(existingPatterns) && existingPatterns.length > 0) {
-      await entities.Pattern.update(existingPatterns[0].id, serializedPatterns);
-    } else {
-      await entities.Pattern.create(serializedPatterns);
+  if (isGuestMode()) {
+    // Guest: save to guest storage
+    setGuestSingleton('Pattern', patterns);
+  } else {
+    // Authenticated: save to Base44
+    const serializedPatterns = {
+      ...patterns,
+      patterns: patterns.patterns.map((p: unknown) => JSON.stringify(p)),
+    };
+    try {
+      const existingPatterns = await entities.Pattern.list();
+      if (Array.isArray(existingPatterns) && existingPatterns.length > 0) {
+        await entities.Pattern.update(existingPatterns[0].id, serializedPatterns);
+      } else {
+        await entities.Pattern.create(serializedPatterns);
+      }
+    } catch {
+      localStorage.setItem('chess-dna:current-patterns', JSON.stringify(patterns));
     }
-  } catch {
-    // Fallback to localStorage
-    localStorage.setItem('chess-dna:current-patterns', JSON.stringify(patterns));
   }
 
   console.log(

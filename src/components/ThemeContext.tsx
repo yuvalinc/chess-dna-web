@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useCallback } from 'react';
-import { useSingletonEntity } from '../hooks/useEntity';
+import { useSmartSingletonEntity } from '../hooks/useEntity';
 import type { UserSettings } from '@shared/types/storage';
 import { DEFAULT_SETTINGS } from '@shared/types/storage';
 import { useAuth } from '../contexts/AuthContext';
@@ -27,17 +27,14 @@ const ThemeContext = createContext<ThemeContextValue>({
 });
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const { isAdmin, authResolved } = useAuth();
+  const { isAdmin, userId } = useAuth();
 
-  // RLS handles user scoping server-side. null = still loading (skip), undefined = fetch without filter.
-  const singletonUserId = authResolved ? undefined : null;
-
-  const [rawSettings, updateSettings, loading] = useSingletonEntity<UserSettings & Record<string, unknown>>(
+  const [rawSettings, updateSettings, loading] = useSmartSingletonEntity<UserSettings & Record<string, unknown>>(
     'UserPreferences',
     DEFAULT_SETTINGS as UserSettings & Record<string, unknown>,
     undefined,
     undefined,
-    singletonUserId,
+    userId,
   );
 
   // Inject fallback API keys from env vars when user has no personal key set

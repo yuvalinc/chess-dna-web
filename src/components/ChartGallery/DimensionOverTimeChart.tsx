@@ -11,6 +11,7 @@ import type { GameRecord } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
 import type { SkillProfile } from '@shared/types/patterns';
 import { getWeakestDimensions, getStrongestDimensions } from '@/patterns/skill-calculator';
+import { useT } from '@/i18n/index';
 import {
   CHART_COLORS,
   AXIS_TICK,
@@ -42,6 +43,7 @@ export default function DimensionOverTimeChart({
   analyses,
   profile,
 }: DimensionOverTimeChartProps) {
+  const { t } = useT();
   // Pick 2 strongest + 2 weakest for the chart
   const selectedDims = useMemo(() => {
     const strong = getStrongestDimensions(profile, 2);
@@ -101,7 +103,7 @@ export default function DimensionOverTimeChart({
               className="w-2 h-[3px] rounded-sm"
               style={{ background: DIM_COLORS[dim.id] ?? '#94a3b8' }}
             />
-            <span className="text-[10px] text-gray-400">{dim.label}</span>
+            <span className="text-[10px] text-gray-400">{t(`skill_${dim.id}` as Parameters<typeof t>[0])}</span>
           </div>
         ))}
       </div>
@@ -139,7 +141,7 @@ export default function DimensionOverTimeChart({
                 key={dim.id}
                 type="monotone"
                 dataKey={dim.id}
-                name={dim.label}
+                name={t(`skill_${dim.id}` as Parameters<typeof t>[0])}
                 stroke={DIM_COLORS[dim.id] ?? '#94a3b8'}
                 strokeWidth={2}
                 dot={{ r: 2, fill: DIM_COLORS[dim.id] ?? '#94a3b8' }}

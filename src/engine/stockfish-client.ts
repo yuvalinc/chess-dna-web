@@ -1,6 +1,15 @@
 import type { PositionEval } from '@shared/types/engine';
 import { parseInfoLine, parseBestMove } from './uci-parser';
 
+export interface MultiPVLine {
+  rank: number;        // 1-based (1 = best)
+  moveUci: string;     // root move in UCI
+  score: number;       // centipawns from the MOVER's perspective
+  scoreType: 'cp' | 'mate';
+  pv: string[];        // full principal variation in UCI
+  depth: number;       // search depth reached
+}
+
 type OutputCallback = (line: string) => void;
 
 const CDN_BASE = 'https://unpkg.com/stockfish@17.1.0/src';
@@ -232,6 +241,58 @@ class StockfishClient {
     );
 
     return this.parsePositionEval(analysisLines);
+  }
+
+  /**
+   * Analyze a position with MultiPV — returns the top N lines.
+   * Each line has the root move, eval from the mover's perspective, and full PV.
+   * Automatically resets MultiPV to 1 after analysis.
+   */
+  async analyzePositionMultiPV(
+    fen: string,
+    depth: number = 14,
+    numLines: number = 5,
+  ): Promise<MultiPVLine[]> {
+    await this.collectOutput(['isready'], ['readyok'], COMMAND_TIMEOUT_MS);
+    this.sendCommand(`setoption name MultiPV value ${numLines}`);
+
+    const analysisLines = await this.collectOutput(
+      [`position fen ${fen}`, `go depth ${depth}`],
+      ['bestmove'],
+      POSITION_TIMEOUT_MS,
+    );
+
+    // Reset MultiPV back to 1 so subsequent analyzePosition calls work normally
+    this.sendCommand('setoption name MultiPV value 1');
+
+    // Collect deepest info line per multipv rank
+    const rankMap = new Map<number, { depth: number; moveUci: string; score: number; scoreType: 'cp' | 'mate'; pv: string[] }>();
+    for (const line of analysisLines) {
+      const info = parseInfoLine(line);
+      if (!info || !info.pv || info.pv.length === 0) continue;
+      const rank = info.multipv ?? 1;
+      const existing = rankMap.get(rank);
+      if (!existing || info.depth >= existing.depth) {
+        rankMap.set(rank, {
+          depth: info.depth,
+          moveUci: info.pv[0],
+          score: info.score.value,
+          scoreType: info.score.type,
+          pv: info.pv,
+        });
+      }
+    }
+
+    return Array.from(rankMap.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([rank, data]) => ({
+        rank,
+        moveUci: data.moveUci,
+        score: data.score,
+        scoreType: data.scoreType,
+        pv: data.pv,
+        depth: data.depth,
+      }));
   }
 
   /**

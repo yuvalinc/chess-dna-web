@@ -12,6 +12,12 @@ You focus on actionable advice, not generic platitudes.
 Reference specific positions and patterns when possible.
 Always respond in the requested JSON format.`;
 
+/** Append language instruction to a prompt when language is not English */
+function withLanguage(prompt: string, language?: string): string {
+  if (!language || language === 'English') return prompt;
+  return prompt + `\n\nIMPORTANT: Generate ALL text in ${language}. Chess move notation (like Nf3, e4) should stay in standard algebraic notation, but everything else must be in ${language}.`;
+}
+
 /**
  * Build prompt for generating personalized insights from recent games.
  */
@@ -19,6 +25,7 @@ export function buildInsightPrompt(
   playerRating: number,
   recentGames: GameSummary[],
   patterns: WeaknessPattern[],
+  language?: string,
 ): string {
   const context = {
     playerRating,
@@ -41,7 +48,7 @@ export function buildInsightPrompt(
     },
   };
 
-  return `Analyze this chess player's recent performance and generate personalized insights.
+  const prompt = `Analyze this chess player's recent performance and generate personalized insights.
 
 Player data:
 ${JSON.stringify(context, null, 2)}
@@ -59,6 +66,7 @@ Respond with JSON in this exact format:
 
 Generate 2-3 insights. Focus on the most impactful, actionable observations.
 Prioritize patterns that are worsening. Reference specific phases or openings when relevant.`;
+  return withLanguage(prompt, language);
 }
 
 /**
@@ -315,11 +323,19 @@ Respond with JSON:
 
 // ── Audio Script Prompt Builders ──
 
-export const AUDIO_SYSTEM_PROMPT = `You are an expert chess commentator and analyst. You create engaging, insightful audio scripts that break down chess games and performance patterns.
+export const AUDIO_SYSTEM_PROMPT_DEFAULT = `You are an expert chess commentator and analyst. You create engaging, insightful audio scripts that break down chess games and performance patterns.
 Your commentary is entertaining yet educational — like the best chess podcasts and streams.
 You reference specific move numbers, positions, and patterns.
 You give actionable takeaways the player can apply immediately.
 Always respond in the requested JSON format.`;
+
+/** Use custom prompt if set, otherwise default */
+export function getAudioSystemPrompt(customPrompt?: string | null): string {
+  return customPrompt?.trim() || AUDIO_SYSTEM_PROMPT_DEFAULT;
+}
+
+// Keep backward compat
+export const AUDIO_SYSTEM_PROMPT = AUDIO_SYSTEM_PROMPT_DEFAULT;
 
 /**
  * Build a prompt for generating a single-game audio analysis script.
@@ -532,6 +548,89 @@ Respond with JSON:
 Be specific — reference exact win rates, accuracy numbers, and pattern names.
 Compare phases (opening vs middlegame vs endgame) to highlight where the player is strong/weak.
 Make actionable recommendations at the end.${language && language !== 'English' ? `\n\nIMPORTANT: Generate ALL dialogue text in ${language}. Chess terminology and notation should stay in standard form, but everything else must be in ${language}.` : ''}`;
+}
+
+/**
+ * Build prompt for explaining a chess move in TimeMachine.
+ * Returns system + user prompts for AI to generate a 2-3 sentence explanation.
+ *
+ * @param positionFacts - Pre-computed chess facts (captures, piece defense) verified by chess.js.
+ *                        When provided, the AI is instructed NOT to contradict these facts.
+ */
+export function buildMoveExplanationPrompt(
+  fen: string,
+  playerMoveSan: string,
+  bestMoveSan: string,
+  cpDiff: number,
+  playerRating: number,
+  bestMovePv?: string[],
+  tacticalMotifs?: string[],
+  positionFacts?: string,
+  language?: string,
+): { system: string; user: string } {
+  const level = playerRating < 800 ? 'beginner' : playerRating < 1200 ? 'intermediate' : playerRating < 1800 ? 'advanced' : 'expert';
+
+  // Language-specific GM style instructions
+  const langStyle = !language || language === 'English'
+    ? 'Speak like a friendly English-speaking GM commentator — clear, direct, and insightful.'
+    : language === 'Hebrew'
+      ? 'דבר כמו גרוסמייסטר ישראלי — ישיר, תכליתי, בשפה טבעית של שחמטאי מקומי. שמות כלים: מלך, מלכה, צריח, רץ, פרש, חייל (לא "רגלי"). מונחים: כלי תלוי, מזלג, סיכה, שפוד, קידום, הפעלה, רוכדה. אל תתרגם מאנגלית — כתוב כאילו שחמט הוא שפת האם שלך.'
+      : language === 'Spanish'
+        ? 'Habla como un GM hispanohablante — directo, preciso, usando terminología ajedrecística natural en español (ejemplo: pieza colgada, clavada, horquilla, enfilada, enroque). No traduzcas del inglés — escribe como si el ajedrez fuera tu lengua materna.'
+        : `Speak like a local chess GM commentator fluent in ${language}. Use natural chess terminology in ${language}.`;
+
+  // Label format per language
+  const labelInstruction = !language || language === 'English'
+    ? 'Your move: [1 sentence]\nBest move: [1 sentence]'
+    : language === 'Hebrew'
+      ? 'המהלך שלך: [1 sentence]\nהמהלך הטוב: [1 sentence]'
+      : language === 'Spanish'
+        ? 'Tu jugada: [1 sentence]\nLa mejor jugada: [1 sentence]'
+        : 'Your move: [1 sentence]\nBest move: [1 sentence]';
+
+  const system = `You are a chess coach explaining a move to a ${level} player (Elo ${playerRating}).
+${langStyle}
+
+Format your response as exactly two labeled lines:
+${labelInstruction}
+
+Rules:
+- 1 sentence per section. Be direct.
+- Wrap square references in brackets: [e5], [d4]. Use piece names, not algebraic notation.
+- Only describe what you can verify from the VERIFIED FACTS. Do not invent tactics or piece positions.
+- Copy piece names from VERIFIED FACTS exactly — do not translate or substitute them.
+- No markdown. No fabricated chess terms.`;
+
+  // Determine side to move from FEN
+  const sideToMove = fen.split(' ')[1] === 'w' ? 'White' : 'Black';
+
+  const movesDiffer = playerMoveSan !== bestMoveSan;
+
+  let user = `Position (FEN): ${fen}
+Side to move: ${sideToMove}
+Player played: ${playerMoveSan}
+Best move for ${sideToMove}: ${bestMoveSan}
+Eval difference: ${(cpDiff / 100).toFixed(1)} pawns`;
+
+  if (movesDiffer) {
+    user += `\n\nCRITICAL: The player's move (${playerMoveSan}) is DIFFERENT from the best move (${bestMoveSan}). You MUST describe two different moves. Do NOT describe the same move for both sections.`;
+  }
+
+  if (bestMovePv && bestMovePv.length > 0) {
+    user += `\nEngine best line: ${bestMovePv.slice(0, 5).join(' ')}`;
+  }
+  if (tacticalMotifs && tacticalMotifs.length > 0) {
+    user += `\nTactical theme: ${tacticalMotifs.join(', ')}`;
+  }
+  if (positionFacts) {
+    user += `\n\nVERIFIED FACTS (do NOT contradict):\n${positionFacts}`;
+  }
+
+  if (language && language !== 'English') {
+    user += `\n\nIMPORTANT: Respond entirely in ${language}. Chess notation stays standard.`;
+  }
+
+  return { system, user };
 }
 
 function avg(nums: number[]): number {

@@ -59,7 +59,7 @@ export function Welcome({ onDismiss, onGoToSettings }: WelcomeProps) {
   const steps = [
     // Step 0: What is this
     {
-      icon: '🧬',
+      icon: '<img src="/favicon.png" alt="Chess DNA" width="72" height="72" style="border-radius:16px;display:inline-block" />',
       title: 'Welcome to Chess DNA',
       subtitle: 'Your AI-powered chess coach that actually knows you.',
       content: (
@@ -216,7 +216,7 @@ export function JourneyProgress({
 
   const milestones = [
     { label: 'Import games', done: stage >= 1, icon: '&#9812;' },
-    { label: 'Chess DNA', done: stage >= 2, icon: '&#129516;' },
+    { label: 'Chess DNA', done: stage >= 2, icon: '<svg class="text-chess-accent inline-block" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><g transform="rotate(45 12 12)"><path d="M8 2c0 6.5 8 12.5 8 19"/><path d="M16 2c0 6.5-8 12.5-8 19"/></g></svg>' },
     { label: 'Patterns', done: stage >= 3, icon: '&#128269;' },
     { label: 'Get started', done: stage >= 4, icon: '&#128640;' },
     { label: 'Training', done: stage >= 5, icon: '&#129302;' },

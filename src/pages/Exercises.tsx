@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ThemedChessboard from '@/components/ThemedChessboard';
 import { useTheme } from '@/components/ThemeContext';
+import { useT } from '@/i18n/index';
 import { useChessData } from '@/contexts/ChessDataContext';
 import { useEntityList } from '@/hooks/useEntity';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,6 +19,7 @@ interface ExercisesProps {
 
 export default function Exercises({ themeFilter: _themeFilter, onClearFilter: _onClearFilter }: ExercisesProps = {}) {
   const { settings } = useTheme();
+  const { t } = useT();
   const { patterns } = useChessData();
   const { authResolved } = useAuth();
   // RLS handles user scoping server-side
@@ -58,7 +60,7 @@ export default function Exercises({ themeFilter: _themeFilter, onClearFilter: _o
     return (
       <div className="text-center py-16">
         <div className="text-4xl mb-4">&#9823;</div>
-        <h2 className="text-xl mb-2">AI Exercises</h2>
+        <h2 className="text-xl mb-2">{t('exercises_title')}</h2>
         <p className="text-chess-muted text-sm">
           Configure an AI provider API key (Claude, OpenAI, or Gemini) in Settings to generate targeted exercises.
         </p>
@@ -78,13 +80,13 @@ export default function Exercises({ themeFilter: _themeFilter, onClearFilter: _o
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold">Exercises</h2>
+        <h2 className="text-xl font-bold">{t('exercises_title')}</h2>
         <button
           onClick={handleGenerate}
           disabled={generating || !patterns?.patterns.length}
           className="bg-chess-accent text-white px-4 py-2 rounded-lg text-sm hover:brightness-110 transition-all disabled:opacity-50"
         >
-          {generating ? 'Generating...' : 'Generate Exercises'}
+          {generating ? t('exercises_generating') : t('exercises_generate')}
         </button>
       </div>
 
@@ -92,7 +94,7 @@ export default function Exercises({ themeFilter: _themeFilter, onClearFilter: _o
         <div className="text-gray-400">Loading exercises...</div>
       ) : exercises.length === 0 ? (
         <div className="text-center py-12 text-chess-muted">
-          <p>No exercises yet. Generate some based on your weakness patterns!</p>
+          <p>{t('exercises_empty')}</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">
@@ -151,6 +153,7 @@ function ExerciseView({
   exercise: Exercise;
   onBack: () => void;
 }) {
+  const { t } = useT();
   const [showSolution, setShowSolution] = useState(false);
   const [showHint, setShowHint] = useState(false);
 
@@ -160,7 +163,7 @@ function ExerciseView({
         onClick={onBack}
         className="text-chess-muted hover:text-chess-text transition-colors mb-4"
       >
-        &larr; Back to Exercises
+        {t('exercises_back')}
       </button>
 
       <div className="flex items-center gap-2 mb-4">

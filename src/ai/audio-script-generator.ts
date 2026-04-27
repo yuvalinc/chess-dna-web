@@ -1,10 +1,21 @@
 import { sendWithFallback } from './ai-router';
-import { AUDIO_SYSTEM_PROMPT, buildGameAudioScript, buildSummaryAudioScript } from './prompt-builder';
+import { getAudioSystemPrompt, buildGameAudioScript, buildSummaryAudioScript } from './prompt-builder';
 import type { AudioScript, AudioStyle, SpeakerTurn } from '@shared/types/audio';
 import type { GameRecord } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
 import type { CurrentPatterns } from '@shared/types/patterns';
 import type { UserSettings } from '@shared/types/storage';
+import { SUPPORTED_LANGUAGES } from '@/i18n/index';
+
+/** Get TTS language name from settings — prefers the unified language field */
+function getTtsLanguage(settings: UserSettings): string {
+  const lang = (settings as unknown as Record<string, unknown>).language as string | undefined;
+  if (lang) {
+    const found = SUPPORTED_LANGUAGES.find(l => l.code === lang);
+    if (found) return found.ttsName;
+  }
+  return settings.ttsLanguage || 'English';
+}
 
 /**
  * Generate an audio script for a single game analysis.
@@ -15,12 +26,17 @@ export async function generateGameAudioScript(
   analysis: GameAnalysis,
   style: AudioStyle,
 ): Promise<AudioScript | null> {
-  const prompt = buildGameAudioScript(game, analysis, style, settings.ttsLanguage);
+  const prompt = buildGameAudioScript(game, analysis, style, getTtsLanguage(settings));
+  const systemPrompt = getAudioSystemPrompt(settings.audioSystemPrompt);
+  // Append custom suffix if set
+  const fullPrompt = settings.audioGamePromptSuffix?.trim()
+    ? `${prompt}\n\n${settings.audioGamePromptSuffix}`
+    : prompt;
 
   const response = await sendWithFallback(
     settings,
-    AUDIO_SYSTEM_PROMPT,
-    [{ role: 'user', content: prompt }],
+    systemPrompt,
+    [{ role: 'user', content: fullPrompt }],
     4096,
   );
 
@@ -53,11 +69,12 @@ export async function generateSummaryAudioScript(
   profileScores: { dimension: string; score: number }[],
   style: AudioStyle,
 ): Promise<AudioScript | null> {
-  const prompt = buildSummaryAudioScript(games, analyses, patterns, profileScores, style, settings.ttsLanguage);
+  const prompt = buildSummaryAudioScript(games, analyses, patterns, profileScores, style, getTtsLanguage(settings));
+  const systemPrompt = getAudioSystemPrompt(settings.audioSystemPrompt);
 
   const response = await sendWithFallback(
     settings,
-    AUDIO_SYSTEM_PROMPT,
+    systemPrompt,
     [{ role: 'user', content: prompt }],
     4096,
   );

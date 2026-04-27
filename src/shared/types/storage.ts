@@ -19,6 +19,7 @@ export interface UserSettings {
   autoAnalyze: boolean;
   notificationsEnabled: boolean;
   chesscomUsername: string | null;
+  lichessUsername: string | null;
   windowSize: number;
   schemaVersion: number;
   // Game type filter -- null means "all"
@@ -32,6 +33,10 @@ export interface UserSettings {
   onboardingGameIds: string[];
   onboardingTimeClass: string | null;
   friendUsernames: string[];
+  // Sync
+  lastSyncAt: number | null;
+  // Language (controls UI + AI + TTS)
+  language: 'en' | 'he' | 'es';
   // Appearance
   theme: 'dark' | 'light';
   boardTheme: string;
@@ -40,6 +45,9 @@ export interface UserSettings {
   ttsVoiceB: string;
   ttsModel: string;
   ttsLanguage: string;
+  // Custom audio prompts (admin editable — applied globally)
+  audioSystemPrompt: string | null;
+  audioGamePromptSuffix: string | null;
   // Google Cloud Podcast API
   gcpProjectId: string | null;
   gcpOAuthClientId: string | null;
@@ -60,6 +68,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   autoAnalyze: true,
   notificationsEnabled: true,
   chesscomUsername: null,
+  lichessUsername: null,
   windowSize: 50,
   schemaVersion: 1,
   selectedTimeClass: null,
@@ -71,12 +80,16 @@ export const DEFAULT_SETTINGS: UserSettings = {
   onboardingGameIds: [],
   onboardingTimeClass: null,
   friendUsernames: [],
+  lastSyncAt: null,
+  language: 'en',
   theme: 'dark',
   boardTheme: 'classic',
   ttsVoiceA: 'nova',
   ttsVoiceB: 'alloy',
   ttsModel: 'gpt-4o-mini-tts',
   ttsLanguage: 'English',
+  audioSystemPrompt: null,
+  audioGamePromptSuffix: null,
   gcpProjectId: null,
   gcpOAuthClientId: null,
   gcpConnected: false,

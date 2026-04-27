@@ -55,14 +55,15 @@ export function computeCorrelation(xs: number[], ys: number[]): number {
 export interface CorrelationInfo {
   r: number;
   label: string;
+  labelKey: string;
   color: string;
 }
 
 export function getCorrelationInfo(r: number): CorrelationInfo {
-  if (r > 0.5) return { r, label: 'Strong ↑', color: '#4ade80' };
-  if (r > 0.2) return { r, label: 'Moderate ↗', color: '#f59e0b' };
-  if (r > -0.2) return { r, label: 'Weak →', color: '#94a3b8' };
-  return { r, label: 'Inverse ↘', color: '#e74c3c' };
+  if (r > 0.5) return { r, label: 'Strong ↑', labelKey: 'correlation_strong', color: '#4ade80' };
+  if (r > 0.2) return { r, label: 'Moderate ↗', labelKey: 'correlation_moderate', color: '#f59e0b' };
+  if (r > -0.2) return { r, label: 'Weak →', labelKey: 'correlation_weak', color: '#94a3b8' };
+  return { r, label: 'Inverse ↘', labelKey: 'correlation_inverse', color: '#e74c3c' };
 }
 
 /* ── Shared data builders ── */

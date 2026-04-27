@@ -7,10 +7,14 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useAudioPlayer } from '@/contexts/AudioPlayerContext';
+import { useT } from '@/i18n/index';
 
 const SPEEDS = [0.75, 1, 1.25, 1.5];
 
-const SITE_URL = 'https://chess-dna-fdd5fbde.base44.app';
+// Use the runtime origin so shares from a custom domain (e.g. chessdna.app)
+// don't leak the base44 subdomain into outgoing share links.
+const getSiteUrl = () =>
+  typeof window !== 'undefined' ? window.location.origin : 'https://chessdna.app';
 
 const formatTime = (sec: number) => {
   const m = Math.floor(sec / 60);
@@ -20,6 +24,7 @@ const formatTime = (sec: number) => {
 
 export default function MiniAudioPlayer() {
   const { state, controls } = useAudioPlayer();
+  const { t } = useT();
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const shareRef = useRef<HTMLDivElement>(null);
@@ -56,12 +61,12 @@ export default function MiniAudioPlayer() {
   const shareText = 'Check out my Chess DNA analysis!';
 
   const handleShareWhatsApp = () => {
-    window.open(`https://wa.me/?text=${encodeURIComponent(shareText + ' ' + SITE_URL)}`, '_blank');
+    window.open(`https://wa.me/?text=${encodeURIComponent(shareText + ' ' + getSiteUrl())}`, '_blank');
     setShowShareMenu(false);
   };
 
   const handleShareTelegram = () => {
-    window.open(`https://t.me/share/url?url=${encodeURIComponent(SITE_URL)}&text=${encodeURIComponent(shareText)}`, '_blank');
+    window.open(`https://t.me/share/url?url=${encodeURIComponent(getSiteUrl())}&text=${encodeURIComponent(shareText)}`, '_blank');
     setShowShareMenu(false);
   };
 
@@ -81,7 +86,7 @@ export default function MiniAudioPlayer() {
         <div className="max-w-6xl mx-auto flex items-center justify-between px-4 py-2">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" />
-            <span className="text-xs text-chess-text-secondary">Generating audio script...</span>
+            <span className="text-xs text-chess-text-secondary">{t('audio_generating')}</span>
           </div>
           <button
             onClick={controls.close}
@@ -108,7 +113,7 @@ export default function MiniAudioPlayer() {
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" />
             <span className="text-xs text-chess-text-secondary">
-              Review will start in a moment...
+              {t('audio_review_soon')}
             </span>
           </div>
           <button

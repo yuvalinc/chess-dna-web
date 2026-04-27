@@ -1,7 +1,11 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import SkillRadar from './SkillRadar';
 import { useChessData } from '@/contexts/ChessDataContext';
 import { useTheme } from './ThemeContext';
+import { DataAttribution } from '@/components/PlatformBadge';
+import { useT, translateTierName } from '@/i18n/index';
+import type { TranslationKey } from '@/i18n/locales/en';
 import {
   fetchFriendProfile,
   getCachedFriendProfile,
@@ -13,22 +17,52 @@ import {
 } from '@/api/friend-profile';
 import { trackEvent, Events } from '@/hooks/useAnalytics';
 import { getTierForScore, getTierColor } from '@/patterns/rank-tiers';
+import { calculateSkillProfile } from '@/patterns/skill-calculator';
+import { fetchProfile, getCachedCountry } from '@/api/chess-com-avatar';
+import { countryToFlag } from '@/api/chess-com-leaderboard';
 
-export default function FriendCompare() {
-  const { profile, playerElo } = useChessData();
+/** Tiny hook — fetches the chess.com country flag for a username (cached). */
+function useFlag(username: string | null | undefined): string {
+  const [, forceUpdate] = useState(0);
+  const code = username ? getCachedCountry(username) : null;
+  useEffect(() => {
+    if (!username) return;
+    if (code !== undefined) return; // already resolved (null or string)
+    let cancelled = false;
+    fetchProfile(username).then(() => {
+      if (!cancelled) forceUpdate((n) => n + 1);
+    });
+    return () => { cancelled = true; };
+  }, [username, code]);
+  return code ? countryToFlag(code) : '';
+}
+
+const COMPARE_GAME_COUNT = 10;
+
+export default function FriendCompare({ initialCompareUsername, timeClass = 'all' }: { initialCompareUsername?: string | null; timeClass?: string } = {}) {
+  const { t } = useT();
+  const { allGames, allAnalyses, playerElo } = useChessData();
+  // Compute profile from last 10 analyzed games, filtered by time class
+  const profile = useMemo(() => {
+    const analyzedGames = allGames
+      .filter(g => g.analysisStatus === 'complete')
+      .filter(g => timeClass === 'all' || g.timeClass === timeClass)
+      .sort((a, b) => b.playedAt - a.playedAt)
+      .slice(0, COMPARE_GAME_COUNT);
+    const gameIds = new Set(analyzedGames.map(g => g.id));
+    const matchingAnalyses = allAnalyses.filter(a => gameIds.has(a.gameId));
+    return calculateSkillProfile(null, analyzedGames, matchingAnalyses);
+  }, [allGames, allAnalyses, timeClass]);
+
   const { theme, settings } = useTheme();
   const [username, setUsername] = useState('');
   const [friend, setFriend] = useState<FriendProfile | null>(null);
   const [progress, setProgress] = useState<FriendAnalysisProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [savedFriends, setSavedFriends] = useState<string[]>(() => {
-    try {
-      const stored = localStorage.getItem('chess-dna-friends');
-      return stored ? JSON.parse(stored) : [];
-    } catch { return []; }
-  });
+  const [, setSavedFriends] = useState<string[]>([]);
 
   const isLoading = progress !== null && progress.phase !== 'done' && progress.phase !== 'error';
+  const loadingRef = useRef(false);
 
   const saveFriend = useCallback((target: string) => {
     setSavedFriends(prev => {
@@ -40,7 +74,7 @@ export default function FriendCompare() {
 
   const handleCompare = useCallback(async (name?: string, forceRefresh = false) => {
     const target = (name ?? username).trim();
-    if (!target) return;
+    if (!target || loadingRef.current) return;
     setError(null);
     setFriend(null);
 
@@ -56,13 +90,14 @@ export default function FriendCompare() {
       }
     }
 
+    loadingRef.current = true;
     setProgress({ phase: 'fetching', current: 0, total: 0, message: `Fetching ${target}'s games...` });
 
     try {
       const result = await fetchFriendProfile(
         target,
-        'all',
-        15,
+        timeClass as import('@shared/types/game').TimeClass | 'all',
+        COMPARE_GAME_COUNT,
         settings.analysisDepth ? Math.min(settings.analysisDepth, 14) : 14,
         setProgress,
       );
@@ -73,8 +108,22 @@ export default function FriendCompare() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to analyze friend');
       setProgress(null);
+    } finally {
+      loadingRef.current = false;
     }
   }, [username, settings.analysisDepth, saveFriend]);
+
+  // Auto-trigger comparison from external source (e.g. opponent chip click)
+  const prevInitialRef = useRef<string | null>(null);
+  const handleCompareRef = useRef(handleCompare);
+  handleCompareRef.current = handleCompare;
+  useEffect(() => {
+    if (!initialCompareUsername) return;
+    if (initialCompareUsername === prevInitialRef.current) return;
+    prevInitialRef.current = initialCompareUsername;
+    setUsername(initialCompareUsername);
+    handleCompareRef.current(initialCompareUsername);
+  }, [initialCompareUsername]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleCompare();
@@ -98,32 +147,20 @@ export default function FriendCompare() {
           disabled={isLoading || !username.trim()}
           className="bg-chess-accent text-white px-4 py-2 rounded-lg text-sm font-medium hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          Compare
+          {t('compare_button')}
         </button>
       </div>
 
-      {/* Saved friends chips */}
-      {savedFriends.length > 0 && !friend && (
-        <div className="flex flex-wrap gap-1.5">
-          {savedFriends.map(name => (
-            <button
-              key={name}
-              onClick={() => { setUsername(name); handleCompare(name); }}
-              disabled={isLoading}
-              className="px-2.5 py-1 rounded-full bg-chess-surface border border-chess-border/20 text-xs text-chess-text-secondary hover:border-chess-accent/40 transition-all disabled:opacity-40"
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Saved friends chips — hidden when used inside Compare page (discover section handles this) */}
 
       {/* Progress indicator */}
       {isLoading && progress && (
         <div className="bg-chess-surface rounded-lg p-4 text-center">
           <div className="flex items-center justify-center gap-2 mb-2">
             <div className="w-4 h-4 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-chess-text">{progress.message}</span>
+            <span className="text-sm text-chess-text">
+              {progress.phase === 'analyzing' ? t('compare_analyzing_game', { current: String(progress.current), total: String(progress.total) }) : progress.message}
+            </span>
           </div>
           {progress.phase === 'analyzing' && progress.total > 0 && (
             <div className="w-full bg-chess-border/20 rounded-full h-1.5 mt-2">
@@ -133,8 +170,8 @@ export default function FriendCompare() {
               />
             </div>
           )}
-          <p className="text-[10px] text-gray-500 mt-2">
-            This may take a few minutes — Stockfish is analyzing each game
+          <p className="text-xs text-gray-500 mt-2">
+            {t('compare_analyzing_wait')}
           </p>
         </div>
       )}
@@ -152,7 +189,10 @@ export default function FriendCompare() {
           profile={profile}
           friend={friend}
           playerElo={playerElo}
+          myGameCount={COMPARE_GAME_COUNT}
           theme={theme}
+          allGames={allGames}
+          timeClass={timeClass}
           onRefresh={() => {
             clearFriendCache(friend.username);
             setFriend(null);
@@ -169,17 +209,26 @@ function ComparisonResults({
   profile,
   friend,
   playerElo,
+  myGameCount,
   theme,
+  allGames,
+  timeClass,
   onRefresh,
   onReset,
 }: {
   profile: import('@shared/types/patterns').SkillProfile;
   friend: FriendProfile | CachedFriendProfile;
   playerElo: number;
+  myGameCount?: number;
   theme: 'dark' | 'light';
+  allGames: import('@shared/types/game').GameRecord[];
+  timeClass: string;
   onRefresh: () => void;
   onReset: () => void;
 }) {
+  const { t, language } = useT();
+  const navigate = useNavigate();
+  const [gamesExpanded, setGamesExpanded] = useState(false);
   // Build benchmarks from friend's dimensions for overlay radar
   const friendBenchmarks = useMemo(() => {
     const map: Record<string, number> = {};
@@ -193,21 +242,36 @@ function ComparisonResults({
   const tier = getTierForScore(profile.overallRating);
   const tierColor = getTierColor(tier, theme);
 
+  const { settings } = useTheme();
+  const myUsername = settings.chesscomUsername ?? allGames[0]?.player?.username ?? null;
+  const myFlag = useFlag(myUsername);
+  const friendFlag = useFlag(friend.username);
+
+  // Auto-scroll past the filters once the comparison is ready, so the
+  // results are the first thing visible.
+  const resultsRootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      resultsRootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [friend.username]);
+
   return (
-    <div className="space-y-4">
+    <div ref={resultsRootRef} className="space-y-4 scroll-mt-4">
       {/* Score comparison header */}
       <div className="flex items-center justify-between bg-chess-surface rounded-lg p-3">
-        <PlayerBadge label="You" score={profile.overallRating} elo={playerElo} theme={theme} />
+        <PlayerBadge label={t('compare_you')} score={profile.overallRating} elo={playerElo} gameCount={myGameCount} flag={myFlag} theme={theme} />
         <span className="text-xs font-bold text-gray-500 uppercase tracking-widest">vs</span>
-        <PlayerBadge label={friend.username} score={friend.skillProfile.overallRating} elo={friend.elo} theme={theme} />
+        <PlayerBadge label={friend.username} score={friend.skillProfile.overallRating} elo={friend.elo} gameCount={friend.gamesAnalyzed} flag={friendFlag} theme={theme} />
       </div>
 
       {/* Cache indicator */}
       {isCached && (
-        <div className="flex items-center justify-between text-[10px] text-gray-500 px-1">
-          <span>Last compared {formatTimeAgo((friend as CachedFriendProfile).cachedAt)}</span>
+        <div className="flex items-center justify-between text-xs text-gray-500 px-1">
+          <span>{t('compare_last_compared', { time: formatTimeAgo((friend as CachedFriendProfile).cachedAt, t) })}</span>
           <button onClick={onRefresh} className="text-chess-accent hover:underline font-medium">
-            Refresh analysis
+            {t('compare_refresh')}
           </button>
         </div>
       )}
@@ -218,11 +282,11 @@ function ComparisonResults({
         <div className="flex items-center gap-5 mb-1">
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-full" style={{ backgroundColor: tierColor, opacity: 0.7 }} />
-            <span className="text-[10px] text-chess-text-secondary font-medium">You</span>
+            <span className="text-xs text-chess-text-secondary font-medium">{t('compare_you')}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-4 h-0 border-t-2 border-dashed border-white/60 inline-block" />
-            <span className="text-[10px] text-chess-text-secondary font-medium">{friend.username}</span>
+            <span className="text-xs text-chess-text-secondary font-medium">{friend.username}</span>
           </div>
         </div>
 
@@ -237,7 +301,7 @@ function ComparisonResults({
 
       {/* Dimension-by-dimension comparison */}
       <div className="space-y-1.5">
-        <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Dimension Breakdown</h4>
+        <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest">{t('compare_dimension_breakdown')}</h4>
         {profile.dimensions.map((dim, i) => {
           const friendDim = friend.skillProfile.dimensions[i];
           if (!friendDim) return null;
@@ -245,7 +309,7 @@ function ComparisonResults({
           return (
             <DimensionRow
               key={dim.id}
-              label={dim.label}
+              label={t((`skill_${dim.id}`) as TranslationKey)}
               myScore={dim.score}
               friendScore={friendDim.score}
               delta={delta}
@@ -255,10 +319,91 @@ function ComparisonResults({
         })}
       </div>
 
+      {/* Head to Head */}
+      {(() => {
+        const friendLower = friend.username.toLowerCase();
+        const vsGames = allGames
+          .filter(g => g.opponent.username.toLowerCase() === friendLower)
+          .filter(g => timeClass === 'all' || g.timeClass === timeClass)
+          .sort((a, b) => b.playedAt - a.playedAt);
+        const wins = vsGames.filter(g => g.player.result === 'win').length;
+        const losses = vsGames.filter(g => g.player.result === 'loss').length;
+        const draws = vsGames.filter(g => g.player.result === 'draw').length;
+        const locale = language === 'he' ? 'he-IL' : language === 'es' ? 'es-ES' : 'en-US';
+
+        return (
+          <div className="border border-chess-border/20 rounded-lg overflow-hidden">
+            <div className="px-3 py-2.5 bg-chess-surface/30">
+              <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest">{t('compare_head_to_head')}</h4>
+            </div>
+            {vsGames.length === 0 ? (
+              <div className="px-3 py-4 text-center text-xs text-gray-500">{t('compare_no_games_vs')}</div>
+            ) : (
+              <>
+                {/* W/L/D summary */}
+                <div className="px-3 py-3 flex items-center justify-center gap-4">
+                  <div className="text-center">
+                    <div className="text-lg font-black text-chess-accent">{wins}</div>
+                    <div className="text-[10px] text-gray-500 uppercase">W</div>
+                  </div>
+                  <div className="text-gray-600">{'\u2014'}</div>
+                  <div className="text-center">
+                    <div className="text-lg font-black text-chess-blunder">{losses}</div>
+                    <div className="text-[10px] text-gray-500 uppercase">L</div>
+                  </div>
+                  <div className="text-gray-600">{'\u2014'}</div>
+                  <div className="text-center">
+                    <div className="text-lg font-black text-gray-400">{draws}</div>
+                    <div className="text-[10px] text-gray-500 uppercase">D</div>
+                  </div>
+                </div>
+
+                {/* Toggle game list */}
+                <button
+                  onClick={() => setGamesExpanded(prev => !prev)}
+                  className="w-full px-3 py-2 text-[11px] text-gray-400 hover:text-chess-text-secondary transition-colors flex items-center justify-center gap-1 border-t border-chess-border/10"
+                >
+                  <span>{gamesExpanded ? t('compare_hide_games') : t('compare_show_games')}</span>
+                  <svg className={`w-3 h-3 transition-transform ${gamesExpanded ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+
+                {/* Collapsible game list */}
+                {gamesExpanded && (
+                  <div className="border-t border-chess-border/10 divide-y divide-chess-border/10">
+                    {vsGames.map(g => {
+                      const date = new Date(g.playedAt);
+                      const resultColor = g.player.result === 'win' ? 'bg-chess-accent/20 text-chess-accent' : g.player.result === 'loss' ? 'bg-chess-blunder/20 text-chess-blunder' : 'bg-gray-500/20 text-gray-400';
+                      const resultLabel = g.player.result === 'win' ? 'W' : g.player.result === 'loss' ? 'L' : 'D';
+                      return (
+                        <div
+                          key={g.id}
+                          onClick={() => navigate(`/games/${g.id}`)}
+                          className="px-3 py-2 flex items-center gap-2 cursor-pointer hover:bg-white/[0.03] transition-colors"
+                        >
+                          <span className={`text-[10px] font-black px-1.5 py-0.5 rounded ${resultColor}`}>{resultLabel}</span>
+                          <div className="flex-1 min-w-0 text-[11px] text-gray-400">
+                            <span>{date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })}</span>
+                            <span className="mx-1">{'\u00B7'}</span>
+                            <span>{g.totalMoves} {t('common_moves')}</span>
+                            <span className="mx-1">{'\u00B7'}</span>
+                            <span className="text-gray-500">({g.opponent.rating})</span>
+                          </div>
+                          <svg className="w-3 h-3 text-gray-600 shrink-0 rtl:rotate-180" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Invite CTA */}
       <div className="bg-chess-surface/50 rounded-lg p-3 text-center border border-chess-border/20">
         <p className="text-xs text-gray-400 mb-2">
-          Think {friend.username} would enjoy analyzing their chess DNA?
+          {t('compare_think_enjoy', { name: friend.username })}
         </p>
         <InviteShareButtons friendName={friend.username} myScore={profile.overallRating} />
       </div>
@@ -268,33 +413,48 @@ function ComparisonResults({
         onClick={onReset}
         className="text-xs text-gray-500 hover:text-chess-text transition-colors"
       >
-        &larr; Compare another friend
+        {t('compare_another')}
       </button>
+      <DataAttribution />
     </div>
   );
 }
 
-function formatTimeAgo(timestamp: number): string {
+function formatTimeAgo(timestamp: number, t?: (key: any, params?: any) => string): string {
   const minutes = Math.floor((Date.now() - timestamp) / 60000);
+  if (t) {
+    if (minutes < 60) return t('compare_min_ago', { n: minutes });
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return t('compare_hours_ago', { n: hours });
+    return t('compare_days_ago', { n: Math.floor(hours / 24) });
+  }
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function PlayerBadge({ label, score, elo, theme }: { label: string; score: number; elo: number; theme: 'dark' | 'light' }) {
+function PlayerBadge({ label, score, elo, gameCount, flag, theme }: { label: string; score: number; elo: number; gameCount?: number; flag?: string; theme: 'dark' | 'light' }) {
+  const { t } = useT();
   const tier = getTierForScore(score);
   const color = getTierColor(tier, theme);
   return (
     <div className="text-center">
-      <div className="text-xs text-gray-500 mb-0.5">{label}</div>
+      <div className="text-base font-bold text-chess-text mb-0.5 flex items-center justify-center gap-1">
+        {flag && <span className="text-lg leading-none">{flag}</span>}
+        <span className="truncate max-w-[140px]">{label}</span>
+      </div>
       <div className="text-2xl font-black" style={{ color }}>{score}</div>
-      <div className="text-[10px] text-gray-500">{tier.icon} {tier.name} · {elo}</div>
+      <div className="text-xs text-gray-500">{tier.icon} {translateTierName(tier.id, t)} {'\u00B7'} {elo}</div>
+      {gameCount != null && (
+        <div className="text-[11px] text-gray-600">{gameCount}g {t('compare_analyzed')}</div>
+      )}
     </div>
   );
 }
 
 function InviteShareButtons({ friendName, myScore }: { friendName: string; myScore: number }) {
+  const { t } = useT();
   const shareText = `Hey ${friendName}! I just analyzed my chess DNA — my score is ${myScore}. Want to compare? Check it out: https://chessdna.com`;
 
   const links = [
@@ -329,7 +489,7 @@ function InviteShareButtons({ friendName, myScore }: { friendName: string; mySco
       url: `https://www.facebook.com/sharer/sharer.php?quote=${encodeURIComponent(shareText)}`,
     },
     {
-      name: 'Copy Link',
+      name: t('compare_copy_link'),
       icon: (
         <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
@@ -359,7 +519,7 @@ function InviteShareButtons({ friendName, myScore }: { friendName: string; mySco
           title={link.name}
         >
           {link.icon}
-          <span className="text-[9px]">{link.name}</span>
+          <span className="text-[11px]">{link.name}</span>
         </button>
       ))}
     </div>
@@ -379,21 +539,23 @@ function DimensionRow({ label, myScore, friendScore, delta, theme }: {
   const friendColor = getTierColor(friendTier, theme);
 
   return (
-    <div className="flex items-center gap-2 bg-chess-surface/50 rounded px-2.5 py-1.5">
+    <div className="flex items-center gap-3 bg-chess-surface/50 rounded px-2.5 py-1.5">
       <span className="text-xs text-chess-text-secondary w-28 shrink-0 truncate">{label}</span>
-      <span className="text-xs font-bold w-8 text-right" style={{ color: myColor }}>{myScore}</span>
-      <div className="flex-1 relative h-1.5 bg-chess-border/20 rounded-full mx-1">
+      <div className="flex-1 relative h-2 bg-chess-border/20 rounded-full">
         <div
-          className="absolute h-1.5 rounded-full"
-          style={{ width: `${(myScore / 99) * 100}%`, backgroundColor: myColor, opacity: 0.6 }}
+          className="absolute h-2 rounded-full"
+          style={{ width: `${(myScore / 99) * 100}%`, backgroundColor: myColor, opacity: 0.7 }}
         />
         <div
-          className="absolute h-1.5 rounded-full"
-          style={{ width: `${(friendScore / 99) * 100}%`, backgroundColor: friendColor, opacity: 0.3 }}
+          className="absolute h-2 rounded-full"
+          style={{ width: `${(friendScore / 99) * 100}%`, backgroundColor: friendColor, opacity: 0.35 }}
         />
       </div>
-      <span className="text-xs font-bold w-8 text-left" style={{ color: friendColor }}>{friendScore}</span>
-      <span className={`text-[10px] font-bold w-8 text-right ${delta > 0 ? 'text-chess-accent' : delta < 0 ? 'text-chess-blunder' : 'text-gray-500'}`}>
+      <span
+        className={`text-xs font-bold w-10 text-right tabular-nums ${
+          delta > 0 ? 'text-chess-accent' : delta < 0 ? 'text-chess-blunder' : 'text-gray-500'
+        }`}
+      >
         {delta > 0 ? '+' : ''}{delta}
       </span>
     </div>

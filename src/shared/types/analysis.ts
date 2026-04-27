@@ -41,6 +41,10 @@ export interface MoveAnalysis {
   isSacrifice: boolean;
   /** Number of legal moves in the position (1 = forced) */
   legalMoveCount: number;
+  /** Seconds spent on this move (parsed from PGN clock comments) */
+  timeSpent: number | null;
+  /** Seconds remaining on clock after this move */
+  clockRemaining: number | null;
 }
 
 export interface GameAnalysis {

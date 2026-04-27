@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js';
 import type { GameRecord, TimeClass, PlayerInfo } from '@shared/types/game';
-import { CHESS_COM_GAME_URL_REGEX } from '@shared/constants';
+import { CHESS_COM_GAME_URL_REGEX, LICHESS_GAME_URL_REGEX } from '@shared/constants';
 
 /**
  * Parse a PGN string into a GameRecord (without analysis).
@@ -15,8 +15,9 @@ export function parsePgnToGameRecord(
     chess.loadPgn(pgn);
 
     const headers = chess.header();
-    const gameIdMatch = url.match(CHESS_COM_GAME_URL_REGEX);
-    const gameId = gameIdMatch?.[2] ?? `${Date.now()}`;
+    const chessComMatch = url.match(CHESS_COM_GAME_URL_REGEX);
+    const lichessMatch = url.match(LICHESS_GAME_URL_REGEX);
+    const gameId = chessComMatch?.[1] ?? lichessMatch?.[1] ?? `manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
     const whiteUsername = headers.White ?? 'Unknown';
     const blackUsername = headers.Black ?? 'Unknown';
@@ -56,7 +57,7 @@ export function parsePgnToGameRecord(
         name: headers.Opening ?? '',
       },
       totalMoves: chess.history().length,
-      playedAt: parseDate(headers.Date ?? undefined, headers.UTCDate ?? undefined, headers.UTCTime ?? undefined),
+      playedAt: parseDate(headers.Date ?? undefined, headers.UTCDate ?? undefined, headers.UTCTime ?? headers.EndTime ?? undefined),
       analyzedAt: null,
       analysisStatus: 'pending',
     };
@@ -116,6 +117,17 @@ function parseDate(
     if (!isNaN(d.getTime())) return d.getTime();
   }
 
+  // Try Date + EndTime/UTCTime combo (chess.com PGN download format: "7:10:35 GMT+0000")
+  if (date && utcTime) {
+    const dateStr = date.replace(/\./g, '-');
+    // Strip "GMT+0000" suffix, keep just the time
+    const timePart = utcTime.replace(/\s*GMT[+-]\d+/, '').trim();
+    // Pad hour if needed (7:10:35 → 07:10:35)
+    const paddedTime = timePart.replace(/^(\d):/, '0$1:');
+    const d = new Date(`${dateStr}T${paddedTime}Z`);
+    if (!isNaN(d.getTime())) return d.getTime();
+  }
+
   if (utcDate) {
     const d = new Date(utcDate.replace(/\./g, '-'));
     if (!isNaN(d.getTime())) return d.getTime();
@@ -127,6 +139,26 @@ function parseDate(
   }
 
   return Date.now();
+}
+
+/**
+ * Split a multi-game PGN string into individual PGN strings.
+ * Multi-game PGN files separate games with blank lines before the next [Event header.
+ */
+export function splitMultiGamePgn(pgnText: string): string[] {
+  const trimmed = pgnText.trim();
+  if (!trimmed) return [];
+  // If the PGN contains [Event headers, split on them
+  if (trimmed.includes('[Event ')) {
+    const games = trimmed.split(/\n\n(?=\[Event )/);
+    return games.map(g => g.trim()).filter(g => g.length > 0);
+  }
+  // Single game without [Event header — treat the whole text as one game
+  // as long as it has some PGN-like content (move numbers or headers)
+  if (/\[\w+\s+"/.test(trimmed) || /1\.\s*\w/.test(trimmed)) {
+    return [trimmed];
+  }
+  return [];
 }
 
 /**

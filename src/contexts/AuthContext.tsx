@@ -1,7 +1,9 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { base44 } from '../api/base44Client';
+import { hasGuestData, migrateGuestToBase44 } from '@shared/utils/guest-storage';
 
-const ADMIN_EMAIL = 'yuval.inc@gmail.com';
+import { ADMIN_EMAILS } from '@shared/constants';
+const ADMIN_EMAIL = 'yuval.inc@gmail.com'; // legacy single check
 
 /**
  * Check for Base44 access token in localStorage.
@@ -20,6 +22,8 @@ function getBase44Token(): string | null {
 interface AuthContextValue {
   /** True when a valid Base44 session token exists */
   isAuthenticated: boolean;
+  /** True when no Base44 token — user is browsing as guest */
+  isGuest: boolean;
   userId: string | null;
   userEmail: string | null;
   isAdmin: boolean | null; // null = still loading
@@ -37,6 +41,7 @@ export function getCurrentUserId(): string | null {
 
 const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
+  isGuest: true,
   userId: null,
   userEmail: null,
   isAdmin: null,
@@ -85,7 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         _cachedUserId = id;
         setUserId(id);
         setUserEmail(email);
-        setIsAdmin(email === ADMIN_EMAIL);
+        setIsAdmin(email === ADMIN_EMAIL || ADMIN_EMAILS.includes(email ?? ''));
         console.log('[Chess DNA Auth] auth.me() succeeded — userId:', id, 'email:', email);
       })
       .catch((err: unknown) => {
@@ -95,13 +100,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsAdmin(false);
       })
       .finally(() => {
-        setAuthResolved(true);
+        // Migrate guest data to Base44 if user just logged in after guest session
+        if (hasGuestData()) {
+          console.log('[Chess DNA Auth] Guest data detected — migrating to Base44...');
+          const b44entities = base44.entities as Record<string, any>;
+          migrateGuestToBase44(b44entities)
+            .then((stats) => {
+              console.log('[Chess DNA Auth] Guest data migrated:', stats);
+              // Force reload to refresh all entity hooks with Base44 data
+              window.location.reload();
+            })
+            .catch((err) => {
+              console.error('[Chess DNA Auth] Guest migration failed:', err);
+            })
+            .finally(() => {
+              setAuthResolved(true);
+            });
+        } else {
+          setAuthResolved(true);
+        }
         console.log('[Chess DNA Auth] authResolved=true, isAuthenticated=true');
       });
   }, [isDev, token]);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, userId, userEmail, isAdmin, authResolved }}>
+    <AuthContext.Provider value={{ isAuthenticated, isGuest: !isAuthenticated, userId, userEmail, isAdmin, authResolved }}>
       {children}
     </AuthContext.Provider>
   );

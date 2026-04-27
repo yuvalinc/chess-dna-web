@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chess DNA — UI Component Preview</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #0a0f1a;
+    color: #e8edf5;
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  h1 { font-size: 28px; font-weight: 900; margin-bottom: 8px; color: #4ade80; }
+  .subtitle { color: #64748b; font-size: 14px; margin-bottom: 40px; }
+
+  .section {
+    margin-bottom: 48px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding-bottom: 40px;
+  }
+  .section-title {
+    font-size: 12px; font-weight: 700; letter-spacing: 3px;
+    text-transform: uppercase; color: #64748b;
+    margin-bottom: 6px;
+  }
+  .section-name {
+    font-size: 22px; font-weight: 800; margin-bottom: 4px;
+  }
+  .section-desc {
+    font-size: 13px; color: #94a3b8; margin-bottom: 20px; max-width: 600px; line-height: 1.6;
+  }
+  .demo-row {
+    display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start;
+  }
+  .demo-box {
+    background: #111827;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 16px;
+    padding: 32px;
+    min-width: 280px;
+    max-width: 400px;
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  .demo-label {
+    position: absolute; top: 10px; right: 12px;
+    font-size: 9px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: #4ade80;
+    background: rgba(74,222,128,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .vs-tag {
+    display: inline-block;
+    font-size: 9px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 2px 8px; border-radius: 4px;
+    margin-left: 8px;
+  }
+  .vs-current { background: rgba(255,255,255,0.06); color: #64748b; }
+  .vs-new { background: rgba(74,222,128,0.1); color: #4ade80; }
+
+  /* ═══ Number Ticker ═══ */
+  .ticker-value {
+    font-size: 72px; font-weight: 900; line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .ticker-label { font-size: 14px; color: #64748b; margin-top: 4px; }
+
+  @keyframes tickUp {
+    0% { transform: translateY(100%); opacity: 0; }
+    100% { transform: translateY(0); opacity: 1; }
+  }
+  .ticker-animated .digit {
+    display: inline-block;
+    animation: tickUp 0.6s ease-out both;
+  }
+  .ticker-animated .digit:nth-child(1) { animation-delay: 0.1s; }
+  .ticker-animated .digit:nth-child(2) { animation-delay: 0.25s; }
+  .ticker-animated .digit:nth-child(3) { animation-delay: 0.4s; }
+
+  /* ═══ Neon Gradient Card ═══ */
+  @keyframes neonRotate {
+    0% { --angle: 0deg; }
+    100% { --angle: 360deg; }
+  }
+  @property --angle {
+    syntax: '<angle>';
+    initial-value: 0deg;
+    inherits: false;
+  }
+  .neon-card {
+    position: relative;
+    background: #111827;
+    border-radius: 20px;
+    padding: 36px 32px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .neon-card::before {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 22px;
+    background: conic-gradient(from var(--angle), #22d3ee, #4ade80, #22d3ee);
+    animation: neonRotate 3s linear infinite;
+    z-index: -1;
+  }
+  .neon-card::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 18px;
+    background: #111827;
+    z-index: -1;
+  }
+  .neon-tier-icon { font-size: 56px; filter: drop-shadow(0 0 20px rgba(34,211,238,0.4)); }
+  .neon-score { font-size: 64px; font-weight: 900; color: #22d3ee; }
+  .neon-tier-name { font-size: 20px; font-weight: 700; color: #94a3b8; margin-top: -4px; }
+  .neon-progress {
+    margin-top: 16px; height: 4px; background: rgba(255,255,255,0.06);
+    border-radius: 2px; overflow: hidden;
+  }
+  .neon-progress-fill {
+    height: 100%; width: 60%; border-radius: 2px;
+    background: linear-gradient(90deg, #22d3ee, #4ade80);
+    box-shadow: 0 0 12px rgba(34,211,238,0.4);
+  }
+
+  /* ═══ 3D Card ═══ */
+  .card-3d-wrapper {
+    perspective: 800px;
+  }
+  .card-3d {
+    background: #111827;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 16px;
+    padding: 20px;
+    transition: transform 0.3s ease;
+    transform-style: preserve-3d;
+    cursor: pointer;
+  }
+  .card-3d:hover {
+    transform: rotateY(-8deg) rotateX(4deg) scale(1.02);
+    border-color: rgba(74,222,128,0.15);
+    box-shadow: 8px 8px 32px rgba(0,0,0,0.4), -2px -2px 12px rgba(74,222,128,0.05);
+  }
+  .card-3d .game-result { font-size: 13px; font-weight: 700; }
+  .card-3d .game-result.win { color: #4ade80; }
+  .card-3d .game-result.loss { color: #ef4444; }
+  .card-3d .game-opponent { font-size: 18px; font-weight: 700; margin: 4px 0; }
+  .card-3d .game-meta { font-size: 12px; color: #64748b; }
+  .card-3d .game-acc { font-size: 24px; font-weight: 900; color: #4ade80; text-align: right; }
+
+  /* ═══ Border Beam ═══ */
+  @keyframes beamTravel {
+    0% { left: -20%; }
+    100% { left: 120%; }
+  }
+  .border-beam-card {
+    position: relative;
+    background: #111827;
+    border: 1px solid rgba(74,222,128,0.15);
+    border-radius: 16px;
+    padding: 20px;
+    overflow: hidden;
+  }
+  .border-beam-card::after {
+    content: '';
+    position: absolute;
+    top: -1px; width: 60px; height: 2px;
+    background: linear-gradient(90deg, transparent, #4ade80, transparent);
+    animation: beamTravel 2.5s linear infinite;
+    border-radius: 1px;
+  }
+
+  /* ═══ Lamp Effect ═══ */
+  .lamp-container {
+    position: relative;
+    text-align: center;
+    padding: 60px 20px 40px;
+    overflow: hidden;
+  }
+  .lamp-cone {
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 300px; height: 200px;
+    background: conic-gradient(from 270deg at 50% 0%, rgba(34,211,238,0.15) 0deg, transparent 60deg, transparent 300deg, rgba(34,211,238,0.15) 360deg);
+    filter: blur(20px);
+  }
+  .lamp-bar {
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 200px; height: 3px;
+    background: linear-gradient(90deg, transparent, #22d3ee, transparent);
+    border-radius: 2px;
+    box-shadow: 0 0 20px rgba(34,211,238,0.5);
+  }
+  .lamp-text {
+    position: relative; z-index: 1;
+    font-size: 48px; font-weight: 900;
+    background: linear-gradient(to bottom, #fff 30%, #22d3ee 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .lamp-sub {
+    position: relative; z-index: 1;
+    font-size: 16px; color: #64748b; margin-top: 8px;
+  }
+
+  /* ═══ Text Generate ═══ */
+  @keyframes wordFade {
+    0% { opacity: 0; filter: blur(8px); transform: translateY(4px); }
+    100% { opacity: 1; filter: blur(0); transform: translateY(0); }
+  }
+  .text-generate span {
+    display: inline-block;
+    animation: wordFade 0.5s ease-out both;
+    margin-right: 5px;
+  }
+  .text-generate span:nth-child(1) { animation-delay: 0.1s; }
+  .text-generate span:nth-child(2) { animation-delay: 0.2s; }
+  .text-generate span:nth-child(3) { animation-delay: 0.3s; }
+  .text-generate span:nth-child(4) { animation-delay: 0.4s; }
+  .text-generate span:nth-child(5) { animation-delay: 0.5s; }
+  .text-generate span:nth-child(6) { animation-delay: 0.6s; }
+  .text-generate span:nth-child(7) { animation-delay: 0.7s; }
+  .text-generate span:nth-child(8) { animation-delay: 0.8s; }
+  .text-generate span:nth-child(9) { animation-delay: 0.9s; }
+  .text-generate span:nth-child(10) { animation-delay: 1.0s; }
+  .text-generate span:nth-child(11) { animation-delay: 1.1s; }
+  .text-generate span:nth-child(12) { animation-delay: 1.2s; }
+
+  /* ═══ Aurora Background ═══ */
+  @keyframes aurora {
+    0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+    25% { transform: translate(30px, -20px) rotate(3deg) scale(1.05); }
+    50% { transform: translate(-20px, 20px) rotate(-2deg) scale(0.95); }
+    75% { transform: translate(10px, 10px) rotate(1deg) scale(1.02); }
+  }
+  .aurora-box {
+    position: relative; overflow: hidden;
+    border-radius: 16px; padding: 48px 32px;
+    background: #0a0f1a;
+  }
+  .aurora-blob {
+    position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.3;
+    animation: aurora 8s ease-in-out infinite;
+  }
+  .aurora-blob-1 { width: 300px; height: 300px; background: #22d3ee; top: -100px; left: -50px; animation-delay: 0s; }
+  .aurora-blob-2 { width: 250px; height: 250px; background: #4ade80; bottom: -80px; right: -30px; animation-delay: 2s; }
+  .aurora-blob-3 { width: 200px; height: 200px; background: #8b5cf6; top: 50%; left: 50%; transform: translate(-50%, -50%); animation-delay: 4s; }
+  .aurora-content { position: relative; z-index: 1; text-align: center; }
+  .aurora-content h2 { font-size: 36px; font-weight: 900; margin-bottom: 8px; }
+  .aurora-content p { font-size: 14px; color: #94a3b8; }
+
+  /* ═══ Shimmer Button ═══ */
+  @keyframes shimmer {
+    0% { left: -100%; }
+    100% { left: 200%; }
+  }
+  .shimmer-btn {
+    position: relative; overflow: hidden;
+    background: linear-gradient(135deg, #166534, #15803d);
+    color: #fff; border: none; border-radius: 12px;
+    padding: 14px 32px; font-size: 15px; font-weight: 700;
+    cursor: pointer; font-family: inherit;
+  }
+  .shimmer-btn::after {
+    content: '';
+    position: absolute;
+    top: 0; width: 50%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+    animation: shimmer 2s ease-in-out infinite;
+  }
+
+  /* ═══ Circular Progress ═══ */
+  @keyframes progressFill {
+    0% { stroke-dashoffset: 282.7; }
+  }
+  .progress-ring circle.fill {
+    animation: progressFill 1.5s ease-out;
+  }
+
+  /* ═══ Current (before) styles ═══ */
+  .current-score { font-size: 72px; font-weight: 900; color: #22d3ee; line-height: 1; }
+  .current-label { font-size: 14px; color: #64748b; margin-top: 4px; }
+  .current-card {
+    background: #111827; border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px; padding: 16px;
+  }
+  .plain-btn {
+    background: #4ade80; color: #000; border: none; border-radius: 12px;
+    padding: 14px 32px; font-size: 15px; font-weight: 700; cursor: pointer;
+    font-family: inherit;
+  }
+</style>
+</head>
+<body>
+
+<h1>Chess DNA — UI Component Preview</h1>
+<p class="subtitle">Side-by-side comparison of current vs proposed components. No code has been changed.</p>
+
+<!-- ═══ 1. Number Ticker ═══ -->
+<div class="section">
+  <div class="section-title">Magic UI</div>
+  <div class="section-name">Number Ticker</div>
+  <div class="section-desc">Skill scores animate up from 0 to their value on page load instead of appearing instantly. Used for: overall score, dimension scores, accuracy %.</div>
+  <div class="demo-row">
+    <div class="demo-box">
+      <span class="demo-label">CURRENT</span>
+      <div class="current-score">64</div>
+      <div class="current-label">Overall Score — appears instantly</div>
+    </div>
+    <div class="demo-box">
+      <span class="demo-label" style="color:#4ade80">PROPOSED</span>
+      <div class="ticker-value ticker-animated" style="color: #22d3ee;">
+        <span class="digit">6</span><span class="digit">4</span>
+      </div>
+      <div class="ticker-label">Overall Score — ticks up with animation</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 2. Neon Gradient Card ═══ -->
+<div class="section">
+  <div class="section-title">Magic UI</div>
+  <div class="section-name">Neon Gradient Card — Tier Display</div>
+  <div class="section-desc">The rank tier card gets an animated glowing border that rotates through tier colors. The glow color matches the tier (cyan for Rook, green for Queen, gold for King).</div>
+  <div class="demo-row">
+    <div class="demo-box">
+      <span class="demo-label">CURRENT</span>
+      <div style="text-align:center">
+        <div style="font-size:56px; filter: drop-shadow(0 0 12px rgba(34,211,238,0.3))">♜</div>
+        <div class="current-score" style="font-size:56px">64</div>
+        <div style="font-size:18px; font-weight:700; color:#94a3b8">Rook</div>
+        <div style="margin-top:12px; height:4px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden">
+          <div style="height:100%; width:60%; background:#22d3ee; border-radius:2px"></div>
+        </div>
+        <div style="font-size:11px; color:#64748b; margin-top:4px">11 to ♛ Queen</div>
+      </div>
+    </div>
+    <div class="demo-box" style="background:transparent; border:none; padding:0">
+      <span class="demo-label" style="top:14px; right:16px; z-index:2">PROPOSED</span>
+      <div class="neon-card">
+        <div class="neon-tier-icon">♜</div>
+        <div class="neon-score">64</div>
+        <div class="neon-tier-name">Rook</div>
+        <div class="neon-progress"><div class="neon-progress-fill"></div></div>
+        <div style="font-size:11px; color:#64748b; margin-top:6px">11 to ♛ Queen</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 3. 3D Card Effect ═══ -->
+<div class="section">
+  <div class="section-title">Aceternity UI</div>
+  <div class="section-name">3D Card — Game List</div>
+  <div class="section-desc">Game cards tilt with perspective on hover, adding depth. Hover over the "PROPOSED" card to see the effect.</div>
+  <div class="demo-row">
+    <div class="demo-box">
+      <span class="demo-label">CURRENT</span>
+      <div class="current-card" style="display:flex; justify-content:space-between; align-items:center">
+        <div>
+          <span style="color:#4ade80; font-size:13px; font-weight:700">WIN</span>
+          <div style="font-size:18px; font-weight:700; margin:4px 0">vs Oldenrom <span style="color:#64748b; font-size:14px">(954)</span></div>
+          <div style="font-size:12px; color:#64748b">118 moves · rapid · Mar 15</div>
+        </div>
+        <div style="font-size:24px; font-weight:900; color:#4ade80">60%</div>
+      </div>
+    </div>
+    <div class="demo-box card-3d-wrapper">
+      <span class="demo-label" style="z-index:2">PROPOSED</span>
+      <div class="card-3d" style="display:flex; justify-content:space-between; align-items:center">
+        <div>
+          <span class="game-result win">WIN</span>
+          <div class="game-opponent">vs Oldenrom <span style="color:#64748b; font-size:14px">(954)</span></div>
+          <div class="game-meta">118 moves · rapid · Mar 15</div>
+        </div>
+        <div class="game-acc">60%</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 4. Border Beam ═══ -->
+<div class="section">
+  <div class="section-title">Magic UI</div>
+  <div class="section-name">Border Beam — Active Game</div>
+  <div class="section-desc">A light beam travels around the border of the currently-analyzing game card, indicating activity.</div>
+  <div class="demo-row">
+    <div class="demo-box">
+      <span class="demo-label">CURRENT</span>
+      <div class="current-card" style="border-color: rgba(74,222,128,0.15)">
+        <div style="display:flex; align-items:center; gap:8px">
+          <div style="width:8px; height:8px; background:#4ade80; border-radius:50%; animation: pulse 1.5s infinite"></div>
+          <span style="font-size:13px; color:#4ade80">Analyzing 75/92</span>
+        </div>
+      </div>
+    </div>
+    <div class="demo-box" style="padding:32px">
+      <span class="demo-label">PROPOSED</span>
+      <div class="border-beam-card">
+        <div style="display:flex; align-items:center; gap:8px">
+          <div style="width:8px; height:8px; background:#4ade80; border-radius:50%"></div>
+          <span style="font-size:13px; color:#4ade80">Analyzing 75/92</span>
+        </div>
+        <div style="font-size:12px; color:#64748b; margin-top:4px">Light beam traces the border</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 5. Lamp Effect ═══ -->
+<div class="section">
+  <div class="section-title">Aceternity UI</div>
+  <div class="section-name">Lamp Effect — Tier Hero</div>
+  <div class="section-desc">A dramatic spotlight illuminates the tier name from above. Used as the hero section on the Overview page.</div>
+  <div class="demo-row">
+    <div class="demo-box" style="max-width:500px">
+      <span class="demo-label">PROPOSED</span>
+      <div class="lamp-container">
+        <div class="lamp-cone"></div>
+        <div class="lamp-bar"></div>
+        <div class="lamp-text">♜ Rook</div>
+        <div class="lamp-sub">Tower of Power · ELO 960</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 6. Text Generate ═══ -->
+<div class="section">
+  <div class="section-title">Aceternity UI</div>
+  <div class="section-name">Text Generate — AI Insights</div>
+  <div class="section-desc">AI coaching text materializes word by word with a blur-to-sharp effect, making it feel like the AI is "thinking" in real-time.</div>
+  <div class="demo-row">
+    <div class="demo-box">
+      <span class="demo-label">CURRENT</span>
+      <div style="font-size:14px; color:#94a3b8; line-height:1.6; font-style:italic">
+        "Your endgame technique has improved significantly. Focus on converting middlegame advantages — you tend to lose momentum after gaining material."
+      </div>
+    </div>
+    <div class="demo-box">
+      <span class="demo-label" style="color:#4ade80">PROPOSED</span>
+      <div class="text-generate" style="font-size:14px; color:#94a3b8; line-height:1.6; font-style:italic">
+        <span>"Your</span>
+        <span>endgame</span>
+        <span>technique</span>
+        <span>has</span>
+        <span>improved</span>
+        <span>significantly.</span>
+        <span>Focus</span>
+        <span>on</span>
+        <span>converting</span>
+        <span>middlegame</span>
+        <span>advantages."</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 7. Aurora Background ═══ -->
+<div class="section">
+  <div class="section-title">Aceternity UI</div>
+  <div class="section-name">Aurora Background — Dashboard Atmosphere</div>
+  <div class="section-desc">Subtle, slowly-moving aurora blobs behind the dark background. Adds life to the dashboard without distracting from content.</div>
+  <div class="demo-row">
+    <div class="aurora-box" style="min-width:100%; min-height:200px">
+      <div class="aurora-blob aurora-blob-1"></div>
+      <div class="aurora-blob aurora-blob-2"></div>
+      <div class="aurora-blob aurora-blob-3"></div>
+      <div class="aurora-content">
+        <h2>Your Chess DNA</h2>
+        <p>Aurora creates depth and atmosphere in the dark theme</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 8. Shimmer Button ═══ -->
+<div class="section">
+  <div class="section-title">Magic UI</div>
+  <div class="section-name">Shimmer Button — CTA</div>
+  <div class="section-desc">A traveling light shimmer across the main call-to-action button. More eye-catching than a static green button.</div>
+  <div class="demo-row">
+    <div class="demo-box" style="text-align:center">
+      <span class="demo-label">CURRENT</span>
+      <button class="plain-btn">Practice your mistakes</button>
+    </div>
+    <div class="demo-box" style="text-align:center">
+      <span class="demo-label" style="color:#4ade80">PROPOSED</span>
+      <button class="shimmer-btn">Practice your mistakes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 9. Animated Circular Progress ═══ -->
+<div class="section">
+  <div class="section-title">Magic UI</div>
+  <div class="section-name">Animated Circular Progress — Accuracy Ring</div>
+  <div class="section-desc">The accuracy ring fills up with an animation instead of appearing fully drawn.</div>
+  <div class="demo-row">
+    <div class="demo-box" style="text-align:center">
+      <span class="demo-label">CURRENT</span>
+      <svg width="120" height="120" style="transform:rotate(-90deg)">
+        <circle cx="60" cy="60" r="45" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="8"/>
+        <circle cx="60" cy="60" r="45" fill="none" stroke="#4ade80" stroke-width="8" stroke-linecap="round" stroke-dasharray="186 282.7"/>
+      </svg>
+      <div style="margin-top:-78px; font-size:28px; font-weight:900; position:relative">66%</div>
+      <div style="font-size:10px; color:#64748b; margin-top:38px">Static — appears instantly</div>
+    </div>
+    <div class="demo-box" style="text-align:center">
+      <span class="demo-label" style="color:#4ade80">PROPOSED</span>
+      <svg width="120" height="120" style="transform:rotate(-90deg)">
+        <circle cx="60" cy="60" r="45" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="8"/>
+        <circle class="fill" cx="60" cy="60" r="45" fill="none" stroke="#4ade80" stroke-width="8" stroke-linecap="round" stroke-dasharray="186 282.7" style="stroke-dashoffset:0"/>
+      </svg>
+      <div style="margin-top:-78px; font-size:28px; font-weight:900; position:relative">66%</div>
+      <div style="font-size:10px; color:#64748b; margin-top:38px">Animated — fills up on load</div>
+    </div>
+  </div>
+</div>
+
+<div style="text-align:center; padding:40px 0; color:#64748b; font-size:13px">
+  This is a standalone preview — no changes to Chess DNA codebase.<br>
+  Tell me which components you want to adopt!
+</div>
+
+<style>
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+</style>
+
+</body>
+</html>

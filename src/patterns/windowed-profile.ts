@@ -251,9 +251,15 @@ export function computeWindowedProfile(
     .sort((a, b) => b.playedAt - a.playedAt)
     .slice(0, windowSize);
 
-  // Match analyses to the windowed games
+  // Match analyses to the windowed games by entity ID
   const gameIds = new Set(analyzedGames.map((g) => g.id));
-  const windowAnalyses = allAnalyses.filter((a) => gameIds.has(a.gameId));
+  let windowAnalyses = allAnalyses.filter((a) => gameIds.has(a.gameId));
+
+  // Fallback: if most analyses can't match games (duplicate record issue),
+  // use ALL analyses. The skill calculator will use summary.playerColor.
+  if (windowAnalyses.length < analyzedGames.length / 2 && allAnalyses.length > 10) {
+    windowAnalyses = allAnalyses;
+  }
 
   // Always use minGames = 1 to ensure patterns are detected even with few games
   // This prevents the radar from showing uniform ~85 scores when no patterns are found

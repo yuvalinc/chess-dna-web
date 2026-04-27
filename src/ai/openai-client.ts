@@ -1,6 +1,6 @@
 import { OPENAI_API_BASE, OPENAI_MAX_TOKENS } from '@shared/constants';
 import { addTokenUsage } from '@/storage/settings-store';
-import type { AIProvider, AIMessage, AIMessageContent } from './ai-types';
+import type { AIProvider, AIMessage, AIMessageContent, AIResponse } from './ai-types';
 
 interface OpenAIResponse {
   choices: Array<{
@@ -87,6 +87,50 @@ export class OpenAIClient implements AIProvider {
     }
 
     return content;
+  }
+
+  async sendMessageWithUsage(
+    system: string,
+    messages: AIMessage[],
+    maxTokens: number = OPENAI_MAX_TOKENS,
+  ): Promise<AIResponse> {
+    const openaiMessages = [
+      { role: 'system' as const, content: system },
+      ...messages.map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: formatContentForOpenAI(m.content),
+      })),
+    ];
+
+    const response = await this.fetchWithRetry(OPENAI_API_BASE, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: maxTokens,
+        messages: openaiMessages,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenAI API error ${response.status}: ${errorText}`);
+    }
+
+    const data: OpenAIResponse = await response.json();
+    const inputTokens = data.usage?.prompt_tokens ?? 0;
+    const outputTokens = data.usage?.completion_tokens ?? 0;
+    if (data.usage) {
+      await addTokenUsage(inputTokens, outputTokens);
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+
+    return { text: content, inputTokens, outputTokens };
   }
 
   private async fetchWithRetry(

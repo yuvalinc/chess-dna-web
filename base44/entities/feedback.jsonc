@@ -1,0 +1,28 @@
+{
+  "name": "Feedback",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string" },
+    "email": { "type": "string" },
+    "mobile": { "type": "string" },
+    "category": { "type": "string" },
+    "message": { "type": "string" },
+    "rating": { "type": "number" },
+    "page": { "type": "string" },
+    "userAgent": { "type": "string" },
+    "submittedAt": { "type": "number" }
+  },
+  "required": ["message"],
+  "rls": {
+    "create": true,
+    "read": {
+      "user_condition": { "role": "admin" }
+    },
+    "update": {
+      "user_condition": { "role": "admin" }
+    },
+    "delete": {
+      "user_condition": { "role": "admin" }
+    }
+  }
+}

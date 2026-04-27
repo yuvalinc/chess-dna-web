@@ -6,6 +6,8 @@ import { CHESS_COM_API_BASE } from '@shared/constants';
 import type { TimeClass } from '@shared/types/game';
 import { parsePgnToGameRecord } from '@shared/utils/chess-utils';
 import { base44 } from '@/api/base44Client';
+import { fetchChessCom } from '@/api/chess-com-fetch';
+import { getGuestEntities, createGuestEntity } from '@shared/utils/guest-storage';
 
 const entities = base44.entities as Record<string, any>;
 
@@ -20,6 +22,8 @@ export interface ImportOptions {
   timeClass?: TimeClass | 'all';
   maxGames?: number;
   onProgress?: (progress: ImportProgress) => void;
+  /** When true, save to localStorage instead of Base44 (for guest users) */
+  guest?: boolean;
 }
 
 /**
@@ -30,7 +34,7 @@ export async function importChessComGames(
   username: string,
   options: ImportOptions = {},
 ): Promise<string[]> {
-  const { timeClass = 'all', maxGames = 5, onProgress } = options;
+  const { timeClass = 'all', maxGames = 5, onProgress, guest = false } = options;
 
   const report = (fetched: number, total: number, done: boolean, error?: string) => {
     onProgress?.({ fetched, total, done, error });
@@ -38,8 +42,10 @@ export async function importChessComGames(
 
   try {
     // 1. Get the list of monthly archives for the player
-    const archivesRes = await fetch(
+    // Use no-store to bypass CDN cache entirely and get the freshest data
+    const archivesRes = await fetchChessCom(
       `${CHESS_COM_API_BASE}/player/${username.toLowerCase()}/games/archives`,
+      { cache: 'no-store' },
     );
 
     if (!archivesRes.ok) {
@@ -63,7 +69,7 @@ export async function importChessComGames(
       if (collected.length >= maxGames) break;
 
       try {
-        const monthRes = await fetch(archiveUrl);
+        const monthRes = await fetchChessCom(archiveUrl, { cache: 'no-store' });
         if (!monthRes.ok) continue;
 
         const monthData = (await monthRes.json()) as {
@@ -109,6 +115,9 @@ export async function importChessComGames(
     let saved = 0;
     const newGameIds: string[] = [];
 
+    // Within-batch dedup set (prevents creating two copies in the same run).
+    const batchSeenChessIds = new Set<string>();
+
     for (const { pgn, url } of collected) {
       try {
         const game = parsePgnToGameRecord(pgn, url, username);
@@ -118,31 +127,48 @@ export async function importChessComGames(
           continue;
         }
 
-        // Check if game already exists (Base44 uses `gameId` field, not `id`)
-        // NOTE: Must use .filter() not .list() — SDK .list() takes (sort, limit, skip, fields)
-        // RLS handles user scoping server-side — no need for created_by_id filter.
-        let exists = false;
-        try {
-          const existing = await entities.Game.filter({ gameId: game.id });
-          exists = Array.isArray(existing) && existing.length > 0;
-          console.log(`[Chess DNA Import] Dedup check gameId=${game.id} → found=${existing?.length ?? 0} exists=${exists}`);
-        } catch (dedupErr) {
-          exists = false;
-          console.warn('[Chess DNA Import] Dedup check failed:', dedupErr);
-        }
-
-        if (exists) {
-          saved++;
-          report(saved, total, false);
-          continue;
-        }
-
-        // Save new game — map `id` → `gameId` for Base44 entity
         const { id: gameId, ...gameData } = game;
-        console.log(`[Chess DNA Import] Creating game gameId=${gameId}...`);
-        const created = await entities.Game.create({ ...gameData, gameId });
-        newGameIds.push(created.id);
-        console.log(`[Chess DNA Import] Created game id=${created.id}`);
+
+        if (guest) {
+          // Guest mode: dedup + save to localStorage
+          const guestGames = getGuestEntities<Record<string, unknown>>('Game');
+          const exists = guestGames.some(g => g.gameId === gameId);
+          if (exists) {
+            saved++;
+            report(saved, total, false);
+            continue;
+          }
+          const created = createGuestEntity('Game', { ...gameData, gameId } as Record<string, unknown>);
+          newGameIds.push((created.id ?? created.gameId) as string);
+        } else {
+          // Authenticated: dedup via targeted filter. Base44 list() caps at 5000 records,
+          // so once the DB grows past that (or has many dupes), a bulk list misses recent
+          // games and the sync keeps re-inserting them. A per-gameId filter is O(1) in DB
+          // size and bounded to maxGames requests per run.
+          if (batchSeenChessIds.has(gameId)) {
+            saved++;
+            report(saved, total, false);
+            continue;
+          }
+          try {
+            const existing = await entities.Game.filter({ gameId });
+            if (Array.isArray(existing) && existing.length > 0) {
+              batchSeenChessIds.add(gameId);
+              saved++;
+              report(saved, total, false);
+              continue;
+            }
+          } catch (err) {
+            console.warn('[Chess DNA Import] Dedup filter failed, skipping to avoid dupe:', err);
+            saved++;
+            report(saved, total, false);
+            continue;
+          }
+
+          const created = await entities.Game.create({ ...gameData, gameId });
+          newGameIds.push(created.id);
+          batchSeenChessIds.add(gameId);
+        }
         saved++;
         report(saved, total, false);
       } catch (err) {

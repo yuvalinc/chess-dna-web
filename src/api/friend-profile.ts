@@ -3,6 +3,7 @@
  * All computation is in-memory (nothing saved to the database).
  */
 import { CHESS_COM_API_BASE } from '@shared/constants';
+import { fetchChessCom } from '@/api/chess-com-fetch';
 import type { TimeClass, GameRecord } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
 import type { SkillProfile } from '@shared/types/patterns';
@@ -89,7 +90,7 @@ export async function fetchFriendProfile(
   // 1. Fetch games from chess.com API
   report({ phase: 'fetching', current: 0, total: 0, message: `Fetching ${username}'s games...` });
 
-  const archivesRes = await fetch(
+  const archivesRes = await fetchChessCom(
     `${CHESS_COM_API_BASE}/player/${username.toLowerCase()}/games/archives`,
   );
   if (!archivesRes.ok) {
@@ -113,7 +114,7 @@ export async function fetchFriendProfile(
   for (const archiveUrl of reversedArchives) {
     if (collected.length >= maxGames) break;
     try {
-      const monthRes = await fetch(archiveUrl);
+      const monthRes = await fetchChessCom(archiveUrl);
       if (!monthRes.ok) continue;
       const monthData = (await monthRes.json()) as {
         games: Array<{ url: string; pgn: string; time_class: string }>;

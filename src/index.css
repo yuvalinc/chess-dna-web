@@ -28,27 +28,94 @@
 
 /* ── Light theme ── */
 [data-theme="light"] {
-  --chess-bg: 240 240 240;        /* #f0f0f0 */
+  --chess-bg: 245 247 250;        /* #f5f7fa — cool off-white */
   --chess-surface: 255 255 255;   /* #ffffff */
-  --chess-text: 26 26 26;         /* #1a1a1a */
-  --chess-accent: 21 128 61;      /* #15803d */
-  --chess-border: 107 114 128;    /* #6b7280 */
-  --chess-muted: 229 231 235;     /* #e5e7eb */
-  --chess-blunder: 220 38 38;     /* #dc2626 */
-  --chess-mistake: 217 119 6;     /* #d97706 */
-  --chess-inaccuracy: 202 138 4;  /* #ca8a04 */
-  --chess-best: 22 163 74;        /* #16a34a */
-  --chess-excellent: 5 150 105;   /* #059669 */
+  --chess-text: 15 23 42;         /* #0f172a — slate-900 strong */
+  --chess-accent: 22 163 74;      /* #16a34a — vibrant green */
+  --chess-border: 203 213 225;    /* #cbd5e1 — slate-300 softer */
+  --chess-muted: 241 245 249;     /* #f1f5f9 — slate-100 */
+  --chess-blunder: 239 68 68;     /* #ef4444 — vivid red */
+  --chess-mistake: 245 158 11;    /* #f59e0b — vivid amber */
+  --chess-inaccuracy: 234 179 8;  /* #eab308 — vivid yellow */
+  --chess-best: 34 197 94;        /* #22c55e — vivid green */
+  --chess-excellent: 20 184 166;  /* #14b8a6 — vivid teal */
   /* Text hierarchy */
-  --chess-text-secondary: 75 85 99;    /* #4b5563 */
-  --chess-text-tertiary: 107 114 128;  /* #6b7280 */
-  --chess-text-disabled: 156 163 175;  /* #9ca3af */
+  --chess-text-secondary: 51 65 85;    /* #334155 — slate-700 stronger */
+  --chess-text-tertiary: 100 116 139;  /* #64748b — slate-500 */
+  --chess-text-disabled: 148 163 184;  /* #94a3b8 — slate-400 */
   /* Chart / SVG */
-  --chess-grid-stroke: #9ca3af;
+  --chess-grid-stroke: #cbd5e1;
   --chess-tooltip-bg: #ffffff;
-  --chess-tooltip-border: rgba(21, 128, 61, 0.3);
+  --chess-tooltip-border: rgba(22, 163, 74, 0.3);
   /* Misc */
-  --chess-overlay: rgba(0, 0, 0, 0.05);
+  --chess-overlay: rgba(0, 0, 0, 0.04);
+}
+
+/* ── Light theme overrides for dark-mode-first classes ──
+   The codebase uses bg-white/[0.0x] for subtle card backgrounds and
+   text-white/xx for nav text. In light mode these need to flip. */
+[data-theme="light"] {
+  /* Semi-transparent white backgrounds → semi-transparent dark */
+  .bg-white\/\[0\.02\],
+  .bg-white\/\[0\.03\] { background-color: rgba(0, 0, 0, 0.03) !important; }
+  .bg-white\/\[0\.04\],
+  .bg-white\/\[0\.05\] { background-color: rgba(0, 0, 0, 0.04) !important; }
+  .bg-white\/\[0\.06\],
+  .bg-white\/\[0\.08\] { background-color: rgba(0, 0, 0, 0.05) !important; }
+
+  /* Semi-transparent white borders → semi-transparent dark */
+  .border-white\/\[0\.04\],
+  .border-white\/\[0\.05\],
+  .border-white\/\[0\.06\],
+  .border-white\/\[0\.08\] { border-color: rgba(0, 0, 0, 0.08) !important; }
+  .border-white\/\[0\.10\],
+  .border-white\/\[0\.15\] { border-color: rgba(0, 0, 0, 0.12) !important; }
+
+  /* Divide lines */
+  .divide-white\/\[0\.03\] > :not([hidden]) ~ :not([hidden]),
+  .divide-white\/\[0\.04\] > :not([hidden]) ~ :not([hidden]) {
+    border-color: rgba(0, 0, 0, 0.06) !important;
+  }
+
+  /* White text with opacity → dark text */
+  .text-white\/70 { color: rgba(15, 23, 42, 0.7) !important; }
+  .text-white\/90 { color: rgba(15, 23, 42, 0.9) !important; }
+  .text-white\/60 { color: rgba(15, 23, 42, 0.6) !important; }
+
+  /* Plain white text → dark, UNLESS on a colored/dark bg (buttons, badges) */
+  .text-white:not(.bg-chess-accent .text-white):not([class*="bg-chess-accent"] > .text-white) {
+    color: rgb(15, 23, 42) !important;
+  }
+  /* Preserve white text on colored backgrounds */
+  .bg-chess-accent .text-white,
+  .bg-chess-accent.text-white,
+  .bg-chess-blunder .text-white,
+  .bg-chess-blunder.text-white,
+  .bg-red-500 .text-white { color: #ffffff !important; }
+
+  /* Light gray text → darker for readability */
+  .text-gray-300 { color: #475569 !important; }  /* slate-600 */
+  .text-gray-400 { color: #64748b !important; }  /* slate-500 */
+  .text-gray-500 { color: #475569 !important; }  /* slate-600 */
+  .text-gray-600 { color: #334155 !important; }  /* slate-700 */
+
+  /* Hover states */
+  .hover\:bg-white\/\[0\.02\]:hover,
+  .hover\:bg-white\/\[0\.03\]:hover { background-color: rgba(0, 0, 0, 0.05) !important; }
+  .hover\:bg-white\/\[0\.04\]:hover,
+  .hover\:bg-white\/\[0\.05\]:hover,
+  .hover\:bg-white\/\[0\.06\]:hover { background-color: rgba(0, 0, 0, 0.07) !important; }
+
+  .hover\:border-white\/\[0\.08\]:hover { border-color: rgba(0, 0, 0, 0.12) !important; }
+
+  .hover\:text-white:hover { color: rgb(15, 23, 42) !important; }
+  .hover\:text-gray-300:hover { color: #334155 !important; }
+
+  /* Gradient overlays */
+  .from-white\/\[0\.04\] { --tw-gradient-from: rgba(0,0,0,0.03) !important; }
+  .from-white\/\[0\.06\] { --tw-gradient-from: rgba(0,0,0,0.05) !important; }
+  .hover\:from-white\/\[0\.06\]:hover { --tw-gradient-from: rgba(0,0,0,0.06) !important; }
+
 }
 
 /* ── Base styles ── */
@@ -77,4 +144,184 @@ html {
 }
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
   background: rgba(74, 222, 128, 0.3);
+}
+
+/* Hide scrollbar but keep scrolling — used for horizontal galleries */
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ═══════════════════════════════════════════════
+   Fancy UI Components — Pure CSS
+   ═══════════════════════════════════════════════ */
+
+/* ── Neon Gradient Card ── */
+@property --neon-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.neon-card {
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+}
+.neon-card::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 22px;
+  background: conic-gradient(from var(--neon-angle), var(--neon-color-a, #22d3ee), var(--neon-color-b, #4ade80), var(--neon-color-a, #22d3ee));
+  animation: neon-rotate 3s linear infinite;
+  z-index: 0;
+}
+.neon-card::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 18px;
+  background: rgb(var(--chess-surface));
+  z-index: 0;
+}
+.neon-card > * {
+  position: relative;
+  z-index: 1;
+}
+@keyframes neon-rotate {
+  0% { --neon-angle: 0deg; }
+  100% { --neon-angle: 360deg; }
+}
+
+/* ── Checkmate flourish pulse (board overlays in GameDetail) ── */
+@keyframes mate-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ── Focus mode (set by GameDetail) hides bottom nav ── */
+body[data-focus-mode="true"] .app-bottom-nav {
+  transform: translateY(110%);
+  pointer-events: none;
+  transition: transform 0.2s ease-out;
+}
+.app-bottom-nav {
+  transition: transform 0.2s ease-out;
+}
+
+/* ── Focus mode also hides the floating time-class filter (top-right) ── */
+body[data-focus-mode="true"] .app-time-filter {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease-out;
+}
+.app-time-filter {
+  transition: opacity 0.2s ease-out;
+}
+
+/* ── Focus mode locks the page to one viewport (no scroll on mobile).
+      Board, explanation panel, and the dock (key moments + move list nav)
+      are sized to fit; the explanation panel scrolls internally when
+      content overflows its cap. Desktop keeps normal scroll behaviour.
+      Also drops the AppShell <main>'s pt-10 (which reserved space for the
+      floating time-class filter — itself hidden in focus mode) so the
+      board sits flush against the top of the screen. ── */
+@media (max-width: 767px) {
+  body[data-focus-mode="true"] {
+    overflow: hidden;
+    height: 100dvh;
+  }
+  body[data-focus-mode="true"] main {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+}
+
+/* ── Row Hover (formerly "card-3d") ──
+ * The original rotateY+scale tilt clipped past the container on wide list
+ * rows. Replaced with a neutral-aspect lift + border glow that works the
+ * same on narrow tiles and full-width rows. Kept the class names so the
+ * existing markup doesn't need to change.
+ */
+.card-3d-wrap {
+  /* no-op container — preserved for backwards compat */
+}
+.card-3d {
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease, background-color 0.25s ease;
+  will-change: transform;
+}
+.card-3d:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35), 0 0 0 1px rgba(74,222,128,0.12);
+  border-color: rgba(74,222,128,0.18) !important;
+}
+
+/* ── Border Beam ── */
+.border-beam {
+  position: relative;
+  overflow: hidden;
+}
+.border-beam::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  width: 60px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgb(var(--chess-accent)), transparent);
+  animation: border-beam 2.5s linear infinite;
+  border-radius: 1px;
+}
+
+/* ── Aurora Background Blobs ── */
+.aurora-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.2;
+  pointer-events: none;
+  animation: aurora-drift 8s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* ── Shimmer Button ── */
+.shimmer-btn {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer-btn::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
+  animation: shimmer-sweep 2s ease-in-out infinite;
+}
+
+/* ── Lamp Effect ── */
+.lamp-cone {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 280px;
+  height: 160px;
+  background: conic-gradient(from 270deg at 50% 0%, rgba(74,222,128,0.12) 0deg, transparent 60deg, transparent 300deg, rgba(74,222,128,0.12) 360deg);
+  filter: blur(24px);
+  pointer-events: none;
+}
+.lamp-bar {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 180px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgb(var(--chess-accent)), transparent);
+  border-radius: 2px;
+  box-shadow: 0 0 16px rgba(74,222,128,0.4);
+  pointer-events: none;
 }

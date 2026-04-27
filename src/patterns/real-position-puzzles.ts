@@ -45,7 +45,7 @@ export function validateFen(fen: string): boolean {
 export function createRealPositionPuzzle(
   example: PatternExample,
   theme: WeaknessTheme,
-  index: number,
+  _index: number,
 ): Exercise | null {
   // Validate the FEN
   if (!validateFen(example.fen)) {

@@ -1,0 +1,29 @@
+{
+  "name": "AIPrompt",
+  "type": "object",
+  "properties": {
+    "label": { "type": "string" },
+    "systemTemplate": { "type": "string" },
+    "userTemplate": { "type": "string" },
+    "isActive": { "type": "boolean", "default": false },
+    "languages": { "type": "array", "default": [] },
+    "notes": { "type": "string" }
+  },
+  "required": ["label", "systemTemplate", "userTemplate"],
+  "rls": {
+    "create": true,
+    "read": true,
+    "update": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "delete": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    }
+  }
+}

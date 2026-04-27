@@ -33,29 +33,39 @@ export default function EvalBar({ score, scoreType, height = 400 }: EvalBarProps
     }
   }
 
+  // The score label is rendered INSIDE the bar — anchored to whichever
+  // side is winning (top of the white portion when white wins, bottom of
+  // the black portion when black wins). Removes the dead row that used
+  // to sit beneath the bar.
+  const whiteWinning = whitePercent >= 50;
+
   return (
-    <div
-      className="w-8 rounded-sm overflow-hidden relative flex flex-col border border-chess-border/40"
-      style={{ height }}
-    >
-      {/* Black portion (top) */}
+    <div className="shrink-0">
       <div
-        className="bg-[#333] transition-all duration-300 ease-out"
-        style={{ height: `${100 - whitePercent}%` }}
-      />
-
-      {/* White portion (bottom) */}
-      <div
-        className="bg-[#f0f0f0] transition-all duration-300 ease-out flex-1"
-      />
-
-      {/* Score label */}
-      <div
-        className={`absolute left-0 right-0 text-center text-[10px] font-bold ${
-          score >= 0 ? 'bottom-1 text-gray-800' : 'top-1 text-gray-200'
-        }`}
+        className="w-7 rounded-sm overflow-hidden relative flex flex-col border border-chess-border/40"
+        style={{ height }}
       >
-        {displayScore}
+        {/* Black portion (top) */}
+        <div
+          className="bg-[#333] transition-all duration-300 ease-out"
+          style={{ height: `${100 - whitePercent}%` }}
+        />
+        {/* White portion (bottom) */}
+        <div
+          className="bg-[#f0f0f0] transition-all duration-300 ease-out flex-1"
+        />
+
+        {/* Score label inside the bar, on the winning side. */}
+        <div
+          className="absolute left-0 right-0 text-center text-[9px] font-bold tabular-nums select-none pointer-events-none"
+          style={
+            whiteWinning
+              ? { bottom: 2, color: '#1a1a1a' }
+              : { top: 2, color: '#f0f0f0' }
+          }
+        >
+          {displayScore}
+        </div>
       </div>
     </div>
   );

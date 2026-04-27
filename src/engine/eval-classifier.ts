@@ -25,6 +25,17 @@ export function calcWinChanceLoss(
 }
 
 /**
+ * Compute a 0-100 score for a move based on win chance loss.
+ * 100 = played the best move (or within 0.5% win chance loss).
+ * 0 = catastrophic blunder.
+ * Both evals must be from the mover's perspective (positive = good for mover).
+ */
+export function computeMoveScore(evalBeforeCp: number, evalAfterCp: number): number {
+  const wcl = calcWinChanceLoss(evalBeforeCp, evalAfterCp);
+  return Math.max(0, Math.min(100, Math.round(100 - wcl * 100)));
+}
+
+/**
  * Classify a move using chess.com-style Expected Points model.
  *
  * Categories:

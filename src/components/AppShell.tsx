@@ -3,9 +3,11 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useTheme } from './ThemeContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChessData } from '@/contexts/ChessDataContext';
+import { useTutorial } from '@/contexts/TutorialContext';
 import { useT } from '@/i18n/index';
 import MiniAudioPlayer from '@/components/MiniAudioPlayer';
 import SyncStatusIndicator from '@/components/SyncStatusIndicator';
+import TutorialCoachmark from '@/components/TutorialCoachmark';
 import { base44 } from '@/api/base44Client';
 import { hasGuestSession, guestSessionRemainingMs } from '@shared/utils/guest-session';
 import type { TimeClass } from '@shared/types/game';
@@ -102,6 +104,7 @@ export default function AppShell() {
   const { t } = useT();
   const [pillsOpen, setPillsOpen] = useState(false);
   const { journeyStage, availableTimeClasses } = useChessData();
+  const { isActive: tutorialActive, currentDef: tutorialDef } = useTutorial();
 
   const activeTab = pathToTab(location.pathname);
   const selectedTimeClass = settings.selectedTimeClass ?? null;
@@ -155,6 +158,10 @@ export default function AppShell() {
   const isDnaTab = activeTab === 'dna';
   const hasGames = journeyStage >= 1;
   const isFullyOnboarded = journeyStage >= 5;
+  // The DNA hero (with score + filter) renders for stages 2+ via the s2Continued
+  // shortcut in Overview, so the chrome (top padding + game-type filter) needs
+  // to follow the same threshold — not the strict "isFullyOnboarded".
+  const showHeroChrome = journeyStage >= 2;
 
   // Compute remaining guest time for display
   const [guestTimeLabel, setGuestTimeLabel] = useState('');
@@ -174,8 +181,8 @@ export default function AppShell() {
 
   return (
     <div className="min-h-screen bg-chess-bg text-chess-text flex flex-col">
-      {/* ── Floating game-type dropdown (upper-right) — DNA + Games + Time Machine tabs, S5+ ── */}
-      {(isDnaTab || activeTab === 'games' || activeTab === 'training' || activeTab === 'compare') && isFullyOnboarded && (() => {
+      {/* ── Floating game-type dropdown (upper-right) — DNA + Games + Time Machine tabs, once hero is visible ── */}
+      {(isDnaTab || activeTab === 'games' || activeTab === 'training' || activeTab === 'compare') && showHeroChrome && (() => {
         const selectedTc = ALL_TIME_CLASSES.find((tc) => tc.id === selectedTimeClass);
         const displayIcon = selectedTc?.icon ?? '♟';
         const displayLabel = selectedTc?.label ?? 'Select';
@@ -228,48 +235,87 @@ export default function AppShell() {
            pt-10 reserves room for the floating time-class pill in the
            top-right; it appears on every tab that shows the dropdown,
            so all of those tabs need the same top padding. */}
-      <main className={`flex-1 ${(isDnaTab || activeTab === 'games' || activeTab === 'training' || activeTab === 'compare') && isFullyOnboarded ? 'pt-10' : 'pt-4'} ${hasGames && isGuest ? 'pb-32' : hasGames ? 'pb-24' : 'pb-4'} px-4 sm:px-6 overflow-y-auto max-w-6xl mx-auto w-full`}>
+      <main className={`flex-1 ${(isDnaTab || activeTab === 'games' || activeTab === 'training' || activeTab === 'compare') && showHeroChrome ? 'pt-14' : 'pt-4'} ${hasGames && isGuest ? 'pb-32' : hasGames ? 'pb-24' : 'pb-4'} px-4 sm:px-6 overflow-y-auto max-w-6xl mx-auto w-full`}>
         <Outlet />
       </main>
 
       {/* ── Mini audio player — sits above bottom nav ── */}
       {isFullyOnboarded && <MiniAudioPlayer />}
 
+      {/* ── Tutorial coachmark overlay — auto-fires on each main screen
+            when settings.tutorialStep matches the screen's step. Persists
+            across reloads via UserPreferences; resumes if user exits. ── */}
+      <TutorialCoachmark />
+
       {/* ── Bottom navigation bar — visible once user has games (S1+).
             The `app-bottom-nav` class lets pages collapse the bar via a
             body-level attribute (see `body[data-focus-mode="true"]` rule
-            in src/index.css). Used by GameDetail's focus mode. ── */}
+            in src/index.css). Used by GameDetail's focus mode.
+            During the tutorial, raise the whole bar above the coachmark dim
+            (z-[110] beats z-[100]) so the whole menu stays bright + clickable
+            and the spotlight tab visibly pops. ── */}
+      {/* Guest signup strip — rendered as a SIBLING of the nav (instead of
+          a child) so the tutorial dim (z-100) can sit on top of it during
+          the tutorial. The nav itself is bumped to z-110 below to keep the
+          active-tab spotlight clearly visible. */}
+      {hasGames && isGuest && (
+        <div
+          className={`fixed left-0 right-0 ${tutorialActive ? 'z-[40]' : 'z-50'} bg-chess-bg/98 backdrop-blur-md border-t border-chess-border/30 px-4 py-1.5 flex items-center justify-between border-b border-chess-border/20`}
+          style={{
+            bottom: `calc(env(safe-area-inset-bottom) + 56px)`,
+            background: 'rgba(13,17,28,0.96)',
+          }}
+        >
+          <span className="text-[11px] text-gray-400 truncate">
+            Save your progress
+            {guestTimeLabel && <span className="text-gray-500 ml-1">· {guestTimeLabel}</span>}
+          </span>
+          <button
+            onClick={() => base44.auth.redirectToLogin(window.location.href)}
+            className="shrink-0 bg-chess-accent text-chess-bg text-[11px] font-semibold px-2.5 py-1 rounded-md hover:opacity-90 transition-all"
+          >
+            Sign Up
+          </button>
+        </div>
+      )}
       {hasGames && (
-        <nav className="app-bottom-nav fixed bottom-0 left-0 right-0 z-50 bg-chess-bg/98 backdrop-blur-md border-t border-chess-border/30 shadow-[0_-4px_16px_rgba(0,0,0,0.15)] pb-[env(safe-area-inset-bottom)]">
-          {/* Guest signup CTA — sits inside nav, above the tab buttons */}
-          {isGuest && (
-            <div className="flex items-center justify-between px-4 py-1.5 border-b border-chess-border/20 bg-chess-accent/[0.06]">
-              <span className="text-[11px] text-gray-400 truncate">
-                Save your progress
-                {guestTimeLabel && <span className="text-gray-500 ml-1">· {guestTimeLabel}</span>}
-              </span>
-              <button
-                onClick={() => base44.auth.redirectToLogin(window.location.href)}
-                className="shrink-0 bg-chess-accent text-chess-bg text-[11px] font-semibold px-2.5 py-1 rounded-md hover:opacity-90 transition-all"
-              >
-                Sign Up
-              </button>
-            </div>
-          )}
+        <nav className={`app-bottom-nav fixed bottom-0 left-0 right-0 ${tutorialActive ? 'z-[110]' : 'z-50'} bg-chess-bg/98 backdrop-blur-md border-t border-chess-border/30 shadow-[0_-4px_16px_rgba(0,0,0,0.15)] pb-[env(safe-area-inset-bottom)]`}>
           <div className="max-w-6xl mx-auto flex">
             {BOTTOM_NAV_PATHS.map((item) => {
               const isActive = activeTab === item.id;
+              // Highlight the nav tab whose page matches the live tutorial
+              // step, so the user knows where in the app the spotlight lives.
+              // Only when the user is currently ON that page (otherwise the
+              // coachmark card isn't rendering and a lone glow is confusing).
+              const isTutorialTab =
+                tutorialActive &&
+                tutorialDef?.page === item.path &&
+                location.pathname === item.path;
               const Icon = NAV_ICONS[item.id];
+              const showAccent = isActive || isTutorialTab;
               return (
                 <button
                   key={item.id}
                   onClick={() => handleTabClick(item)}
-                  className={`flex-1 flex flex-col items-center gap-0.5 py-3 transition-colors ${
-                    isActive ? 'text-chess-accent' : 'text-chess-text-tertiary hover:text-chess-text'
+                  data-track="nav_tab"
+                  data-track-tab={item.id}
+                  className={`relative flex-1 flex flex-col items-center gap-0.5 py-3 transition-colors ${
+                    showAccent ? 'text-chess-accent' : 'text-chess-text-tertiary hover:text-chess-text'
                   }`}
                 >
-                  <Icon className={isActive ? 'text-chess-accent' : 'text-chess-text-tertiary'} />
-                  <span className="text-xs font-medium">{t(TAB_LABEL_KEYS[item.id])}</span>
+                  {showAccent && (
+                    <span
+                      className="absolute inset-x-3 inset-y-1.5 rounded-xl pointer-events-none"
+                      style={{
+                        background: 'rgba(74,222,128,0.14)',
+                        boxShadow: '0 0 0 1px rgba(74,222,128,0.4), 0 0 18px rgba(74,222,128,0.35)',
+                      }}
+                    />
+                  )}
+                  <Icon className={`relative ${showAccent ? 'text-chess-accent' : 'text-chess-text-tertiary'}`} />
+                  <span className={`relative text-xs ${showAccent ? 'font-bold text-chess-accent' : 'font-medium'}`}>
+                    {t(TAB_LABEL_KEYS[item.id])}
+                  </span>
                 </button>
               );
             })}

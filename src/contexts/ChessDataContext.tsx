@@ -17,6 +17,7 @@ import { getBenchmarkForRating, getOverallPercentile, getLeadersBenchmark } from
 import { hasAnyProvider } from '@/ai/ai-router';
 import { useChessComSync } from '@/hooks/useChessComSync';
 import { cleanupDuplicates } from '@/utils/db-cleanup';
+import { importChessComGames } from '@/api/chess-com-import';
 import { CHESS_COM_API_BASE } from '@shared/constants';
 import { fetchChessCom } from '@/api/chess-com-fetch';
 import type { GameRecord, TimeClass } from '@shared/types/game';
@@ -53,6 +54,14 @@ interface ChessDataContextValue {
   // Lookups
   gamesMap: Record<string, GameRecord>;
   availableTimeClasses: Set<TimeClass>;
+
+  // Friends & top players — non-self games imported for the Time Machine
+  // "Friends" / "Top Players" tabs. Filtered from rawGames by username so
+  // they don't pollute the user's own profile/patterns.
+  friendGames: GameRecord[];
+  friendAnalyses: GameAnalysis[];
+  topPlayerGames: GameRecord[];
+  topPlayerAnalyses: GameAnalysis[];
 
   // Filtered by settings.selectedTimeClass
   games: GameRecord[];
@@ -122,6 +131,10 @@ const ChessDataContext = createContext<ChessDataContextValue>({
   pendingCount: 0,
   gamesMap: {},
   availableTimeClasses: new Set(),
+  friendGames: [],
+  friendAnalyses: [],
+  topPlayerGames: [],
+  topPlayerAnalyses: [],
   games: [],
   analyses: [],
   filteredAnalyzedCount: 0,
@@ -154,7 +167,7 @@ const ChessDataContext = createContext<ChessDataContextValue>({
 // ── Provider ──
 export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   const { settings, updateSettings } = useTheme();
-  const { userId } = useAuth();
+  const { userId, isGuest } = useAuth();
 
   // Smart hooks: use localStorage for guests, Base44 for authenticated users.
   // Auth-awareness is built into the hooks — no manual skip logic needed.
@@ -181,26 +194,36 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   const dataLoading = gamesLoading || analysesLoading || patternsLoading;
 
   // ── Auto-cleanup: delete duplicate Game/Analysis records ──
-  // Runs once when rawGames loads and has near-limit records (indicating duplicates)
+  // Runs whenever rawGames loads and contains any duplicates or ghost
+  // records. Old thresholds (≥2000 games, ≥50 dupes) only fired on heavily
+  // bloated DBs and let smaller dupe counts leak into the UI as broken
+  // rows. Now we trigger as soon as we see ANY dupe-by-gameId or ghost
+  // record (missing PGN / playedAt / totalMoves), so the user never sees
+  // a "game that doesn't exist" again.
   const cleanupRanRef = useRef(false);
   useEffect(() => {
-    if (cleanupRanRef.current || gamesLoading || rawGames.length < 2000) return;
-    cleanupRanRef.current = true;
+    if (cleanupRanRef.current || gamesLoading || rawGames.length === 0) return;
 
-    // Check if there are actual duplicates before running cleanup
     const chessIds = new Set<string>();
     let dupeCount = 0;
+    let ghostCount = 0;
     for (const g of rawGames) {
       const cid = (g as unknown as Record<string, unknown>).gameId as string | undefined;
       if (cid) {
         if (chessIds.has(cid)) dupeCount++;
         else chessIds.add(cid);
       }
+      const isGhost = !g.pgn || g.pgn.length < 10
+        || !g.player?.username || !g.opponent?.username
+        || typeof g.totalMoves !== 'number' || g.totalMoves <= 0
+        || typeof g.playedAt !== 'number' || g.playedAt <= 0;
+      if (isGhost) ghostCount++;
     }
 
-    if (dupeCount < 50) return; // Not enough dupes to bother
+    if (dupeCount === 0 && ghostCount === 0) return;
+    cleanupRanRef.current = true;
 
-    console.log(`[Chess DNA] Found ${dupeCount} duplicate games in ${rawGames.length} records — starting cleanup...`);
+    console.log(`[Chess DNA] Found ${dupeCount} duplicates + ${ghostCount} ghost games in ${rawGames.length} records — starting cleanup...`);
     cleanupDuplicates((msg) => console.log(`[DB Cleanup] ${msg}`))
       .then(result => {
         console.log(`[Chess DNA] Cleanup done: ${result.gamesDeleted} games + ${result.analysesDeleted} analyses deleted`);
@@ -334,11 +357,22 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     // Build set of Base44 entity IDs that are referenced by Analysis records
     const analyzedEntityIds = new Set(rawAnalyses.map(a => a.gameId));
 
-    // Filter to configured username first
+    // Filter to configured username AND drop ghost records — entries that
+    // somehow persisted in Base44 with missing core fields. Without this
+    // filter, broken imports surface as "games that don't exist" rows in
+    // the UI (no opponent, no PGN, can't analyze, can't open). A legit
+    // game has a non-empty PGN, both player names, totalMoves > 0, and
+    // a positive playedAt timestamp.
     const userGames = rawGames.filter((g) => {
+      // Username scope
       if (configuredUsername && g.player?.username) {
         if (g.player.username.toLowerCase() !== configuredUsername) return false;
       }
+      // Ghost-record filter
+      if (!g.pgn || g.pgn.length < 10) return false;
+      if (!g.player?.username || !g.opponent?.username) return false;
+      if (typeof g.totalMoves !== 'number' || g.totalMoves <= 0) return false;
+      if (typeof g.playedAt !== 'number' || g.playedAt <= 0) return false;
       return true;
     });
 
@@ -368,6 +402,56 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   }, [rawGames, rawAnalyses, configuredUsername]);
 
   const allAnalyses = rawAnalyses;
+
+  // ── Friend & top-player games — non-self games imported into Base44
+  // for the Time Machine "Friends" / "Top Players" tabs. Same ghost-record
+  // validity rules as allGames; matches by username (lowercased) against
+  // the configured friend / top lists in settings. Kept separate from
+  // `allGames` so the user's profile/patterns aren't polluted. ──
+  const friendUsernameSet = useMemo(
+    () => new Set((settings.friendUsernames ?? []).map((u) => u.toLowerCase())),
+    [settings.friendUsernames],
+  );
+  const topPlayerUsernameSet = useMemo(
+    () => new Set((settings.topPlayerUsernames ?? []).map((u) => u.toLowerCase())),
+    [settings.topPlayerUsernames],
+  );
+
+  const isValidGameRecord = (g: GameRecord): boolean => {
+    if (!g.pgn || g.pgn.length < 10) return false;
+    if (!g.player?.username || !g.opponent?.username) return false;
+    if (typeof g.totalMoves !== 'number' || g.totalMoves <= 0) return false;
+    if (typeof g.playedAt !== 'number' || g.playedAt <= 0) return false;
+    return true;
+  };
+
+  const friendGames = useMemo(() => {
+    if (friendUsernameSet.size === 0) return [];
+    return rawGames.filter((g) => {
+      const u = g.player?.username?.toLowerCase();
+      return !!u && friendUsernameSet.has(u) && isValidGameRecord(g);
+    });
+  }, [rawGames, friendUsernameSet]);
+
+  const topPlayerGames = useMemo(() => {
+    if (topPlayerUsernameSet.size === 0) return [];
+    return rawGames.filter((g) => {
+      const u = g.player?.username?.toLowerCase();
+      return !!u && topPlayerUsernameSet.has(u) && isValidGameRecord(g);
+    });
+  }, [rawGames, topPlayerUsernameSet]);
+
+  const friendAnalyses = useMemo(() => {
+    if (friendGames.length === 0) return [];
+    const ids = new Set(friendGames.map((g) => g.id));
+    return rawAnalyses.filter((a) => ids.has(a.gameId));
+  }, [rawAnalyses, friendGames]);
+
+  const topPlayerAnalyses = useMemo(() => {
+    if (topPlayerGames.length === 0) return [];
+    const ids = new Set(topPlayerGames.map((g) => g.id));
+    return rawAnalyses.filter((a) => ids.has(a.gameId));
+  }, [rawAnalyses, topPlayerGames]);
 
   // ── Enrich games with analysis status from Analysis records ──
   // Build a set of chess.com gameIds that have been analyzed.
@@ -579,6 +663,58 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     }
   }, [settings.radarRevealedAt, settings.patternsUnlockedAt, hasPatterns, updateSettings]);
 
+  // ── Post-onboarding backfill: pull the OTHER time classes once the user is
+  //    fully onboarded. During onboarding we only fetch the picked time class
+  //    (5 games) so the user lands on their DNA fast — this effect waits until
+  //    they reach the main view, then backfills any time classes that don't
+  //    yet have at least 20 games. Runs once per session; idempotent because
+  //    importChessComGames de-dupes against existing records. ──
+  const backfillTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (backfillTriggeredRef.current) return;
+    if (journeyStage < 5) return;
+    if (!settings.chesscomUsername) return;
+    if (rawGames.length === 0) return;
+
+    const tcCounts = new Map<TimeClass, number>();
+    for (const g of rawGames) {
+      if (g.timeClass) tcCounts.set(g.timeClass, (tcCounts.get(g.timeClass) ?? 0) + 1);
+    }
+    const allTcs: TimeClass[] = ['rapid', 'blitz', 'bullet', 'daily'];
+    const understocked = allTcs.filter((tc) => (tcCounts.get(tc) ?? 0) < 20);
+    if (understocked.length === 0) return;
+
+    backfillTriggeredRef.current = true;
+    const username = settings.chesscomUsername;
+    const guestMode = isGuest;
+    console.log('[Chess DNA] Backfilling under-stocked time classes:', understocked);
+
+    (async () => {
+      const newIds: string[] = [];
+      for (const tc of understocked) {
+        try {
+          const ids = await importChessComGames(username, {
+            timeClass: tc,
+            maxGames: 30,
+            guest: guestMode,
+          });
+          newIds.push(...ids);
+        } catch (err) {
+          console.warn('[Chess DNA] Backfill failed for', tc, err);
+        }
+      }
+      if (newIds.length > 0) {
+        console.log('[Chess DNA] Backfill imported', newIds.length, 'games — queueing for analysis');
+        refetchGamesRef.current();
+        // Push directly into the queue ref + kick the processor (both are stable
+        // module-level refs; doing this avoids needing queueForAnalysis in deps).
+        analysisQueueRef.current.push(...newIds);
+        processAnalysisQueue();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [journeyStage, settings.chesscomUsername, rawGames, isGuest]);
+
   // ── Analysis event listener — auto-refetch ──
   // Uses refs to avoid stale closures — the listener is registered ONCE and
   // always calls the latest refetch functions via refs.
@@ -630,6 +766,10 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       pendingCount,
       gamesMap,
       availableTimeClasses,
+      friendGames,
+      friendAnalyses,
+      topPlayerGames,
+      topPlayerAnalyses,
       games,
       analyses,
       filteredAnalyzedCount,
@@ -663,6 +803,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       gamesLoading, analysesLoading, patternsLoading, dataLoading,
       totalGameCount, analyzedCount, analyzingCount, pendingCount,
       gamesMap, availableTimeClasses,
+      friendGames, friendAnalyses, topPlayerGames, topPlayerAnalyses,
       games, analyses, filteredAnalyzedCount, filteredAnalyzingCount,
       profile, weakest, strongest, playerElo,
       tier, tierProgress, nextTier,

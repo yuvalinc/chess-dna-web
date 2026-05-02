@@ -77,11 +77,15 @@ export const en = {
   overview_pts_to_beat: '{pts} pts to beat both',
   overview_top_pct: 'Top {pct}%',
 
-  // ── Ability / Form / Trend / Delta tabs ──
+  // ── Ability / Form / Trend / Delta tabs (legacy, kept for safety) ──
   tab_ability: 'Ability',
   tab_form: 'Form',
   tab_trend: 'Trend',
   tab_delta: 'Delta',
+  // ── Date-window tabs (Today / This Week / All Time) ──
+  tab_today: 'Today',
+  tab_week: 'This Week',
+  tab_all_time: 'All Time',
 
   // ── Game Detail page ──
   detail_loading: 'Loading game...',
@@ -120,7 +124,8 @@ export const en = {
 
   // ── Time Machine page ──
   tm_title: 'Time Machine',
-  tm_desc: 'Go back to your real games and replay the moments you got wrong. Positions are ordered by your most repeated patterns \u2014 fix the habits that cost you the most.',
+  tm_tagline: 'Replay mistakes \u2014 fix the patterns.',
+  tm_desc: 'Replay the moments where mistakes happened. Positions are ordered by the most repeated patterns \u2014 fix the habits that cost the most.',
   tm_challenges: 'Challenges',
   tm_completed: 'Completed \u2713',
   tm_patterns_intro: 'Based on your games, your{category} patterns that affect you most:',
@@ -132,7 +137,8 @@ export const en = {
   tm_loss_rate: 'loss rate',
   tm_back: 'Back',
   tm_find_better_move: 'Your turn! Find a better move.',
-  tm_originally_played: 'Originally you played {move} here \u2014 can you do better?',
+  tm_originally_played: 'You played {move}. Can you do better?',
+  tm_originally_played_by: '{name} played {move}. Can you do better?',
   tm_reveal_answer: 'Reveal answer',
   tm_try_again: 'Try Again',
   tm_continue: 'Continue \u2192',

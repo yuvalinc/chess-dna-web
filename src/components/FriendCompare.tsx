@@ -131,23 +131,28 @@ export default function FriendCompare({ initialCompareUsername, timeClass = 'all
 
   return (
     <div className="space-y-4">
-      {/* Search bar */}
-      <div className="flex gap-2">
+      {/* Add-by-username — promoted to the top per Claude Design.
+          Person icon prefix + green Add pill button. */}
+      <div className="flex items-center gap-2 bg-chess-surface rounded-xl border border-chess-border/30 px-3 py-2">
+        <svg className="w-4 h-4 text-chess-text-tertiary shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M20 21a8 8 0 1 0-16 0" />
+        </svg>
         <input
           type="text"
           value={username}
           onChange={e => setUsername(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="chess.com username"
-          className="flex-1 bg-chess-surface border border-chess-border/30 rounded-lg px-3 py-2 text-sm text-chess-text placeholder:text-gray-500 focus:outline-none focus:border-chess-accent/50"
+          placeholder="Add by username (chess.com / lichess)…"
+          className="flex-1 bg-transparent text-sm text-chess-text placeholder:text-chess-text-tertiary/80 focus:outline-none"
           disabled={isLoading}
         />
         <button
           onClick={() => handleCompare()}
           disabled={isLoading || !username.trim()}
-          className="bg-chess-accent text-white px-4 py-2 rounded-lg text-sm font-medium hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          className="bg-chess-accent/15 text-chess-accent border border-chess-accent/40 px-3 py-1 rounded-lg text-xs font-extrabold hover:bg-chess-accent/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
         >
-          {t('compare_button')}
+          Add
         </button>
       </div>
 
@@ -209,7 +214,7 @@ function ComparisonResults({
   profile,
   friend,
   playerElo,
-  myGameCount,
+  myGameCount: _myGameCount,
   theme,
   allGames,
   timeClass,
@@ -239,8 +244,6 @@ function ComparisonResults({
   }, [friend.skillProfile.dimensions]);
 
   const isCached = 'cachedAt' in friend;
-  const tier = getTierForScore(profile.overallRating);
-  const tierColor = getTierColor(tier, theme);
 
   const { settings } = useTheme();
   const myUsername = settings.chesscomUsername ?? allGames[0]?.player?.username ?? null;
@@ -259,11 +262,25 @@ function ComparisonResults({
 
   return (
     <div ref={resultsRootRef} className="space-y-4 scroll-mt-4">
-      {/* Score comparison header */}
-      <div className="flex items-center justify-between bg-chess-surface rounded-lg p-3">
-        <PlayerBadge label={t('compare_you')} score={profile.overallRating} elo={playerElo} gameCount={myGameCount} flag={myFlag} theme={theme} />
-        <span className="text-xs font-bold text-gray-500 uppercase tracking-widest">vs</span>
-        <PlayerBadge label={friend.username} score={friend.skillProfile.overallRating} elo={friend.elo} gameCount={friend.gamesAnalyzed} flag={friendFlag} theme={theme} />
+      {/* Side-by-side YOU / OPP score cards (per Claude Design).
+          Big white score for you, tier-colored score for opp; checkbox top-left
+          (decorative for now — will gate radar inclusion in a future tweak). */}
+      <div className="grid grid-cols-2 gap-2.5">
+        <SideScoreCard
+          isMe
+          label={t('compare_you')}
+          score={profile.overallRating}
+          elo={playerElo}
+          flag={myFlag}
+          theme={theme}
+        />
+        <SideScoreCard
+          label={friend.username}
+          score={friend.skillProfile.overallRating}
+          elo={friend.elo}
+          flag={friendFlag}
+          theme={theme}
+        />
       </div>
 
       {/* Cache indicator */}
@@ -276,20 +293,9 @@ function ComparisonResults({
         </div>
       )}
 
-      {/* Overlay radar comparison */}
+      {/* Overlay radar comparison — solid 'you' line + dashed friend line,
+          legend below per Claude Design. */}
       <div className="flex flex-col items-center">
-        {/* Legend */}
-        <div className="flex items-center gap-5 mb-1">
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-full" style={{ backgroundColor: tierColor, opacity: 0.7 }} />
-            <span className="text-xs text-chess-text-secondary font-medium">{t('compare_you')}</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-4 h-0 border-t-2 border-dashed border-white/60 inline-block" />
-            <span className="text-xs text-chess-text-secondary font-medium">{friend.username}</span>
-          </div>
-        </div>
-
         <SkillRadar
           profile={profile}
           benchmarks={friendBenchmarks}
@@ -297,6 +303,22 @@ function ComparisonResults({
           size={280}
           animated={false}
         />
+        <div className="flex items-center gap-5 mt-1">
+          <div className="flex items-center gap-1.5">
+            <span className="w-4 h-[2px] inline-block bg-chess-text-secondary" />
+            <span className="text-[11px] text-chess-text-secondary font-medium">{t('compare_you')}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span
+              className="inline-block"
+              style={{
+                width: 16, height: 0,
+                borderTop: '2px dashed #60a5fa',
+              }}
+            />
+            <span className="text-[11px] text-chess-text-secondary font-medium">{friend.username}</span>
+          </div>
+        </div>
       </div>
 
       {/* Dimension-by-dimension comparison */}
@@ -434,25 +456,6 @@ function formatTimeAgo(timestamp: number, t?: (key: any, params?: any) => string
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function PlayerBadge({ label, score, elo, gameCount, flag, theme }: { label: string; score: number; elo: number; gameCount?: number; flag?: string; theme: 'dark' | 'light' }) {
-  const { t } = useT();
-  const tier = getTierForScore(score);
-  const color = getTierColor(tier, theme);
-  return (
-    <div className="text-center">
-      <div className="text-base font-bold text-chess-text mb-0.5 flex items-center justify-center gap-1">
-        {flag && <span className="text-lg leading-none">{flag}</span>}
-        <span className="truncate max-w-[140px]">{label}</span>
-      </div>
-      <div className="text-2xl font-black" style={{ color }}>{score}</div>
-      <div className="text-xs text-gray-500">{tier.icon} {translateTierName(tier.id, t)} {'\u00B7'} {elo}</div>
-      {gameCount != null && (
-        <div className="text-[11px] text-gray-600">{gameCount}g {t('compare_analyzed')}</div>
-      )}
-    </div>
-  );
-}
-
 function InviteShareButtons({ friendName, myScore }: { friendName: string; myScore: number }) {
   const { t } = useT();
   const shareText = `Hey ${friendName}! I just analyzed my chess DNA — my score is ${myScore}. Want to compare? Check it out: https://chessdna.com`;
@@ -533,31 +536,97 @@ function DimensionRow({ label, myScore, friendScore, delta, theme }: {
   delta: number;
   theme: 'dark' | 'light';
 }) {
-  const myTier = getTierForScore(myScore);
-  const friendTier = getTierForScore(friendScore);
-  const myColor = getTierColor(myTier, theme);
-  const friendColor = getTierColor(friendTier, theme);
-
+  void theme; // Theme-aware colours moved to inline tokens; kept in props for future tweaks.
   return (
-    <div className="flex items-center gap-3 bg-chess-surface/50 rounded px-2.5 py-1.5">
-      <span className="text-xs text-chess-text-secondary w-28 shrink-0 truncate">{label}</span>
-      <div className="flex-1 relative h-2 bg-chess-border/20 rounded-full">
-        <div
-          className="absolute h-2 rounded-full"
-          style={{ width: `${(myScore / 99) * 100}%`, backgroundColor: myColor, opacity: 0.7 }}
-        />
-        <div
-          className="absolute h-2 rounded-full"
-          style={{ width: `${(friendScore / 99) * 100}%`, backgroundColor: friendColor, opacity: 0.35 }}
-        />
-      </div>
+    <div className="flex items-center gap-3 px-1 py-2 border-b border-chess-border/15 last:border-b-0">
+      <span className="flex-1 text-[13px] text-chess-text font-medium truncate">{label}</span>
+      <span className="text-sm font-bold text-chess-text tabular-nums">{myScore}</span>
+      <span className="text-[11px] text-chess-text-tertiary uppercase tracking-wider">vs</span>
+      <span className="text-sm font-bold text-chess-text-secondary tabular-nums">{friendScore}</span>
       <span
-        className={`text-xs font-bold w-10 text-right tabular-nums ${
-          delta > 0 ? 'text-chess-accent' : delta < 0 ? 'text-chess-blunder' : 'text-gray-500'
+        className={`text-sm font-extrabold w-12 text-end tabular-nums ${
+          delta > 0
+            ? 'text-chess-accent'
+            : delta < 0
+              ? 'text-chess-blunder'
+              : 'text-chess-text-tertiary'
         }`}
       >
         {delta > 0 ? '+' : ''}{delta}
       </span>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   SideScoreCard — large 2-column YOU / OPP cards used at the top of the
+   comparison results (per Claude Design). Big white number for "you",
+   tier-colored number for the opponent, with a decorative checkbox in
+   the top-left and flag/tier line below.
+   ────────────────────────────────────────────────────────────────────── */
+function SideScoreCard({
+  label,
+  score,
+  elo,
+  flag,
+  theme,
+  isMe = false,
+}: {
+  label: string;
+  score: number;
+  elo: number;
+  flag?: string;
+  theme: 'dark' | 'light';
+  isMe?: boolean;
+}) {
+  const { t } = useT();
+  const tier = getTierForScore(score);
+  const tierColor = getTierColor(tier, theme);
+
+  return (
+    <div
+      className="rounded-xl p-3 relative"
+      style={{
+        background: 'rgb(var(--chess-surface))',
+        border: isMe
+          ? '1px solid rgba(74,222,128,0.45)'
+          : '1px solid rgba(96,165,250,0.45)',
+      }}
+    >
+      {/* Decorative checkbox top-start */}
+      <span
+        className="absolute top-2 start-2 w-3 h-3 rounded-[3px] border block"
+        style={{
+          borderColor: isMe ? 'rgba(74,222,128,0.6)' : 'rgba(96,165,250,0.6)',
+          background: isMe ? 'rgba(74,222,128,0.18)' : 'rgba(96,165,250,0.18)',
+        }}
+      />
+      <div className="text-center">
+        <div className="flex items-center justify-center gap-1 text-[11px] font-extrabold tracking-[1.6px] uppercase mb-1">
+          {flag && <span className="text-base leading-none">{flag}</span>}
+          <span
+            className="truncate max-w-[110px]"
+            style={{ color: isMe ? 'rgb(var(--chess-accent))' : '#60a5fa' }}
+          >
+            {label}
+          </span>
+        </div>
+        <div
+          className="text-[40px] font-black tabular-nums leading-none tracking-[-0.03em]"
+          style={{
+            color: isMe ? 'rgb(var(--chess-text))' : tierColor,
+            filter: isMe ? 'none' : `drop-shadow(0 0 12px ${tierColor}55)`,
+          }}
+        >
+          {score}
+        </div>
+        <div className="text-[11px] text-chess-text-tertiary mt-1.5 tabular-nums">
+          {elo} <span className="mx-1">{'·'}</span>
+          <span className="inline-flex items-center gap-0.5">
+            <span>{tier.icon}</span> {translateTierName(tier.id, t)}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

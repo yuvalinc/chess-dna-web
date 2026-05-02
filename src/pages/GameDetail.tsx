@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import ThemedChessboard from '@/components/ThemedChessboard';
 import EvalBar from '@/components/EvalBar';
 import MoveList from '@/components/MoveList';
@@ -13,6 +13,7 @@ import { sendWithFallback, hasAnyProvider } from '@/ai/ai-router';
 import { useActivePrompt } from '@/hooks/useActivePrompt';
 import ExplanationText from '@/components/ExplanationText';
 import ShareComposer from '@/components/share/ShareComposer';
+import { useTutorial } from '@/contexts/TutorialContext';
 import type { MoveAnalysis } from '@shared/types/analysis';
 import { DataAttribution } from '@/components/PlatformBadge';
 import PlayerAvatar from '@/components/PlayerAvatar';
@@ -32,6 +33,12 @@ export default function GameDetail() {
   const { buildPrompt } = useActivePrompt();
 
   const { allGames, gamesLoading: gameLoading, allAnalyses, analysesLoading: analysisLoading, profile } = useChessData();
+  // Tutorial integration: when the GameDetail tutorial step is active we
+  // (a) force the insightTab to 'moments' so the user sees the moment cards,
+  // (b) auto-jump to the demo move so the AI explanation is on screen,
+  // (c) tag the matching KeyMomentCard with a data-tutorial-target.
+  const { step: tutorialStep, demoMoveHalfIndex } = useTutorial();
+  const inGameDetailTutorial = tutorialStep === 3;
   const game = useMemo(() => allGames.find(g => g.id === gameId) ?? null, [allGames, gameId]);
   const analysis = useMemo(() => allAnalyses.find(a => a.gameId === gameId) ?? null, [allAnalyses, gameId]);
 
@@ -39,6 +46,25 @@ export default function GameDetail() {
   // an explicit `initialMoveIndex` (e.g. when arriving from Time Machine
   // with a specific move to inspect).
   const [currentMoveIndex, setCurrentMoveIndex] = useState(initialMoveIndex ?? -1);
+
+  // Deep-link support: arriving with `?move=<moveNumber>` (1-based, the
+  // value shown in `#N` chips on the Recent Games row) jumps straight to
+  // that move in the analysis. We resolve the corresponding halfMoveIndex
+  // by matching on the player's color so the link "feels" right whether
+  // the user played white or black.
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    if (!analysis) return;
+    const raw = searchParams.get('move');
+    if (!raw) return;
+    const targetMoveNumber = parseInt(raw, 10);
+    if (Number.isNaN(targetMoveNumber)) return;
+    const playerColor = analysis.summary?.playerColor;
+    const idx = analysis.moves.findIndex(
+      (m) => m.color === playerColor && m.moveNumber === targetMoveNumber,
+    );
+    if (idx >= 0) setCurrentMoveIndex(idx);
+  }, [analysis, searchParams]);
   const [showBoard, setShowBoard] = useState(true);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareMove, setShareMove] = useState<MoveAnalysis | null>(null);
@@ -100,11 +126,59 @@ export default function GameDetail() {
 
   const hasKeyMoments = keyMoments.length > 0;
   const hasPatterns = gamePatterns.length > 0;
+  // Default tab: Patterns when available — no specific key moment is
+  // selected on initial load, so the broader pattern view is the more
+  // informative landing surface. The deep-link effect below overrides
+  // to Moments when arriving via `?move=N` on a key-moment move.
   const [insightTab, setInsightTab] = useState<'stats' | 'moments' | 'patterns'>(
-    hasKeyMoments ? 'moments' : hasPatterns ? 'patterns' : 'stats',
+    hasPatterns ? 'patterns' : hasKeyMoments ? 'moments' : 'stats',
   );
+  // Track whether we've auto-picked a default tab once analysis loads.
+  // Without this, the initial state above would lock to 'stats' (because
+  // analysis is still loading on first render and hasPatterns=false), and
+  // never re-evaluate when patterns/moments arrive.
+  const initialTabPickedRef = useRef(false);
+  useEffect(() => {
+    if (initialTabPickedRef.current) return;
+    if (!hasPatterns && !hasKeyMoments) return; // wait for data
+    initialTabPickedRef.current = true;
+    setInsightTab(hasPatterns ? 'patterns' : 'moments');
+  }, [hasPatterns, hasKeyMoments]);
   const [selectedPatternIdx, setSelectedPatternIdx] = useState(0);
   const [, _setSelectedMomentIdx] = useState(0);
+
+  // When the user arrives via a `?move=N` deep-link from the Recent Games
+  // takeaway, also auto-focus the right insight surface:
+  //  - if the move is a Key Moment → switch to the Moments tab
+  //  - else if it's part of a detected Pattern → switch to Patterns and
+  //    select the pattern containing that move
+  // (Moves tab/list always reflects `currentMoveIndex` set by the earlier
+  // effect, so the move list is in sync automatically.)
+  useEffect(() => {
+    if (!analysis) return;
+    const raw = searchParams.get('move');
+    if (!raw) return;
+    const targetMoveNumber = parseInt(raw, 10);
+    if (Number.isNaN(targetMoveNumber)) return;
+    const playerColor = analysis.summary?.playerColor;
+    const targetMove = analysis.moves.find(
+      (m) => m.color === playerColor && m.moveNumber === targetMoveNumber,
+    );
+    if (!targetMove) return;
+    const targetHalf = targetMove.halfMoveIndex;
+    const isKeyMoment = keyMoments.some((m) => m.halfMoveIndex === targetHalf);
+    if (isKeyMoment) {
+      setInsightTab('moments');
+      return;
+    }
+    const patternIdx = gamePatterns.findIndex((p) =>
+      p.moves.some((mv) => mv.moveIndex === targetHalf),
+    );
+    if (patternIdx >= 0) {
+      setInsightTab('patterns');
+      setSelectedPatternIdx(patternIdx);
+    }
+  }, [analysis, searchParams, keyMoments, gamePatterns]);
 
   // Track last selected move index per tab for state restoration
   const lastMomentMoveRef = useRef<number>(-1);
@@ -171,6 +245,17 @@ export default function GameDetail() {
       setInsightTab(hasKeyMoments ? 'moments' : 'stats');
     }
   }, [hasKeyMoments, hasPatterns, insightTab]);
+
+  // When the tutorial lands on this page, switch to the Moments tab and
+  // jump the board to the demo move so the user sees the spotlight target
+  // immediately. Only fires while the GameDetail tutorial step is active.
+  useEffect(() => {
+    if (!inGameDetailTutorial) return;
+    if (hasKeyMoments) setInsightTab('moments');
+    if (typeof demoMoveHalfIndex === 'number' && demoMoveHalfIndex >= 0) {
+      setCurrentMoveIndex(demoMoveHalfIndex);
+    }
+  }, [inGameDetailTutorial, hasKeyMoments, demoMoveHalfIndex]);
 
   const jumpToMoveWithAnimation = useCallback((moveIndex: number) => {
     if (!analysis) return;
@@ -509,7 +594,7 @@ export default function GameDetail() {
   const insightsPanel = analysis ? (
     <div>
       {/* Tab buttons */}
-      <div ref={insightTabsRef} className="flex gap-1 mb-2 scroll-mt-4">
+      <div ref={insightTabsRef} data-tutorial-target="game-detail-tabs" className="flex gap-1 mb-2 scroll-mt-4">
         <button onClick={() => handleTabSwitch('stats')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${insightTab === 'stats' ? 'bg-chess-accent/15 text-chess-accent' : 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.04]'}`}>
           {t('detail_stats')}
         </button>
@@ -546,7 +631,13 @@ export default function GameDetail() {
       {insightTab !== 'stats' && (
         <div className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-x-visible md:overflow-y-auto md:max-h-[195px]" style={{ scrollbarWidth: 'thin' }}>
           {insightTab === 'moments' && hasKeyMoments && keyMoments.map((moment, idx) => (
-            <KeyMomentCard key={idx} moment={moment} onClick={() => jumpToMoveWithAnimation(moment.halfMoveIndex)} isActive={currentMoveIndex === moment.halfMoveIndex} />
+            <KeyMomentCard
+              key={idx}
+              moment={moment}
+              onClick={() => jumpToMoveWithAnimation(moment.halfMoveIndex)}
+              isActive={currentMoveIndex === moment.halfMoveIndex}
+              tutorialTargetId={inGameDetailTutorial && moment.halfMoveIndex === demoMoveHalfIndex ? 'game-detail-moment' : undefined}
+            />
           ))}
           {insightTab === 'patterns' && hasPatterns && gamePatterns.map((pattern, idx) => {
             const severityKey = pattern.totalCpLoss >= 400 ? 'detail_severity_high' as const : pattern.totalCpLoss >= 150 ? 'detail_severity_medium' as const : 'detail_severity_low' as const;
@@ -1124,10 +1215,14 @@ function KeyMomentCard({
   moment,
   onClick,
   isActive,
+  tutorialTargetId,
 }: {
   moment: MoveAnalysis & { momentType: 'mistake' | 'brilliant' };
   onClick: () => void;
   isActive: boolean;
+  /** When set, marks this card with `data-tutorial-target` so the tutorial
+   *  coachmark can spotlight it. */
+  tutorialTargetId?: string;
 }) {
   const { t } = useT();
   const isMistake = moment.momentType === 'mistake';
@@ -1144,6 +1239,7 @@ function KeyMomentCard({
   return (
     <button
       onClick={onClick}
+      data-tutorial-target={tutorialTargetId}
       className={`shrink-0 w-[130px] md:w-full rounded-xl p-2 md:p-2.5 transition-all border leading-tight ${
         isActive
           ? 'border-chess-accent/40 bg-chess-accent/[0.06]'
@@ -1303,7 +1399,7 @@ function MoveInsightPanel({
   // (chips, move list) stable as the user scrubs through moves regardless
   // of whether the current move has AI commentary or not.
   return (
-    <div className="mt-2 bg-white/[0.03] rounded-xl px-3 py-2.5 border border-white/[0.04] flex flex-col">
+    <div data-tutorial-target="game-detail-ai-explanation" className="mt-2 bg-white/[0.03] rounded-xl px-3 py-2.5 border border-white/[0.04] flex flex-col">
       {/* Small inline header — only when AI commentary is present. The
           no-commentary path renders its own BIG centered version below. */}
       {hasCommentary && (

@@ -19,6 +19,21 @@ function getBase44Token(): string | null {
   }
 }
 
+/**
+ * "Real mode" — when this localStorage flag is set, the local dev server
+ * skips its usual `isDev`-shortcut and runs the full production auth flow
+ * against Base44. Useful for testing real entity CRUD, analytics, RLS, and
+ * admin gating from localhost. Pair with a pasted access token (see
+ * DevModeToggle) to actually have an authenticated session.
+ */
+export function isRealMode(): boolean {
+  try {
+    return localStorage.getItem('chess-dna-real-mode') === 'true';
+  } catch {
+    return false;
+  }
+}
+
 interface AuthContextValue {
   /** True when a valid Base44 session token exists */
   isAuthenticated: boolean;
@@ -49,21 +64,26 @@ const AuthContext = createContext<AuthContextValue>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // `useDevShortcut` keeps the old fast-path (always-authenticated, always-
+  // admin) for local development. Flipping the `chess-dna-real-mode` flag
+  // turns it off so the dev server uses the same auth flow as production.
   const isDev = import.meta.env.DEV;
+  const realMode = isRealMode();
+  const useDevShortcut = isDev && !realMode;
 
   // Token check is synchronous — we know auth state immediately
   const token = getBase44Token();
-  const [isAuthenticated] = useState(() => isDev || !!token);
+  const [isAuthenticated] = useState(() => useDevShortcut || !!token);
 
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(isDev ? true : null);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(useDevShortcut ? true : null);
   const [authResolved, setAuthResolved] = useState(false);
 
   useEffect(() => {
-    console.log('[Chess DNA Auth] Init — token:', !!token, 'isDev:', isDev);
+    console.log('[Chess DNA Auth] Init — token:', !!token, 'isDev:', isDev, 'realMode:', realMode);
 
-    if (isDev) {
+    if (useDevShortcut) {
       setAuthResolved(true);
       return;
     }
@@ -121,7 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         console.log('[Chess DNA Auth] authResolved=true, isAuthenticated=true');
       });
-  }, [isDev, token]);
+  }, [useDevShortcut, isDev, realMode, token]);
 
   return (
     <AuthContext.Provider value={{ isAuthenticated, isGuest: !isAuthenticated, userId, userEmail, isAdmin, authResolved }}>

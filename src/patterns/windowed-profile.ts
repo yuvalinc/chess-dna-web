@@ -15,22 +15,26 @@ import { calculateSkillProfile } from './skill-calculator';
  *  Time-Window definitions
  * ──────────────────────────────────────────────────────────── */
 
-export type TimeWindowId = 'ability' | 'form' | 'trend' | 'delta';
+/* Date-based windows — Today / This Week / All Time per Claude Design.
+   The `sinceMsAgo` field controls the lower bound (null = no lower bound). */
+export type TimeWindowId = 'today' | 'week' | 'all';
 
 export interface TimeWindow {
   id: TimeWindowId;
   label: string;
-  gameCount: number;
+  /** Cutoff in ms before now. null = include all games regardless of age. */
+  sinceMsAgo: number | null;
 }
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
 export const TIME_WINDOWS: TimeWindow[] = [
-  { id: 'ability', label: 'Ability', gameCount: 30 },
-  { id: 'form', label: 'Form', gameCount: 5 },
-  { id: 'trend', label: 'Trend', gameCount: 3 },
-  { id: 'delta', label: 'Delta', gameCount: 1 },
+  { id: 'today', label: 'Today',     sinceMsAgo: ONE_DAY_MS },
+  { id: 'week',  label: 'This Week', sinceMsAgo: 7 * ONE_DAY_MS },
+  { id: 'all',   label: 'All Time',  sinceMsAgo: null },
 ];
 
-export const DEFAULT_WINDOW: TimeWindowId = 'form';
+export const DEFAULT_WINDOW: TimeWindowId = 'week';
 
 /* ────────────────────────────────────────────────────────────
  *  Impact labels (user-facing terminology for severity)
@@ -238,18 +242,21 @@ export interface WindowedProfileResult {
 }
 
 /**
- * Compute a SkillProfile for the most recent N analyzed games.
+ * Compute a SkillProfile scoped to the games inside a given time window.
+ *
+ * `windowSize` is the lower-bound cutoff in ms before now. Pass `null` (or 0)
+ * to include all games regardless of age.
  */
 export function computeWindowedProfile(
   allGames: GameRecord[],
   allAnalyses: GameAnalysis[],
-  windowSize: number,
+  windowSize: number | null,
 ): WindowedProfileResult {
-  // Sort games by playedAt descending, take those with complete analysis
+  const cutoff = windowSize && windowSize > 0 ? Date.now() - windowSize : 0;
   const analyzedGames = allGames
     .filter((g) => g.analysisStatus === 'complete')
-    .sort((a, b) => b.playedAt - a.playedAt)
-    .slice(0, windowSize);
+    .filter((g) => g.playedAt >= cutoff)
+    .sort((a, b) => b.playedAt - a.playedAt);
 
   // Match analyses to the windowed games by entity ID
   const gameIds = new Set(analyzedGames.map((g) => g.id));

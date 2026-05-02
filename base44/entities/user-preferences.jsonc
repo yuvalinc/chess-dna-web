@@ -26,7 +26,8 @@
     "radarRevealedAt": { "type": "number" },
     "patternsUnlockedAt": { "type": "number" },
     "aiChoiceMade": { "type": "boolean", "default": false },
-    "guidedWalkthroughDone": { "type": "boolean", "default": false }
+    "guidedWalkthroughDone": { "type": "boolean", "default": false },
+    "tutorialStep": { "type": "number", "default": 0 }
   },
   "rls": {
     "create": true,

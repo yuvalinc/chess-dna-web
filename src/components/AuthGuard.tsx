@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { base44 } from '../api/base44Client';
 import { useT } from '@/i18n/index';
 import { en } from '@/i18n/locales/en';
+import OrbitDnaLoader from '@/components/OrbitDnaLoader';
 import {
   hasGuestSession,
   isGuestSessionExpired,
@@ -46,13 +47,8 @@ export default function AuthGuard({ children }: AuthGuardProps) {
   // Still loading auth
   if (!authResolved) {
     return (
-      <div className="min-h-screen bg-chess-bg flex items-center justify-center" data-theme="dark">
-        <div className="text-center">
-          <div className="mb-4 animate-spin-slow">
-            <svg className="text-chess-accent" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><g transform="rotate(45 12 12)"><path d="M8 2c0 6.5 8 12.5 8 19" /><path d="M16 2c0 6.5-8 12.5-8 19" /><line x1="9.2" y1="5.5" x2="14.8" y2="5.5" /><line x1="11" y1="8.5" x2="13" y2="8.5" /><line x1="11" y1="14.5" x2="13" y2="14.5" /><line x1="9.2" y1="17.5" x2="14.8" y2="17.5" /></g></svg>
-          </div>
-          <p className="text-chess-text-secondary text-sm">Loading Chess DNA...</p>
-        </div>
+      <div className="fixed inset-0 z-30 bg-chess-bg flex items-center justify-center">
+        <OrbitDnaLoader size={96} caption="Loading your Chess DNA..." />
       </div>
     );
   }

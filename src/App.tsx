@@ -4,10 +4,13 @@ import { ThemeProvider } from './components/ThemeContext';
 import { I18nProvider } from './components/I18nProviderWrapper';
 import { ChessDataProvider } from './contexts/ChessDataContext';
 import { AudioPlayerProvider } from './contexts/AudioPlayerContext';
+import { TutorialProvider } from './contexts/TutorialContext';
+import { AnalyticsProvider } from './analytics/AnalyticsProvider';
 import { ToastProvider } from './components/Toast';
 import ErrorBoundary from './components/ErrorBoundary';
 import AuthGuard from './components/AuthGuard';
 import AppShell from './components/AppShell';
+import DevModeToggle from './components/DevModeToggle';
 
 import Overview from './pages/Overview';
 import RecentGames from './pages/RecentGames';
@@ -21,6 +24,7 @@ import SkillStudio from './pages/SkillStudio';
 import AffiliateAdmin from './pages/AffiliateAdmin';
 import PromptsAdmin from './pages/PromptsAdmin';
 import FeedbackAdmin from './pages/FeedbackAdmin';
+import AnalyticsAdmin from './pages/AnalyticsAdmin';
 import TimeMachine from './pages/TimeMachine';
 import Compare from './pages/Compare';
 import NavFlow from './pages/NavFlow';
@@ -34,6 +38,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <ErrorBoundary>
+        <DevModeToggle />
         <Routes>
           {/* Public routes — reachable WITHOUT signing in, as required by
               Apple App Store / Google Play policies and GDPR-CCPA.
@@ -52,6 +57,8 @@ export default function App() {
                     <ToastProvider>
                       <ChessDataProvider>
                         <AudioPlayerProvider>
+                          <TutorialProvider>
+                          <AnalyticsProvider>
                           <Routes>
                             <Route element={<AppShell />}>
                               <Route path="/" element={<Overview />} />
@@ -68,11 +75,14 @@ export default function App() {
                               <Route path="/affiliate" element={<AffiliateAdmin />} />
                               <Route path="/prompts" element={<PromptsAdmin />} />
                               <Route path="/feedbacks" element={<FeedbackAdmin />} />
+                              <Route path="/analytics" element={<AnalyticsAdmin />} />
                               <Route path="/nav" element={<NavFlow />} />
                               <Route path="/graph" element={<Graph />} />
                               <Route path="*" element={<Navigate to="/" replace />} />
                             </Route>
                           </Routes>
+                          </AnalyticsProvider>
+                          </TutorialProvider>
                         </AudioPlayerProvider>
                       </ChessDataProvider>
                     </ToastProvider>

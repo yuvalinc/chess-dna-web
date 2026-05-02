@@ -1,17 +1,16 @@
 /**
  * Delete-account helper.
  *
- * Base44's client SDK doesn't expose a "delete user" API, and its
- * `auth.updateMe` endpoint returns 401 for normal users ("Authentication
- * required to update your user") — Base44 only lets admins mutate User
- * records. So "deleting an account" here means:
+ * Steps, in order:
  *   1. Remove every entity record the user owns.
- *   2. Clear local storage (tokens, settings caches, IndexedDB).
- *   3. Call `base44.auth.logout()` with an explicit redirect — the logout
+ *   2. Best-effort delete the user's own User entity record so they're
+ *      fully removed from the Base44 db (entities.User.delete via the
+ *      SDK's Proxy entity handler). This may 401 if Base44's RLS only
+ *      lets admins mutate User records — we fall back gracefully.
+ *   3. Clear local storage (tokens, settings caches, IndexedDB).
+ *   4. Call `base44.auth.logout()` with an explicit redirect — the logout
  *      endpoint clears the HTTP-only session cookie server-side, then
- *      bounces the browser to the redirect URL. Their Base44 User record
- *      still exists, but the session is terminated and all their data is
- *      gone; a fresh OAuth sign-in creates a clean empty account.
+ *      bounces the browser to the redirect URL.
  */
 import { base44 } from '@/api/base44Client';
 
@@ -103,6 +102,25 @@ export async function deleteAccountData(
       DELETE_CONCURRENCY,
       (completed) => onProgress?.({ entity: name, deleted: completed, total }),
     );
+  }
+
+  // Best-effort: delete the user's own User entity record from Base44.
+  // We resolve the user's id via auth.me(), then issue a DELETE against the
+  // User entity. Base44's RLS may reject this with 401/403 if non-admins
+  // can't mutate User records — we treat that as "no-op" and proceed with
+  // the rest of the cleanup so the user still gets logged out + local-data
+  // wiped. (auth.me() can also 401 in this app since there's no User entity
+  // schema configured for normal mutation; that's also fine.)
+  try {
+    const me = await base44.auth.me() as { id?: string } | null;
+    const myId = me?.id;
+    if (myId && entities.User && typeof entities.User.delete === 'function') {
+      onProgress?.({ entity: 'User', deleted: 0, total: 1 });
+      await entities.User.delete(myId);
+      onProgress?.({ entity: 'User', deleted: 1, total: 1 });
+    }
+  } catch (err) {
+    console.warn('[account-delete] Could not delete User record (likely RLS-protected):', err);
   }
 
   // Wipe local caches: Base44 token, app settings, IndexedDB-backed stores.

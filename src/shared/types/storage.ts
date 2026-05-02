@@ -33,6 +33,18 @@ export interface UserSettings {
   onboardingGameIds: string[];
   onboardingTimeClass: string | null;
   friendUsernames: string[];
+  /** Curated top-player chess.com usernames the user is following. Each
+   *  followed top player has their most recent game imported into Base44
+   *  so it appears in the Time Machine "Top Players" tab as a challenge. */
+  topPlayerUsernames: string[];
+  /** Tutorial coachmark progress (legacy single-cursor model). Kept for the
+   *  admin step navigator but no longer drives the live tour — see
+   *  `tutorialStepsSeen` for the per-step "already shown" list. */
+  tutorialStep: number;
+  /** Per-step "already shown" list. A coachmark step (1..N) only fires when
+   *  the user visits that step's screen AND its number is NOT in this list.
+   *  Skip / completion adds every remaining step. */
+  tutorialStepsSeen: number[];
   // Sync
   lastSyncAt: number | null;
   // Language (controls UI + AI + TTS)
@@ -80,6 +92,9 @@ export const DEFAULT_SETTINGS: UserSettings = {
   onboardingGameIds: [],
   onboardingTimeClass: null,
   friendUsernames: [],
+  topPlayerUsernames: [],
+  tutorialStep: 0,
+  tutorialStepsSeen: [],
   lastSyncAt: null,
   language: 'en',
   theme: 'dark',

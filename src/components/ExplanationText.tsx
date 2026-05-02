@@ -133,7 +133,7 @@ function MoveGallery({
           <span className={`text-[10px] font-bold ${labelColor} uppercase tracking-wide block mb-1`}>
             {current.label}
           </span>
-          <span className="text-gray-200 text-[12px] leading-relaxed">
+          <span className="text-chess-text text-[12px] leading-relaxed">
             <SquareRefs text={current.text} onSquareClick={onSquareClick} />
           </span>
         </div>

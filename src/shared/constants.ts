@@ -142,7 +142,7 @@ export const GEMINI_MAX_TOKENS = 2048;
 export const SYNC_INTERVAL_MS = 180_000;
 
 // Admin emails allowed to access /skill and /affiliate
-export const ADMIN_EMAILS = ['yuval.inc@gmail.com', 'nitzansteinberg18@gmail.com'];
+export const ADMIN_EMAILS = ['yuval.inc@gmail.com'];
 
 // Google Cloud Podcast API (NotebookLM backend)
 export const GCP_PODCAST_API_BASE = 'https://discoveryengine.googleapis.com/v1';

@@ -82,6 +82,9 @@ export const es: Translations = {
   tab_form: 'Forma',
   tab_trend: 'Tendencia',
   tab_delta: 'Cambio',
+  tab_today: 'Hoy',
+  tab_week: 'Esta semana',
+  tab_all_time: 'Siempre',
 
   // ── Game Detail page ──
   detail_loading: 'Cargando partida...',
@@ -120,7 +123,8 @@ export const es: Translations = {
 
   // ── Time Machine page ──
   tm_title: 'Máquina del Tiempo',
-  tm_desc: 'Vuelve a tus partidas reales y repite los momentos en que te equivocaste. Las posiciones están ordenadas por tus patrones más repetidos \u2014 corrige los hábitos que más te cuestan.',
+  tm_tagline: 'Repite errores — corrige los patrones.',
+  tm_desc: 'Repite los momentos donde ocurrieron errores. Las posiciones están ordenadas por los patrones más repetidos \u2014 corrige los hábitos que más cuestan.',
   tm_challenges: 'Desafíos',
   tm_completed: 'Completados \u2713',
   tm_patterns_intro: 'Según tus partidas, tus patrones{category} que más te afectan:',
@@ -132,7 +136,8 @@ export const es: Translations = {
   tm_loss_rate: 'tasa de derrota',
   tm_back: 'Volver',
   tm_find_better_move: '¡Tu turno! Encuentra una mejor jugada.',
-  tm_originally_played: 'Originalmente jugaste {move} aquí \u2014 ¿puedes hacerlo mejor?',
+  tm_originally_played: 'Jugaste {move}. \u2014 ¿Puedes mejorarlo?',
+  tm_originally_played_by: '{name} jugó {move}. ¿Puedes mejorarlo?',
   tm_reveal_answer: 'Revelar respuesta',
   tm_try_again: 'Intentar de nuevo',
   tm_continue: 'Continuar \u2192',

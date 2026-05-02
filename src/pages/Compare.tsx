@@ -108,7 +108,7 @@ export default function Compare() {
       {/* ── TOP: Pick a player (discover tabs + quick list) ──
            The single username input lives inside <FriendCompare /> below,
            so we don't double up. */}
-      <div className="mb-3">
+      <div className="mb-3" data-tutorial-target="compare-pick">
         <div className="flex gap-1 mb-2">
           <button onClick={() => setDiscoverTab('opponents')} className={dtClass('opponents')}>{t('compare_players')}</button>
           <button onClick={() => setDiscoverTab('international')} className={dtClass('international')}>{t('compare_international')}</button>
@@ -141,12 +141,21 @@ export default function Compare() {
       </div>
 
       {/* ── MAIN: FriendCompare always renders so its input serves as the
-           single search box; without a compareTarget it just sits idle. */}
-      <FriendCompare
-        key={`${compareTarget ?? 'empty'}-${gameType}`}
-        initialCompareUsername={compareTarget}
-        timeClass={gameType}
-      />
+           single search box; without a compareTarget it just sits idle. ──
+           Wrapped in two markers (`compare-result` for the radar/side-by-side,
+           `compare-diff` for the per-skill diff) so the tutorial coachmark
+           can spotlight progressively. Since both currently point to the
+           same wrapper, the tooltip text differs but the spotlight matches —
+           good enough until FriendCompare exposes finer hooks. */}
+      <div data-tutorial-target="compare-result">
+        <div data-tutorial-target="compare-diff">
+          <FriendCompare
+            key={`${compareTarget ?? 'empty'}-${gameType}`}
+            initialCompareUsername={compareTarget}
+            timeClass={gameType}
+          />
+        </div>
+      </div>
     </div>
   );
 }

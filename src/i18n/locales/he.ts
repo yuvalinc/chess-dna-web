@@ -82,6 +82,9 @@ export const he: Translations = {
   tab_form: 'פורמה',
   tab_trend: 'מגמה',
   tab_delta: 'שינוי',
+  tab_today: 'היום',
+  tab_week: 'השבוע',
+  tab_all_time: 'כל הזמנים',
 
   // ── Game Detail page ──
   detail_loading: 'טוען משחק...',
@@ -120,7 +123,8 @@ export const he: Translations = {
 
   // ── Time Machine page ──
   tm_title: 'מכונת הזמן',
-  tm_desc: 'חזור למשחקים האמיתיים שלך ושחק מחדש את הרגעים שטעית בהם. העמדות מסודרות לפי הדפוסים שחוזרים על עצמם \u2014 תקן את ההרגלים שעולים לך ביוקר.',
+  tm_tagline: 'שחק מחדש את הטעויות — תקן את הדפוסים.',
+  tm_desc: 'שחק מחדש את הרגעים שבהם נעשו טעויות. העמדות מסודרות לפי הדפוסים שחוזרים על עצמם \u2014 תקן את ההרגלים שעולים ביוקר.',
   tm_challenges: 'אתגרים',
   tm_completed: 'הושלמו \u2713',
   tm_patterns_intro: 'לפי המשחקים שלך, דפוסי{category} שמשפיעים עליך ביותר:',
@@ -132,7 +136,8 @@ export const he: Translations = {
   tm_loss_rate: 'אחוז הפסד',
   tm_back: 'חזור',
   tm_find_better_move: 'תורך! מצא מהלך טוב יותר.',
-  tm_originally_played: 'במקור שיחקת {move} כאן \u2014 אתה יכול יותר טוב?',
+  tm_originally_played: 'שיחקת {move}. \u2014 אפשר טוב יותר?',
+  tm_originally_played_by: '{name} שיחק {move}. אפשר טוב יותר?',
   tm_reveal_answer: 'גלה תשובה',
   tm_try_again: 'נסה שוב',
   tm_continue: '\u2190 המשך',

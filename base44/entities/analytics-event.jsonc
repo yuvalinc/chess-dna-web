@@ -1,0 +1,50 @@
+{
+  "name": "AnalyticsEvent",
+  "type": "object",
+  "properties": {
+    // Stable per-browser identifier (localStorage). Lets us count unique
+    // users (DAU/MAU) without depending on auth.
+    "anonymousId": { "type": "string" },
+    // Per-visit identifier (sessionStorage) — lets us reconstruct sessions
+    // and average session length / pages-per-session later.
+    "sessionId": { "type": "string" },
+    // Base44 user id when logged in. Empty string for guests.
+    "userId": { "type": "string" },
+    // Base44 user email when logged in. Empty string for guests. Captured
+    // alongside userId so the analytics dashboard can show a human-readable
+    // user list without round-tripping through a User entity.
+    "userEmail": { "type": "string" },
+    // 'page_view' | 'click' | 'signup' | 'onboarding' | 'analysis' | 'custom'
+    "eventType": { "type": "string" },
+    // Specific event name, e.g. 'continue_clicked', 'analysis_complete'.
+    "eventName": { "type": "string" },
+    // Current pathname when the event fired.
+    "path": { "type": "string" },
+    // Previous pathname (for funnels) — empty on first event of session.
+    "referrer": { "type": "string" },
+    // Stringified JSON for arbitrary metadata — Base44 silently drops
+    // unknown nested fields, so we serialize and parse client-side.
+    "properties": { "type": "string" },
+    "userAgent": { "type": "string" },
+    "platform": { "type": "string" },
+    "isGuest": { "type": "boolean" },
+    // Onboarding stage at the time of the event (0–5). -1 if unknown.
+    "journeyStage": { "type": "number" },
+    // Unix milliseconds. Indexed by Base44 by default via created_date,
+    // but we store our own ts so client-side sorting is deterministic.
+    "timestamp": { "type": "number" }
+  },
+  "required": ["eventType", "eventName", "timestamp"],
+  "rls": {
+    "create": true,
+    "read": {
+      "user_condition": { "role": "admin" }
+    },
+    "update": {
+      "user_condition": { "role": "admin" }
+    },
+    "delete": {
+      "user_condition": { "role": "admin" }
+    }
+  }
+}

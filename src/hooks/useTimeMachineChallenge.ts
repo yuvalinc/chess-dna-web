@@ -89,6 +89,9 @@ export interface ChallengeState {
   continuationMoves: ContinuationMoveRecord[];  // each move the user played in continuation
   continuationRankings: RankedMove[][];          // one ranking per continuation move
   rankingLoading: boolean;
+  /** When a tap-to-move would require a pawn promotion, we record from/to
+   *  here and wait for the user to pick Q/R/B/N from a custom picker. */
+  pendingPromotion: { from: Square; to: Square } | null;
 }
 
 const CONTINUATION_MOVES = 3;
@@ -136,6 +139,7 @@ function makeInitialState(config: ChallengeConfig | null): ChallengeState {
     continuationMoves: [],
     continuationRankings: [],
     rankingLoading: false,
+    pendingPromotion: null,
   };
 }
 
@@ -463,13 +467,26 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     const chess = chessRef.current;
 
     if (cur.selectedSquare) {
-      // Attempt move
+      // If this would be a pawn promotion (pawn lands on rank 1 or 8) and
+      // the move is otherwise legal, pause for the user to pick the piece.
+      const piece = chess.get(cur.selectedSquare);
+      if (piece?.type === 'p' && (square[1] === '1' || square[1] === '8')) {
+        const legal = chess.moves({ square: cur.selectedSquare, verbose: true })
+          .some(m => m.to === square);
+        if (legal) {
+          setState(prev => ({
+            ...prev,
+            pendingPromotion: { from: cur.selectedSquare!, to: square },
+          }));
+          return;
+        }
+      }
+
+      // Attempt move (no promotion required)
       const fenBefore = chess.fen();
       let result;
       try {
-        const piece = chess.get(cur.selectedSquare);
-        const needsPromo = piece?.type === 'p' && (square[1] === '1' || square[1] === '8');
-        result = chess.move({ from: cur.selectedSquare, to: square, promotion: needsPromo ? 'q' : undefined });
+        result = chess.move({ from: cur.selectedSquare, to: square });
       } catch { result = null; }
 
       if (result) {
@@ -508,7 +525,10 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
   }, [config]);
 
   // --- Piece drop ---
-  const onPieceDrop = useCallback((from: string, to: string): boolean => {
+  // `promotion` is optional — the caller (board UI) supplies it when the
+  // user picks Q/R/B/N from the promotion popup. If omitted and the move
+  // requires promotion, defaults to queen.
+  const onPieceDrop = useCallback((from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n'): boolean => {
     if (!config) return false;
     const cur = stateRef.current;
     if (!cur.playerTurn || cur.opponentThinking || cur.evaluating) return false;
@@ -520,7 +540,7 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     try {
       const piece = chess.get(from as Square);
       const needsPromo = piece?.type === 'p' && (to[1] === '1' || to[1] === '8');
-      result = chess.move({ from: from as Square, to: to as Square, promotion: needsPromo ? 'q' : undefined });
+      result = chess.move({ from: from as Square, to: to as Square, promotion: needsPromo ? (promotion ?? 'q') : undefined });
     } catch { result = null; }
 
     if (!result) return false;
@@ -542,6 +562,46 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     if (isContinuation) console.log(`[TM CONT MOVE] Recorded continuation move (drop): ${result!.san} (${moveUci}) phase=${cur.phase}`);
     return true;
   }, [config]);
+
+  // --- Complete a tap-to-move promotion: user picked Q/R/B/N from the picker ---
+  const completePromotion = useCallback((piece: 'q' | 'r' | 'b' | 'n') => {
+    if (!config) return;
+    const cur = stateRef.current;
+    if (!cur.pendingPromotion) return;
+    const { from, to } = cur.pendingPromotion;
+
+    const chess = chessRef.current;
+    const fenBefore = chess.fen();
+    let result;
+    try {
+      result = chess.move({ from, to, promotion: piece });
+    } catch { result = null; }
+
+    if (!result) {
+      setState(prev => ({ ...prev, pendingPromotion: null }));
+      return;
+    }
+
+    const moveUci = result.from + result.to + (result.promotion ?? '');
+    const isContinuation = cur.phase === 'continuation';
+    setState(prev => ({
+      ...prev,
+      currentFen: chess.fen(),
+      selectedSquare: null,
+      legalMoves: [],
+      playerTurn: false,
+      lastMoveFrom: result!.from as Square,
+      lastMoveTo: result!.to as Square,
+      playerMoveUci: moveUci,
+      playerMoveSan: result!.san,
+      pendingPromotion: null,
+      ...(isContinuation ? { continuationMoves: [...prev.continuationMoves, { fenBefore, uci: moveUci, san: result!.san }] } : {}),
+    }));
+  }, [config]);
+
+  const cancelPromotion = useCallback(() => {
+    setState(prev => prev.pendingPromotion ? { ...prev, pendingPromotion: null, selectedSquare: null, legalMoves: [] } : prev);
+  }, []);
 
   // --- Score the player's move (fires after player moves in critical phase) ---
   useEffect(() => {
@@ -893,6 +953,8 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     undoMistake,
     onSquareClick,
     onPieceDrop,
+    completePromotion,
+    cancelPromotion,
     retry,
     replayLeadup,
     revealWithExplanation,

@@ -133,6 +133,18 @@ npx base44 site deploy -y   # Deploy dist/ to production
 - Verify the `dist/assets/index-*.js` filename changes after build (content hash)
 - After deploy, clear browser cache to verify new bundle loads (check filename in DevTools network tab)
 
+### ⚠️ NEVER deploy from a worktree
+**Deploys MUST run from `/Users/yuval/Chess-dna` (main checkout), not from `.claude/worktrees/*`.**
+
+The main checkout almost always has uncommitted in-progress work that production already includes. A worktree sits at a clean commit and DOES NOT include those changes — building+deploying from a worktree ships a bundle that's *missing the in-progress work*, wiping it from production. This has happened twice (2026-05-11/12) — once from `gallant-faraday-6a27fb`, once from `nifty-payne-ca6170` — both wiped the WaitlistGate / new nav / new radar.
+
+If you're in a worktree (`pwd` contains `.claude/worktrees/`):
+1. **Do not run `npx base44 site deploy`.** Apply your changes to `/Users/yuval/Chess-dna/...` first.
+2. **Check main is in sync**: `git -C /Users/yuval/Chess-dna status --porcelain | wc -l`. If nonzero, main has uncommitted work the worktree doesn't see — your worktree's `dist/` is NOT a valid deploy artifact.
+3. Then `cd /Users/yuval/Chess-dna && npm run build && npx base44 site deploy -y`.
+
+The `prebuild` npm script enforces this — it aborts the build when run from a worktree while main has uncommitted changes. Do NOT bypass it.
+
 ## Notable Details
 - No `User` entity in Base44 — `auth.me()` may 401 but token still works for CRUD
 - Streaming TTS: chunks play as they arrive (don't wait for full synthesis)

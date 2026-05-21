@@ -1,0 +1,60 @@
+name: SEO Claude Code Executor
+
+# Polls Base44 every 15 min for SeoRun records with status="approved"
+# and runs Claude Code (headless) on each task. When a task finishes,
+# the script updates the task's status in Base44 and commits any changes.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Specific SeoRun ID to execute (skip the poll)'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: seo-claude-code
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install chess-dna deps
+        run: npm ci
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git
+        run: |
+          git config user.email "claude-code-bot@users.noreply.github.com"
+          git config user.name "Claude Code"
+
+      - name: Execute approved SEO tasks
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE44_TOKEN: ${{ secrets.BASE44_TOKEN }}
+          FORCE_RUN_ID: ${{ inputs.run_id }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/seo-execute.mjs
+
+      - name: Push changes (if any)
+        run: |
+          if [ -n "$(git log origin/main..HEAD --oneline 2>/dev/null)" ]; then
+            git push origin HEAD:main
+          fi

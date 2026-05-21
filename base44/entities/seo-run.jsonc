@@ -1,0 +1,35 @@
+{
+  "name": "SeoRun",
+  "description": "Daily output from the SEO/GEO managed agent. Captures the agent's analysis, current rankings observed, extracted Claude Code tasks, and the approval/execution lifecycle (running → completed → approved → executing → done).",
+  "type": "object",
+  "properties": {
+    "runDate": { "type": "string" },
+    "agentSessionId": { "type": "string" },
+    "status": { "type": "string" },
+    "rawOutput": { "type": "string" },
+    "summary": { "type": "string" },
+    "rankings": { "type": "array" },
+    "tasks": { "type": "array" },
+    "approvedAt": { "type": "number" },
+    "approvedBy": { "type": "string" },
+    "workflowRunId": { "type": "string" },
+    "workflowRunUrl": { "type": "string" },
+    "completedAt": { "type": "number" },
+    "tokensUsed": { "type": "number" },
+    "costUsd": { "type": "number" },
+    "errorMessage": { "type": "string" }
+  },
+  "required": ["runDate", "status"],
+  "rls": {
+    "create": true,
+    "read": {
+      "user_condition": { "role": "admin" }
+    },
+    "update": {
+      "user_condition": { "role": "admin" }
+    },
+    "delete": {
+      "user_condition": { "role": "admin" }
+    }
+  }
+}

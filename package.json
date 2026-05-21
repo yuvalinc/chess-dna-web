@@ -9,7 +9,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "postinstall": "node scripts/copy-stockfish.mjs"
+    "postinstall": "node scripts/copy-stockfish.mjs",
+    "seo:daily": "node scripts/seo-daily.mjs",
+    "seo:execute": "node scripts/seo-execute.mjs"
   },
   "dependencies": {
     "@base44/sdk": "^0.8.19",

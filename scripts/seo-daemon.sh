@@ -45,5 +45,13 @@ cd "$REPO_DIR"
 # Make sure PATH is set right — launchd starts with a minimal env.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
+# Locate the Claude Code CLI. It's bundled inside the Mac Claude app at
+# ~/Library/Application Support/Claude/claude-code/<version>/claude.app/Contents/MacOS/claude.
+# The version changes with each update; pick the highest-versioned one.
+CLAUDE_DIR=$(ls -d "$HOME/Library/Application Support/Claude/claude-code"/*/claude.app/Contents/MacOS 2>/dev/null | sort -V | tail -1)
+if [ -n "$CLAUDE_DIR" ]; then
+  export PATH="$CLAUDE_DIR:$PATH"
+fi
+
 # Only log on actual activity (executor itself logs to stdout when working).
 node scripts/seo-execute.mjs

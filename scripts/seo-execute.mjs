@@ -387,9 +387,34 @@ async function deployResolvedIssues() {
     console.log(`[exec] Issue #${issueRef.number}: all ${prs.length} PR(s) resolved + all reviews complete. ${anyMerged ? 'Deploying.' : 'No code changes; closing.'}`);
 
     if (anyMerged) {
-      // Pull latest main into the local checkout, then deploy.
+      // Sanity check the main checkout BEFORE deploying. The risk we're
+      // guarding against (per CLAUDE.md): deploying from a checkout that
+      // doesn't have the latest origin/main, which would ship a stale
+      // bundle and wipe in-flight server-side changes.
       sh('git', ['fetch', 'origin', 'main'], { stdio: 'inherit' });
-      sh('git', ['merge', '--ff-only', 'origin/main'], { stdio: 'inherit' });
+
+      // 1. We must be on `main` (not a detached HEAD or feature branch).
+      const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
+      if (branch !== 'main') {
+        await commentOnIssue(issueRef.number, `⚠️ Deploy aborted: main checkout is on branch \`${branch}\`, not main. Switch back to main and retry.`);
+        continue;
+      }
+
+      // 2. Fast-forward to origin/main. If this fails, local main has
+      // diverging commits — refuse to deploy.
+      const merge = sh('git', ['merge', '--ff-only', 'origin/main'], { stdio: 'inherit' });
+      if (merge.status !== 0) {
+        await commentOnIssue(issueRef.number, `⚠️ Deploy aborted: \`git merge --ff-only origin/main\` failed in the main checkout. Local main has diverging commits or working-tree conflicts. Please reconcile (\`git status\` from /Users/yuval/Chess-dna), then re-trigger via /seo.`);
+        continue;
+      }
+
+      // 3. After ff-merge, HEAD should be exactly at origin/main.
+      const headSha = sh('git', ['rev-parse', 'HEAD']).stdout.trim();
+      const originSha = sh('git', ['rev-parse', 'origin/main']).stdout.trim();
+      if (headSha !== originSha) {
+        await commentOnIssue(issueRef.number, `⚠️ Deploy aborted: after \`git merge --ff-only\`, HEAD (${headSha.slice(0, 7)}) doesn't equal origin/main (${originSha.slice(0, 7)}). Something's off — please investigate.`);
+        continue;
+      }
 
       const deploy = sh('npx', ['base44', 'site', 'deploy', '-y'], { stdio: 'inherit', timeout: 10 * 60 * 1000 });
       const deployOk = deploy.status === 0;

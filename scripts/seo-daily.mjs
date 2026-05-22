@@ -92,7 +92,12 @@ async function createSession() {
 async function sendPrompt(sessionId, text) {
   return anthropic(`/v1/sessions/${sessionId}/events`, {
     method: 'POST',
-    body: JSON.stringify({ events: [{ type: 'user', text }] }),
+    body: JSON.stringify({
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text }],
+      }],
+    }),
   });
 }
 
@@ -118,20 +123,25 @@ function extractFinalAgentText(eventsPayload) {
   const events = eventsPayload.events ?? eventsPayload.data ?? [];
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
-    if (ev.type === 'agent' || ev.type === 'assistant' || ev.role === 'assistant') {
-      if (typeof ev.text === 'string') return ev.text;
-      if (Array.isArray(ev.content)) {
-        return ev.content
-          .filter(c => c.type === 'text' && typeof c.text === 'string')
-          .map(c => c.text)
-          .join('');
-      }
-      if (Array.isArray(ev.message?.content)) {
-        return ev.message.content
-          .filter(c => c.type === 'text' && typeof c.text === 'string')
-          .map(c => c.text)
-          .join('');
-      }
+    const isAgentMsg =
+      ev.type === 'agent.message' ||
+      ev.type === 'assistant.message' ||
+      ev.type === 'agent' ||
+      ev.type === 'assistant';
+    if (!isAgentMsg) continue;
+    if (Array.isArray(ev.content)) {
+      const text = ev.content
+        .filter(c => c.type === 'text' && typeof c.text === 'string')
+        .map(c => c.text)
+        .join('');
+      if (text) return text;
+    }
+    if (typeof ev.text === 'string') return ev.text;
+    if (Array.isArray(ev.message?.content)) {
+      return ev.message.content
+        .filter(c => c.type === 'text' && typeof c.text === 'string')
+        .map(c => c.text)
+        .join('');
     }
   }
   throw new Error('No agent text event found in session');

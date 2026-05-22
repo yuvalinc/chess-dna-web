@@ -102,17 +102,30 @@ async function sendPrompt(sessionId, text) {
 }
 
 async function pollSession(sessionId) {
+  // The session begins in "idle", transitions to "running" once the agent
+  // picks up the prompt, then returns to "idle" when finished. Polling
+  // status alone has a race condition — we'd accept the initial idle.
+  // Treat the session as done only when status is idle AND at least one
+  // agent.message event exists.
   const start = Date.now();
   while ((Date.now() - start) / 1000 < POLL_MAX_SEC) {
-    const sess = await anthropic(`/v1/sessions/${sessionId}`);
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_SEC * 1000));
+    const [sess, eventsPayload] = await Promise.all([
+      anthropic(`/v1/sessions/${sessionId}`),
+      anthropic(`/v1/sessions/${sessionId}/events`),
+    ]);
     const status = sess.status ?? sess.state ?? 'unknown';
-    if (status === 'idle' || status === 'completed' || status === 'done') return sess;
     if (status === 'failed' || status === 'errored' || status === 'error') {
       throw new Error(`Session ${sessionId} ended with status ${status}`);
     }
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_SEC * 1000));
+    const evList = eventsPayload.events ?? eventsPayload.data ?? [];
+    const hasAgentMessage = evList.some(
+      e => e.type === 'agent.message' || e.type === 'assistant.message',
+    );
+    const isIdle = status === 'idle' || status === 'completed' || status === 'done';
+    if (isIdle && hasAgentMessage) return { session: sess, events: eventsPayload };
   }
-  throw new Error(`Session ${sessionId} did not reach idle within ${POLL_MAX_SEC}s`);
+  throw new Error(`Session ${sessionId} did not finish within ${POLL_MAX_SEC}s`);
 }
 
 async function fetchEvents(sessionId) {
@@ -293,10 +306,8 @@ async function main() {
   await sendPrompt(sessionId, buildPrompt());
 
   console.log(`[seo-daily] Polling session until idle (max ${POLL_MAX_SEC}s)...`);
-  const finished = await pollSession(sessionId);
+  const { session: finished, events: eventsPayload } = await pollSession(sessionId);
 
-  console.log(`[seo-daily] Fetching events...`);
-  const eventsPayload = await fetchEvents(sessionId);
   const finalText = extractFinalAgentText(eventsPayload);
 
   const parsed = parseAgentJson(finalText) ?? {};

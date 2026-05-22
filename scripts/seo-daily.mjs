@@ -22,7 +22,11 @@
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const GH_BASE = 'https://api.github.com';
 const AGENT_ID = process.env.SEO_AGENT_ID ?? 'agent_01FF7U9ms15noELzXPDGk8cX';
-const ENV_ID = process.env.SEO_ENV_ID ?? 'env_01XnkgKT2C35kgoGqQSWNisG';
+const ENV_ID = process.env.SEO_ENV_ID ?? 'env_01MaCqWUQ4V56YXrwBXWcZG9';
+const VAULT_IDS = (process.env.SEO_VAULT_IDS ?? 'vlt_011CbHjLyhN98b2FHPVd8obw')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 const SITE_URL = process.env.SEO_SITE_URL ?? 'https://chess-dna-fdd5fbde.base44.app';
 const KEYWORDS = (
   process.env.SEO_KEYWORDS ??
@@ -80,12 +84,14 @@ async function gh(path, init = {}) {
 }
 
 async function createSession() {
+  const body = {
+    environment_id: ENV_ID,
+    agent: { type: 'agent', id: AGENT_ID },
+  };
+  if (VAULT_IDS.length > 0) body.vault_ids = VAULT_IDS;
   return anthropic('/v1/sessions', {
     method: 'POST',
-    body: JSON.stringify({
-      environment_id: ENV_ID,
-      agent: { type: 'agent', id: AGENT_ID },
-    }),
+    body: JSON.stringify(body),
   });
 }
 

@@ -182,13 +182,27 @@ function sumTokensFromSession(sess) {
   return (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
 }
 
-function buildPrompt() {
+function buildPrompt(carryover = []) {
   const today = todayIso();
+  const carryoverBlock = carryover.length === 0
+    ? ''
+    : [
+        ``,
+        `## Previously skipped tasks (from #${carryover[0].fromIssue}, ${carryover[0].fromDate})`,
+        ``,
+        `These tasks were proposed in a recent run but the user chose to **skip** them — they neither approved them nor letting them execute. Reconsider for today:`,
+        `  - If a task is still relevant and the underlying problem persists, **include it again** in your tasks list (refine the description if helpful).`,
+        `  - If the situation has changed (e.g. the user fixed it manually, or context shifted), drop it.`,
+        ``,
+        ...carryover.map(t => `- **${t.priority}** — ${t.title}: ${t.description}`),
+        ``,
+      ].join('\n');
   return [
     `Today is ${today}. Run today's SEO/GEO analysis for ${SITE_URL}.`,
     ``,
     `Target keywords: ${KEYWORDS.join(', ')}`,
     `Keyword.com project: "${KEYWORDCOM_PROJECT}"`,
+    carryoverBlock,
     ``,
     `## Data source`,
     ``,
@@ -323,6 +337,55 @@ async function findExistingIssue(runDate) {
   return res.items?.find(i => i.title.includes(runDate)) ?? null;
 }
 
+// Look at the previous seo-daily issue (excluding today's, if any). For each
+// task that ended up marked `[x]` WITHOUT a matching ✅ Done comment from the
+// executor, that task was skipped by the user. We return its title +
+// description so today's agent can reconsider them.
+async function fetchCarryoverTasks(todayDate) {
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue label:seo-daily sort:created-desc`);
+  const search = await gh(`/search/issues?q=${q}&per_page=10`);
+  const recent = (search.items ?? []).filter(i => !i.title.includes(todayDate));
+  if (recent.length === 0) return [];
+  const prev = recent[0];
+  const [bodyIssue, comments] = await Promise.all([
+    gh(`/repos/${GH_REPO}/issues/${prev.number}`),
+    gh(`/repos/${GH_REPO}/issues/${prev.number}/comments?per_page=100`),
+  ]);
+  const body = bodyIssue.body ?? '';
+  const lines = body.split('\n');
+  const skipped = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^- \[(x|X)\] \*\*(P[012])\*\* — (.+?)(?:\s*<!-- task-\d+ -->)?$/);
+    if (!m) continue;
+    const [, , priority, title] = m;
+    const cleanTitle = title.trim();
+    const wasDone = (comments ?? []).some(c => {
+      const cb = c.body ?? '';
+      return cb.startsWith('✅') && cb.includes(`**${cleanTitle}**`);
+    });
+    const wasFailed = (comments ?? []).some(c => {
+      const cb = c.body ?? '';
+      return cb.startsWith('❌') && cb.includes(`**${cleanTitle}**`);
+    });
+    if (wasDone || wasFailed) continue;
+    const descLines = [];
+    let j = i + 1;
+    while (j < lines.length && /^\s+/.test(lines[j])) {
+      const trimmed = lines[j].trim();
+      if (trimmed.startsWith('>')) descLines.push(trimmed.replace(/^>\s?/, ''));
+      j++;
+    }
+    skipped.push({
+      title: cleanTitle,
+      description: descLines.join(' ').slice(0, 240),
+      priority,
+      fromIssue: prev.number,
+      fromDate: (prev.title.match(/SEO\s+(\d{4}-\d{2}-\d{2})/) || [])[1] ?? 'recent',
+    });
+  }
+  return skipped;
+}
+
 async function main() {
   const today = todayIso();
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
@@ -340,8 +403,19 @@ async function main() {
   const sessionId = session.id;
   console.log(`[seo-daily] Session ${sessionId} created.`);
 
-  console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords)...`);
-  await sendPrompt(sessionId, buildPrompt());
+  console.log(`[seo-daily] Looking up previously-skipped tasks…`);
+  let carryover = [];
+  try {
+    carryover = await fetchCarryoverTasks(today);
+    if (carryover.length > 0) {
+      console.log(`[seo-daily] Carrying forward ${carryover.length} skipped task(s) from prior runs.`);
+    }
+  } catch (e) {
+    console.warn(`[seo-daily] Carryover lookup failed (non-fatal):`, e.message);
+  }
+
+  console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords, ${carryover.length} carryover)...`);
+  await sendPrompt(sessionId, buildPrompt(carryover));
 
   console.log(`[seo-daily] Polling session until idle (max ${POLL_MAX_SEC}s)...`);
   const { session: finished, events: eventsPayload } = await pollSession(sessionId);

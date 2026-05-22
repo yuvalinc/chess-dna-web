@@ -217,7 +217,17 @@ function buildPrompt() {
     `    {"keyword": "string", "engine": "google|bing|chatgpt|perplexity|claude|gemini", "position": 1, "url": "string", "notes": "string"}`,
     `  ],`,
     `  "tasks": [`,
-    `    {"title": "Short imperative title", "description": "Detailed instructions Claude Code can follow.", "priority": "P0|P1|P2", "filesTouched": ["src/..."]}`,
+    `    {`,
+    `      "title": "Short imperative title",`,
+    `      "description": "Detailed, specific instructions Claude Code can execute without re-research.",`,
+    `      "priority": "P0|P1|P2",`,
+    `      "filesTouched": ["src/..."],`,
+    `      "timeEstimate": "5m|15m|30m|1h|2h+",`,
+    `      "impact": "critical|high|medium|low",`,
+    `      "effort": "low|medium|high",`,
+    `      "lane": "code|browser",`,
+    `      "scope": "website|external"`,
+    `    }`,
     `  ]`,
     `}`,
     '```',
@@ -227,6 +237,13 @@ function buildPrompt() {
     `- Maximum 5 tasks. Quality over quantity.`,
     `- Each task description must be specific enough for Claude Code to execute without re-research.`,
     `- Do NOT call any keyword.com write tool (\`add_*\`, \`update_*\`, \`delete_*\`, \`refresh_*\`).`,
+    ``,
+    `Task field definitions:`,
+    `- **timeEstimate**: realistic execution time for a competent operator (Claude Code or you).`,
+    `- **impact**: "critical" = unblocks SEO entirely (e.g. removing homepage noindex), "high" = measurable rank lift expected, "medium" = incremental gain, "low" = cleanup / hygiene.`,
+    `- **effort**: from the executor's perspective. "low" = 1-2 file edits or one form submission. "medium" = new file + cross-links. "high" = significant content creation or multi-step browser flow.`,
+    `- **lane**: "code" = file edits in the chess-dna repo (Claude Code SDK). "browser" = needs Chrome MCP to drive a real browser logged into the user's accounts (Google Search Console, AlternativeTo, etc.).`,
+    `- **scope**: "website" = changes the user's own site/repo. "external" = submission to an external platform / directory.`,
   ].join('\n');
 }
 
@@ -244,14 +261,26 @@ function renderRankingsTable(rankings) {
   ].join('\n');
 }
 
+function renderTaskMeta(t) {
+  const parts = [];
+  if (t.timeEstimate) parts.push(`⏱ ${t.timeEstimate}`);
+  if (t.impact) parts.push(`🎯 ${t.impact} impact`);
+  if (t.effort) parts.push(`⚡ ${t.effort} effort`);
+  if (t.lane) parts.push(t.lane === 'browser' ? '🌐 browser' : '💻 code');
+  if (t.scope) parts.push(t.scope === 'external' ? '🌍 external' : '📍 website');
+  return parts.length ? `  ${parts.join(' · ')}` : '';
+}
+
 function renderTasks(tasks) {
   if (!Array.isArray(tasks) || tasks.length === 0) return '_No tasks proposed today._';
   return tasks
     .map((t, i) => {
       const id = `task-${i + 1}`;
+      const meta = renderTaskMeta(t);
       const files = t.filesTouched?.length ? `\n  Files: \`${t.filesTouched.join('`, `')}\`` : '';
       const desc = String(t.description ?? '').split('\n').map(line => `  > ${line}`).join('\n');
-      return `- [ ] **${t.priority ?? 'P2'}** — ${t.title ?? `Task ${i + 1}`} <!-- ${id} -->\n${desc}${files}`;
+      const head = `- [ ] **${t.priority ?? 'P2'}** — ${t.title ?? `Task ${i + 1}`} <!-- ${id} -->`;
+      return [head, meta, desc, files].filter(Boolean).join('\n');
     })
     .join('\n\n');
 }

@@ -28,6 +28,11 @@ interface ParsedTask {
   checked: boolean;
   filesTouched: string[];
   lineIndex: number;
+  timeEstimate?: string;
+  impact?: 'critical' | 'high' | 'medium' | 'low';
+  effort?: 'low' | 'medium' | 'high';
+  lane?: 'code' | 'browser';
+  scope?: 'website' | 'external';
 }
 
 type RunStatus =
@@ -63,6 +68,21 @@ function fmtTime(iso?: string | null): string {
   });
 }
 
+function parseTaskMeta(line: string): Partial<ParsedTask> {
+  const meta: Partial<ParsedTask> = {};
+  const time = line.match(/⏱\s*([\d]+\s*(?:m|min|h|hour|hours)\+?)/i);
+  if (time) meta.timeEstimate = time[1].trim();
+  const impact = line.match(/🎯\s*(critical|high|medium|low)/i);
+  if (impact) meta.impact = impact[1].toLowerCase() as ParsedTask['impact'];
+  const effort = line.match(/⚡\s*(low|medium|high)/i);
+  if (effort) meta.effort = effort[1].toLowerCase() as ParsedTask['effort'];
+  if (line.includes('🌐')) meta.lane = 'browser';
+  else if (line.includes('💻')) meta.lane = 'code';
+  if (line.includes('🌍')) meta.scope = 'external';
+  else if (line.includes('📍')) meta.scope = 'website';
+  return meta;
+}
+
 function parseTasks(body: string | null): ParsedTask[] {
   if (!body) return [];
   const lines = body.split('\n');
@@ -73,13 +93,17 @@ function parseTasks(body: string | null): ParsedTask[] {
     const [, checked, priority, title, id] = m;
     const descLines: string[] = [];
     const fileLines: string[] = [];
+    let meta: Partial<ParsedTask> = {};
     let j = i + 1;
     while (j < lines.length && /^\s+/.test(lines[j])) {
       const trimmed = lines[j].trim();
-      if (trimmed.startsWith('>')) descLines.push(trimmed.replace(/^>\s?/, ''));
-      else if (trimmed.toLowerCase().startsWith('files:')) {
+      if (trimmed.startsWith('>')) {
+        descLines.push(trimmed.replace(/^>\s?/, ''));
+      } else if (trimmed.toLowerCase().startsWith('files:')) {
         const matches = [...trimmed.matchAll(/`([^`]+)`/g)];
         for (const fm of matches) fileLines.push(fm[1]);
+      } else if (/[⏱🎯⚡💻🌐🌍📍]/.test(trimmed)) {
+        meta = { ...meta, ...parseTaskMeta(trimmed) };
       }
       j++;
     }
@@ -91,6 +115,7 @@ function parseTasks(body: string | null): ParsedTask[] {
       description: descLines.join('\n'),
       filesTouched: fileLines,
       lineIndex: i,
+      ...meta,
     });
   }
   return tasks;
@@ -412,6 +437,87 @@ export default function SeoAdmin() {
   );
 }
 
+const IMPACT_STYLES: Record<NonNullable<ParsedTask['impact']>, string> = {
+  critical: 'bg-chess-blunder/15 text-chess-blunder border-chess-blunder/30',
+  high:     'bg-chess-mistake/15 text-chess-mistake border-chess-mistake/30',
+  medium:   'bg-chess-inaccuracy/15 text-chess-inaccuracy border-chess-inaccuracy/30',
+  low:      'bg-chess-surface/60 text-chess-text-tertiary border-chess-border/40',
+};
+
+const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
+  low:    'bg-chess-best/15 text-chess-best border-chess-best/30',
+  medium: 'bg-chess-inaccuracy/15 text-chess-inaccuracy border-chess-inaccuracy/30',
+  high:   'bg-chess-mistake/15 text-chess-mistake border-chess-mistake/30',
+};
+
+function TaskRow({
+  task, status, busy, onToggle,
+}: {
+  task: ParsedTask;
+  status: RunStatus;
+  busy: boolean;
+  onToggle: () => void;
+}) {
+  const approved = !task.checked; // unchecked markdown = will run
+  const lockedAfterApproval = status !== 'pending';
+
+  return (
+    <div className={`border rounded-lg p-3 mb-2 transition-colors ${approved ? 'border-chess-accent/30 bg-chess-accent/5' : 'border-chess-border/30 bg-chess-surface/30 opacity-60'}`}>
+      <div className="flex items-start gap-3">
+        <button
+          onClick={onToggle}
+          disabled={busy || lockedAfterApproval}
+          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${approved ? 'bg-chess-accent text-white border-chess-accent' : 'bg-transparent text-chess-text-tertiary border-chess-border/40 hover:text-chess-text'} ${busy || lockedAfterApproval ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+          title={approved ? 'Click to skip this task' : 'Click to approve this task'}
+        >
+          {busy ? '…' : approved ? '✓ Approved' : 'Skipped'}
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="text-[11px] font-bold text-chess-text-tertiary">{task.priority}</span>
+            <span className="text-sm font-bold text-chess-text">{task.title}</span>
+          </div>
+
+          {(task.timeEstimate || task.impact || task.effort || task.lane || task.scope) && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {task.timeEstimate && (
+                <Badge cls="bg-chess-surface/80 text-chess-text-tertiary border-chess-border/40">⏱ {task.timeEstimate}</Badge>
+              )}
+              {task.impact && (
+                <Badge cls={IMPACT_STYLES[task.impact]}>🎯 {task.impact}</Badge>
+              )}
+              {task.effort && (
+                <Badge cls={EFFORT_STYLES[task.effort]}>⚡ {task.effort}</Badge>
+              )}
+              {task.lane && (
+                <Badge cls="bg-chess-surface/80 text-chess-text-tertiary border-chess-border/40">
+                  {task.lane === 'browser' ? '🌐 Browser (Chrome MCP)' : '💻 Code'}
+                </Badge>
+              )}
+              {task.scope && (
+                <Badge cls="bg-chess-surface/80 text-chess-text-tertiary border-chess-border/40">
+                  {task.scope === 'external' ? '🌍 External submission' : '📍 Website change'}
+                </Badge>
+              )}
+            </div>
+          )}
+
+          {task.description && (
+            <p className="text-[13px] text-chess-text-secondary whitespace-pre-wrap">{task.description}</p>
+          )}
+          {task.filesTouched.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {task.filesTouched.map(f => (
+                <code key={f} className="text-[11px] bg-chess-bg/60 px-1.5 py-0.5 rounded text-chess-text-tertiary">{f}</code>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IssueCard({
   issue, isLatest, onApprove, onToggleTask, showRaw, onToggleRaw, busy,
 }: {
@@ -486,38 +592,18 @@ function IssueCard({
           title={`Tasks (${tasks.length})`}
           action={
             <span className="text-[11px] text-chess-text-tertiary">
-              {tasks.filter(t => t.checked).length} checked · {tasks.filter(t => !t.checked).length} pending
+              {tasks.filter(t => !t.checked).length} approved · {tasks.filter(t => t.checked).length} skipped
             </span>
           }
         >
           {tasks.map(task => (
-            <div key={task.id} className="border border-chess-border/30 rounded-lg p-3 mb-2 bg-chess-surface/40">
-              <div className="flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={task.checked}
-                  onChange={() => onToggleTask(task)}
-                  disabled={busy === 'task:' + task.id || status !== 'pending'}
-                  className="mt-1 cursor-pointer"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[11px] font-bold text-chess-text-tertiary">{task.priority}</span>
-                    <span className="text-sm font-bold text-chess-text">{task.title}</span>
-                  </div>
-                  {task.description && (
-                    <p className="text-[13px] text-chess-text-secondary whitespace-pre-wrap">{task.description}</p>
-                  )}
-                  {task.filesTouched.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {task.filesTouched.map(f => (
-                        <code key={f} className="text-[11px] bg-chess-bg/60 px-1.5 py-0.5 rounded text-chess-text-tertiary">{f}</code>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+            <TaskRow
+              key={task.id}
+              task={task}
+              status={status}
+              busy={busy === 'task:' + task.id}
+              onToggle={() => onToggleTask(task)}
+            />
           ))}
         </Card>
       )}

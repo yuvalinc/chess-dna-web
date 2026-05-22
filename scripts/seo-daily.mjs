@@ -280,7 +280,10 @@ function buildIssueBody({ summary, rankings, tasks, sessionId, tokensUsed, rawOu
 }
 
 async function findExistingIssue(runDate) {
-  const q = encodeURIComponent(`repo:${GH_REPO} is:issue label:seo-daily in:title "${runDate}"`);
+  // Only block re-runs against OPEN issues. Once an issue is closed (manually
+  // or by the executor), it stops blocking — useful for re-running today
+  // after a script fix.
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open label:seo-daily in:title "${runDate}"`);
   const res = await gh(`/search/issues?q=${q}`);
   return res.items?.find(i => i.title.includes(runDate)) ?? null;
 }

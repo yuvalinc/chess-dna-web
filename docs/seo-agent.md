@@ -29,8 +29,8 @@ everything else runs autonomously.
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  You run `npm run seo:execute` on your Mac                      │
-│  (after clicking Approve in the /seo dashboard)                 │
+│  Local daemon on your Mac picks it up within ~30 seconds        │
+│  (launchd agent installed once via `npm run seo:install-daemon`)│
 │   • Local Claude Code session = code edits AND Chrome MCP       │
 │   • For each unchecked checklist item:                          │
 │       - `claude -p "<task>" --print --dangerously-skip-perms`   │
@@ -137,14 +137,24 @@ SEO_KEYWORDCOM_PROJECT="chess-dna"   # name of the keyword.com project
    - Looks right → click **Approve Claude Code →** in the dashboard.
    - Some tasks are wrong → uncheck them first, then approve.
    - Whole thing is wrong → close the issue, no harm.
-3. **Run the executor on your Mac** (one command, ~5-30 min depending on task count):
-   ```bash
-   npm run seo:execute
-   ```
+3. **Local daemon picks it up automatically within ~30s** (no terminal command).
    Claude Code picks the right tool per task:
    - Code tasks → file edits in chess-dna repo, commits per task, pushes to main.
    - Browser tasks → drives Chrome via MCP using your logged-in sessions (Google Search Console, Bing Webmaster, AlternativeTo, etc.). Stops before irreversible "Submit" clicks unless the task explicitly authorizes them.
+   - Watch progress live as comments stream onto the issue.
 4. **End of day** — Skim today's commits on main + comments on the closed issue to see what shipped.
+
+## Local executor daemon (one-time install)
+
+```bash
+npm run seo:install-daemon
+```
+
+This installs a launchd agent at `~/Library/LaunchAgents/com.chess-dna.seo-executor.plist` that fires every 30 seconds while you're logged in. It exits silently if no `seo-approved` issue exists; runs the executor when one shows up. Logs at `~/Library/Logs/seo-executor.{out,err}.log`.
+
+Stop it with `npm run seo:uninstall-daemon`. Auto-resumes after laptop reboot / wake.
+
+Prerequisite: `gh auth login` (the daemon pulls `GH_TOKEN` from `gh auth token`).
 
 ## Manual operations
 

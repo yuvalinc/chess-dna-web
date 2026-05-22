@@ -399,11 +399,10 @@ function IssueCard({
 
         {status === 'approved' && (
           <div className="text-[12px] text-chess-text-tertiary bg-chess-bg/40 rounded p-3">
-            Approved. Now run on your Mac to execute (code edits + Chrome MCP for browser tasks):
-            <pre className="text-chess-text font-mono text-[12px] mt-2 bg-chess-bg/60 rounded p-2 select-all">npm run seo:execute</pre>
-            <span className="text-[11px]">Or for one specific issue:{' '}
-              <code className="bg-chess-bg/60 px-1 rounded select-all">FORCE_ISSUE={issue.number} npm run seo:execute</code>
-            </span>
+            ✓ Approved. The local daemon on your Mac picks this up within 30 seconds — file edits + Chrome MCP for browser tasks. Watch the comments stream in on this issue as each task finishes.
+            <div className="text-[11px] text-chess-text-tertiary mt-2">
+              Daemon not running? Run <code className="bg-chess-bg/60 px-1 rounded select-all">npm run seo:install-daemon</code> once (then never again).
+            </div>
           </div>
         )}
       </div>

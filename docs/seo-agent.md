@@ -61,7 +61,9 @@ Go to https://github.com/yuvalinc/chess-dna-web/settings/secrets/actions and add
 | Secret name         | Value                                                        |
 | ------------------- | ------------------------------------------------------------ |
 | `ANTHROPIC_API_KEY` | API key with Managed Agents access (the one already used by the console) |
-| `BASE44_TOKEN`      | Contents of `accessToken` from `~/.base44/auth/auth.json`. Refresh via `npx base44 login` if it expires. |
+| `BASE44_API_KEY`    | App's server-side API key from app.base44.com → ChessDNA → API page. Bypasses the host allowlist (cloud IPs are fine). Doesn't expire — set once and forget. |
+
+> **Why `BASE44_API_KEY` and not the user JWT?** The user JWT (in `~/.base44/auth/auth.json`) is subject to a host allowlist — calls from Anthropic-cloud or GitHub-Actions IPs are rejected with `403 Host not in allowlist`. The app-scoped api_key is the documented external-integration credential and is not constrained by the allowlist. It also doesn't expire every 30 days the way the JWT does.
 
 ### 3. Create the daily Claude Code Routine
 
@@ -75,10 +77,10 @@ Go to https://claude.ai/code/routines → New routine.
 
   This script invokes the managed SEO/GEO Agent, parses today's output,
   and writes a SeoRun entity to Base44. Required env: ANTHROPIC_API_KEY,
-  BASE44_TOKEN. If the script exits non-zero, capture the stderr and
+  BASE44_API_KEY. If the script exits non-zero, capture the stderr and
   exit too so the failure is visible in the routine log.
   ```
-- **Env vars**: `ANTHROPIC_API_KEY`, `BASE44_TOKEN` (same as the GHA secrets above).
+- **Env vars**: `ANTHROPIC_API_KEY`, `BASE44_API_KEY` (same as the GHA secrets above). Anthropic Routines (research preview) don't have a real secrets store, so set these inline at the start of the bash command sequence via `export VAR=...` — see the Instructions field of the seo-daily routine for the working pattern.
 
 ### 4. Connect the keyword.com MCP
 

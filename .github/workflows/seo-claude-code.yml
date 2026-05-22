@@ -48,6 +48,7 @@ jobs:
       - name: Execute approved SEO tasks
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
           BASE44_TOKEN: ${{ secrets.BASE44_TOKEN }}
           FORCE_RUN_ID: ${{ inputs.run_id }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

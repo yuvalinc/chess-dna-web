@@ -4,7 +4,10 @@
 //
 // Required env:
 //   ANTHROPIC_API_KEY   - Anthropic API key with Managed Agents access
-//   BASE44_TOKEN        - Base44 JWT with apps:write (see ~/.base44/auth/auth.json)
+//   BASE44_API_KEY      - Base44 app api_key (server-side, bypasses host allowlist).
+//                         Get from app.base44.com → ChessDNA → API page. Never expires.
+//   BASE44_TOKEN        - (legacy fallback) Base44 JWT from ~/.base44/auth/auth.json.
+//                         Subject to host allowlist; use BASE44_API_KEY instead.
 //
 // Optional env (defaults baked in for the chess-dna SEO/GEO Agent):
 //   SEO_AGENT_ID        - default: agent_01FF7U9ms15noELzXPDGk8cX
@@ -202,13 +205,20 @@ function buildPrompt() {
   ].join('\n');
 }
 
+function makeBase44Client() {
+  const apiKey = process.env.BASE44_API_KEY;
+  const token = process.env.BASE44_TOKEN;
+  if (apiKey) return createClient({ appId: APP_ID, headers: { api_key: apiKey } });
+  if (token) return createClient({ appId: APP_ID, token });
+  throw new Error('BASE44_API_KEY (preferred) or BASE44_TOKEN (legacy) is required');
+}
+
 async function main() {
   const today = todayIso();
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
-  if (!process.env.BASE44_TOKEN) throw new Error('BASE44_TOKEN is required');
 
   console.log(`[seo-daily] ${today} — checking for existing run...`);
-  const base44 = createClient({ appId: APP_ID, token: process.env.BASE44_TOKEN });
+  const base44 = makeBase44Client();
 
   const existing = await base44.entities.SeoRun.filter({ runDate: today });
   const reusable = existing.find(r => r.status !== 'failed');

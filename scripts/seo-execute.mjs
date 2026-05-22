@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Claude Code Executor — runs all pending tasks of any approved SeoRun.
 //
-// Required env: ANTHROPIC_API_KEY, BASE44_TOKEN
+// Required env: ANTHROPIC_API_KEY, BASE44_API_KEY (or legacy BASE44_TOKEN)
 // Optional env: FORCE_RUN_ID, GITHUB_RUN_URL
 //
 // For each candidate SeoRun (status="approved"), this script:
@@ -85,9 +85,12 @@ function commitTaskChanges(task) {
 
 async function main() {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
-  if (!process.env.BASE44_TOKEN) throw new Error('BASE44_TOKEN is required');
-
-  const base44 = createClient({ appId: APP_ID, token: process.env.BASE44_TOKEN });
+  const apiKey = process.env.BASE44_API_KEY;
+  const token = process.env.BASE44_TOKEN;
+  if (!apiKey && !token) throw new Error('BASE44_API_KEY (preferred) or BASE44_TOKEN is required');
+  const base44 = apiKey
+    ? createClient({ appId: APP_ID, headers: { api_key: apiKey } })
+    : createClient({ appId: APP_ID, token });
 
   let candidates;
   if (process.env.FORCE_RUN_ID) {

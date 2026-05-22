@@ -111,45 +111,125 @@ function buildClaudePrompt(task) {
     ``,
     `## How to execute`,
     ``,
-    `Pick the right tool for the job — this is run from the user's Mac so you have:`,
-    `  - **File edits** (Read/Edit/Write) for code changes, schema markup, new HTML files, sitemap.xml, etc.`,
-    `  - **Chrome MCP** (mcp__Claude_in_Chrome__*) for browser tasks: submitting sitemaps to Search Console / Bing Webmaster Tools, filling directory listings (AlternativeTo, Slant, BetaList), etc. The user is already logged into their accounts in this browser — use that session.`,
-    `  - **Bash / git** for committing the file changes after they're made.`,
+    `Pick the right tool for the job:`,
+    `  - **File edits** (Read/Edit/Write) for code changes, schema markup, new HTML, sitemap.xml.`,
+    `  - **Chrome MCP** (mcp__Claude_in_Chrome__*) for browser tasks: Search Console, AlternativeTo, etc. The user is already logged in.`,
     ``,
     `## Rules`,
     `- Make the change. Don't ask, don't propose, just do.`,
     `- Follow chess-dna's CLAUDE.md conventions for any code edits.`,
-    `- Do NOT run npm run build, do NOT run npx base44 site deploy.`,
+    `- Do NOT run \`git commit\`, \`git push\`, npm run build, or npx base44 site deploy. The wrapper handles git and deploy. Just leave changes in the working tree.`,
     `- Do NOT create test files unless the task description says so.`,
-    `- For browser tasks: stop short of irreversible "Submit / Publish" clicks unless the task explicitly authorizes it (it usually will). Take a screenshot before the final click so it's auditable.`,
+    `- For browser tasks: stop short of irreversible "Submit / Publish" clicks unless the task explicitly authorizes it. Take a screenshot before the final click so it's auditable.`,
     `- Keep the change minimal and focused on this task only.`,
     `- If you cannot complete the task safely, exit without changes and explain why in your final message.`,
   ].filter(Boolean).join('\n');
 }
 
-async function executeTask(task) {
-  const prompt = buildClaudePrompt(task);
-  console.log(`[exec] → ${task.id}: ${task.title}`);
-  const r = sh(
-    'claude',
-    ['-p', prompt, '--output-format', 'json', '--dangerously-skip-permissions'],
-    { stdio: ['ignore', 'pipe', 'inherit'], timeout: CLAUDE_TIMEOUT_MS },
-  );
-  if (r.error) throw r.error;
-  if (typeof r.status !== 'number' || r.status !== 0) {
-    throw new Error(`claude exited ${r.status} (signal=${r.signal ?? 'none'})`);
-  }
-  return { changed: gitChangedFiles() };
+function gitChangedInDir(dir) {
+  const r = sh('git', ['-C', dir, 'status', '--porcelain']);
+  return (r.stdout ?? '').trim().split('\n').filter(Boolean).map(l => l.slice(3).trim());
 }
 
-function commitTaskChanges(task) {
-  if (!gitHasChanges()) return null;
-  sh('git', ['add', '-A']);
-  const title = `seo(${task.id}): ${task.title}`.slice(0, 72);
-  const msg = `${title}\n\n${task.description.slice(0, 500)}\n\nCo-Authored-By: Claude Code <claude-code-bot@users.noreply.github.com>`;
-  const r = sh('git', ['commit', '-m', msg]);
-  if (r.status !== 0) throw new Error(`git commit failed: ${r.stderr}`);
-  return sh('git', ['rev-parse', 'HEAD']).stdout.trim();
+function gitDiffStat(dir, baseRef = 'origin/main') {
+  const r = sh('git', ['-C', dir, 'diff', '--shortstat', baseRef]);
+  return (r.stdout ?? '').trim(); // e.g. " 3 files changed, 42 insertions(+), 5 deletions(-)"
+}
+
+// Run a task on its own feature branch via a temporary git worktree so it
+// doesn't pollute the user's main working tree (which usually has WIP changes).
+// On success, push the branch and open a draft PR.
+async function executeTaskAsPR(issue, task) {
+  const branchName = `seo/${issue.number}-${task.id}`;
+  const worktreeDir = `/tmp/seo-wt-${issue.number}-${task.id}`;
+  const repoRoot = process.cwd();
+
+  // Cleanup any stale worktree at this path.
+  sh('git', ['worktree', 'remove', '-f', worktreeDir], { stdio: 'ignore' });
+  // Delete any stale local branch with the same name.
+  sh('git', ['branch', '-D', branchName], { stdio: 'ignore' });
+
+  // Make sure we have latest main.
+  sh('git', ['fetch', 'origin', 'main'], { stdio: 'inherit' });
+
+  // Create worktree on a new branch off origin/main.
+  const wt = sh('git', ['worktree', 'add', '-b', branchName, worktreeDir, 'origin/main']);
+  if (wt.status !== 0) {
+    throw new Error(`git worktree add failed: ${wt.stderr || wt.stdout}`);
+  }
+
+  let prResult = null;
+  try {
+    // Run claude in the worktree.
+    const prompt = buildClaudePrompt(task);
+    console.log(`[exec] → ${task.id}: ${task.title} (branch ${branchName})`);
+    const r = sh(
+      'claude',
+      ['-p', prompt, '--output-format', 'json', '--dangerously-skip-permissions'],
+      { stdio: ['ignore', 'pipe', 'inherit'], cwd: worktreeDir, timeout: CLAUDE_TIMEOUT_MS },
+    );
+    if (r.error) throw r.error;
+    if (typeof r.status !== 'number' || r.status !== 0) {
+      throw new Error(`claude exited ${r.status} (signal=${r.signal ?? 'none'})`);
+    }
+
+    const changed = gitChangedInDir(worktreeDir);
+    if (changed.length === 0) {
+      // No file changes (e.g. pure browser task). No PR to open.
+      return { hadChanges: false };
+    }
+
+    // Commit + push.
+    const title = `seo(${task.id}): ${task.title}`.slice(0, 72);
+    const msg = `${title}\n\n${task.description.slice(0, 400)}\n\nCloses task ${task.id} of #${issue.number}.\nCo-Authored-By: Claude Code <claude-code-bot@users.noreply.github.com>`;
+    sh('git', ['-C', worktreeDir, 'add', '-A']);
+    const commit = sh('git', ['-C', worktreeDir, 'commit', '-m', msg]);
+    if (commit.status !== 0) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`);
+
+    const push = sh('git', ['-C', worktreeDir, 'push', '-u', 'origin', branchName]);
+    if (push.status !== 0) throw new Error(`git push failed: ${push.stderr || push.stdout}`);
+
+    const diffStat = gitDiffStat(worktreeDir);
+    const sha = sh('git', ['-C', worktreeDir, 'rev-parse', 'HEAD']).stdout.trim();
+
+    // Open draft PR.
+    const pr = await gh(`/repos/${GH_REPO}/pulls`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: `[SEO] ${task.title}`.slice(0, 72),
+        head: branchName,
+        base: 'main',
+        body: [
+          `Closes task **${task.id}** of #${issue.number}.`,
+          ``,
+          `## Task description`,
+          task.description,
+          ``,
+          `## Files touched`,
+          changed.map(f => `- \`${f}\``).join('\n'),
+          ``,
+          `_Generated by \`seo:execute\` daemon. Approve & merge from the /seo dashboard to ship + auto-deploy._`,
+        ].join('\n'),
+        draft: true,
+      }),
+    });
+
+    prResult = {
+      number: pr.number,
+      url: pr.html_url,
+      branch: branchName,
+      sha,
+      diffStat,
+      files: changed,
+    };
+    return { hadChanges: true, pr: prResult };
+  } finally {
+    // Always cleanup the worktree, even on failure.
+    sh('git', ['worktree', 'remove', '-f', worktreeDir], { stdio: 'ignore' });
+    // Keep the branch if a PR was opened (PR needs it). If no PR, delete it.
+    if (!prResult) sh('git', ['branch', '-D', branchName], { stdio: 'ignore' });
+    process.chdir(repoRoot);
+  }
 }
 
 async function listApprovedIssues() {
@@ -193,24 +273,40 @@ async function processIssue(issueNumber) {
   }
 
   let body = lines.join('\n');
-  let anyDone = false;
+  let anyReady = false;
   let anyFailed = false;
 
   for (const task of pending) {
-    const startLink = process.env.GITHUB_RUN_URL ? ` ([workflow](${process.env.GITHUB_RUN_URL}))` : '';
-    await commentOnIssue(issue.number, `🔧 Working on **${task.title}**${startLink}…`);
+    await commentOnIssue(issue.number, `🔧 Working on **${task.title}**…`);
 
     try {
-      const { changed } = await executeTask(task);
-      const sha = changed.length > 0 ? commitTaskChanges(task) : null;
-      anyDone = true;
+      const { hadChanges, pr } = await executeTaskAsPR(issue, task);
 
+      // Mark the box checked so we don't re-attempt this task on the next
+      // daemon tick. (Approval/merge happens via the PR, not the checkbox.)
       body = rewriteCheckedBox(body.split('\n'), task.lineIndex);
       await updateIssue(issue.number, { body });
 
-      const filesSummary = changed.length > 0 ? `\n\nFiles: \`${changed.join('`, `')}\`` : '\n\n(no file changes)';
-      const shaSummary = sha ? `\n\nCommit: \`${sha.slice(0, 7)}\`` : '';
-      await commentOnIssue(issue.number, `✅ **${task.title}** — done${shaSummary}${filesSummary}`);
+      if (hadChanges && pr) {
+        anyReady = true;
+        const filesList = pr.files.slice(0, 8).map(f => `\`${f}\``).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '');
+        await commentOnIssue(
+          issue.number,
+          `📝 **${task.title}** — PR [#${pr.number}](${pr.url}) ready for review\n\n` +
+          `${pr.diffStat || `${pr.files.length} file(s) changed`}\n\n` +
+          `Files: ${filesList}\n\n` +
+          `Branch: \`${pr.branch}\` · Commit: \`${pr.sha.slice(0, 7)}\`\n\n` +
+          `[View full diff →](${pr.url}/files)  ·  Approve & merge from /seo to ship + deploy.`,
+        );
+      } else {
+        // No file changes — e.g. a pure-browser task. Mark done immediately,
+        // since there's no PR to review.
+        anyReady = true;
+        await commentOnIssue(
+          issue.number,
+          `✅ **${task.title}** — done (no file changes; browser-only task)`,
+        );
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[exec]   ✗ ${task.id} failed: ${msg}`);
@@ -219,15 +315,80 @@ async function processIssue(issueNumber) {
     }
   }
 
-  if (anyDone && !anyFailed) {
-    await setLabels(issue.number, ['seo-daily', 'seo-done']);
-    await updateIssue(issue.number, { state: 'closed' });
-  } else if (anyDone && anyFailed) {
-    await setLabels(issue.number, ['seo-daily', 'seo-partial']);
+  // The issue now sits in "awaiting-review" until the user merges the PRs in
+  // /seo (or rejects them). We don't close the issue here — the daemon's
+  // separate merge-and-deploy step closes it once all PRs are resolved.
+  if (anyReady && !anyFailed) {
+    await setLabels(issue.number, ['seo-daily', 'seo-awaiting-review']);
+  } else if (anyReady && anyFailed) {
+    await setLabels(issue.number, ['seo-daily', 'seo-awaiting-review', 'seo-partial']);
   } else {
     await setLabels(issue.number, ['seo-daily', 'seo-failed']);
   }
-  console.log(`[exec] Issue #${issue.number} → ${anyFailed ? (anyDone ? 'partial' : 'failed') : 'done'}`);
+  console.log(`[exec] Issue #${issue.number} → ${anyFailed ? (anyReady ? 'partial' : 'failed') : 'awaiting-review'}`);
+}
+
+// Find all PRs linked to a given issue. We search the issue's comments for
+// `PR #<N>` references emitted by executeTaskAsPR.
+async function findIssuePRs(issueNumber) {
+  const comments = await gh(`/repos/${GH_REPO}/issues/${issueNumber}/comments?per_page=100`);
+  const numbers = new Set();
+  for (const c of comments) {
+    const matches = [...(c.body ?? '').matchAll(/PR\s+\[?#(\d+)\]?/g)];
+    for (const m of matches) numbers.add(Number(m[1]));
+  }
+  return [...numbers];
+}
+
+async function getPr(prNumber) {
+  return gh(`/repos/${GH_REPO}/pulls/${prNumber}`);
+}
+
+// Scan issues labeled "seo-awaiting-review" with all their PRs resolved
+// (merged or closed). If any PR was merged, run `npx base44 site deploy`,
+// then close the issue with the "seo-deployed" label.
+async function deployResolvedIssues() {
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open label:seo-awaiting-review`);
+  const search = await gh(`/search/issues?q=${q}`);
+  const candidates = search.items ?? [];
+  if (candidates.length === 0) return;
+
+  for (const issueRef of candidates) {
+    const prNums = await findIssuePRs(issueRef.number);
+    if (prNums.length === 0) continue;
+    const prs = await Promise.all(prNums.map(getPr));
+    const allResolved = prs.every(p => p.state === 'closed'); // closed = merged OR rejected
+    if (!allResolved) {
+      console.log(`[exec] Issue #${issueRef.number}: ${prs.filter(p => p.state === 'open').length}/${prs.length} PR(s) still open — skipping deploy.`);
+      continue;
+    }
+    const anyMerged = prs.some(p => p.merged_at != null);
+    console.log(`[exec] Issue #${issueRef.number}: all ${prs.length} PR(s) resolved. ${anyMerged ? 'Deploying.' : 'No merges; closing.'}`);
+
+    if (anyMerged) {
+      // Pull latest main into the local checkout, then deploy.
+      sh('git', ['fetch', 'origin', 'main'], { stdio: 'inherit' });
+      sh('git', ['merge', '--ff-only', 'origin/main'], { stdio: 'inherit' });
+
+      const deploy = sh('npx', ['base44', 'site', 'deploy', '-y'], { stdio: 'inherit', timeout: 10 * 60 * 1000 });
+      const deployOk = deploy.status === 0;
+      const mergedShas = prs.filter(p => p.merged_at).map(p => p.merge_commit_sha?.slice(0, 7)).filter(Boolean);
+      await commentOnIssue(
+        issueRef.number,
+        deployOk
+          ? `🚀 Deployed ${prs.filter(p => p.merged_at).length} merged PR(s) to chessdna.app. Commits: ${mergedShas.map(s => `\`${s}\``).join(', ')}.`
+          : `❌ Deploy failed (\`npx base44 site deploy\` exited ${deploy.status}). The merged PRs are on main; deploy manually when ready.`,
+      );
+      if (deployOk) {
+        await setLabels(issueRef.number, ['seo-daily', 'seo-deployed']);
+        await updateIssue(issueRef.number, { state: 'closed' });
+      }
+    } else {
+      // All PRs rejected — nothing to deploy, just close the issue.
+      await setLabels(issueRef.number, ['seo-daily', 'seo-closed']);
+      await updateIssue(issueRef.number, { state: 'closed' });
+    }
+  }
 }
 
 async function main() {
@@ -236,6 +397,14 @@ async function main() {
   // unattended environments (GHA), but we don't enforce that here.
   if (!process.env.GH_TOKEN) throw new Error('GH_TOKEN is required');
 
+  // Step 1: deploy any issue whose PRs are all resolved.
+  try {
+    await deployResolvedIssues();
+  } catch (e) {
+    console.error('[exec] deployResolvedIssues error (non-fatal):', e.message);
+  }
+
+  // Step 2: pick up newly-approved issues and open PRs for their tasks.
   if (process.env.FORCE_ISSUE) {
     await processIssue(Number(process.env.FORCE_ISSUE));
     return;

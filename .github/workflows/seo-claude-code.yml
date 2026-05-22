@@ -1,20 +1,22 @@
 name: SEO Claude Code Executor
 
-# Polls Base44 every 15 min for SeoRun records with status="approved"
-# and runs Claude Code (headless) on each task. When a task finishes,
-# the script updates the task's status in Base44 and commits any changes.
+# Polls GitHub Issues every 15 min for `seo-approved` (but not `seo-done`)
+# and runs Claude Code (headless) on each unchecked task. Commits per task
+# and pushes to main. The auto-provided GITHUB_TOKEN has issue + contents
+# write access, so no extra secret is needed for the GH API.
 
 on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
-      run_id:
-        description: 'Specific SeoRun ID to execute (skip the poll)'
+      issue:
+        description: 'Specific issue number to execute (skip the poll)'
         required: false
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: seo-claude-code
@@ -48,9 +50,8 @@ jobs:
       - name: Execute approved SEO tasks
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
-          BASE44_TOKEN: ${{ secrets.BASE44_TOKEN }}
-          FORCE_RUN_ID: ${{ inputs.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE_ISSUE: ${{ inputs.issue }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/seo-execute.mjs
 

@@ -1,6 +1,8 @@
 # SEO Agent — Daily Loop
 
-A self-driving SEO improvement loop for chess-dna. One human approval per day; everything else runs on its own.
+A self-driving SEO improvement loop for chess-dna, with GitHub Issues as the
+entire control plane (no Base44 dependency). One human approval per day,
+everything else runs autonomously.
 
 ## Architecture
 
@@ -10,79 +12,70 @@ A self-driving SEO improvement loop for chess-dna. One human approval per day; e
 │  Runs: node scripts/seo-daily.mjs                               │
 │   1. Calls POST /v1/sessions against the managed SEO/GEO Agent  │
 │   2. Sends the daily prompt (keywords, target URL, JSON schema) │
-│   3. Agent uses the keyword.com MCP (attached to its env) to    │
-│      pull real SERP rankings, movers, share of voice, and       │
-│      AI Visibility metrics (ChatGPT / Perplexity / Gemini)      │
+│   3. Agent uses the keyword.com MCP for SERP + AI Visibility    │
 │   4. Polls until idle, fetches final agent message              │
 │   5. Parses the JSON block (summary + rankings + tasks)         │
-│   6. Writes a SeoRun entity to Base44 with status="completed"   │
+│   6. Opens a GitHub Issue: title "SEO YYYY-MM-DD — N tasks",    │
+│      labels ["seo-daily","seo-pending"], body = markdown digest │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Morning — you visit /seo in chess-dna                          │
-│   • Review summary + rankings + extracted tasks                 │
-│   • Click "Approve Claude Code →"                               │
-│   • SeoRun.status becomes "approved"                            │
+│  Morning — you open the issue in GitHub (desktop or mobile)     │
+│   • Review summary + rankings + task checklist                  │
+│   • Uncheck any task you want to skip                           │
+│   • Add the "seo-approved" label to authorize the rest          │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  GHA workflow seo-claude-code.yml (cron */15 min)               │
 │  Runs: node scripts/seo-execute.mjs                             │
-│   • Polls Base44 for SeoRun.status=="approved"                  │
-│   • For each pending task: `claude -p "<task>" --print`         │
-│   • Captures git diff, commits per task, pushes to main         │
-│   • Updates task statuses in Base44 (in_progress → done/failed) │
-│   • Sets run.status to done/partial/failed when finished        │
+│   • Lists issues with label "seo-approved" -label "seo-done"    │
+│   • For each unchecked checklist item:                          │
+│       - `claude -p "<task description>" --print`                │
+│       - Captures git diff, commits, pushes                      │
+│       - Checks the box in the issue body                        │
+│       - Comments commit SHA + files touched                     │
+│   • All done → label "seo-done", close the issue                │
+│   • Some failed → label "seo-partial", leave open               │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  /seo dashboard refreshes — see each task's status, commit SHA, │
-│  files touched. PR/diff history is the audit log.               │
+│  Audit log = github.com/yuvalinc/chess-dna-web/issues           │
+│  Each daily run is one closed issue with full history:          │
+│   working/done/failed comments, commit SHAs, file lists,        │
+│   approver, timestamps. Searchable, exportable, free.           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## One-time setup
 
-### 1. Deploy the Base44 entity
+### 1. Create a GitHub PAT for the Anthropic Routine
+
+The routine runs on Anthropic's cloud and needs to create issues. Create a
+fine-grained Personal Access Token at https://github.com/settings/tokens?type=beta:
+
+- **Repository access**: only `yuvalinc/chess-dna-web`
+- **Permissions**: Issues → Read and write, Contents → Read-only, Metadata → Read-only
+- **Expiration**: 1 year (longest available)
+
+Copy the token (starts with `github_pat_…`).
+
+> The GitHub Actions workflow doesn't need a custom PAT — it uses the auto-provided `GITHUB_TOKEN`.
+
+### 2. Add the GHA secret for the Anthropic key
+
+The executor workflow needs `ANTHROPIC_API_KEY` (for the Claude Code CLI):
 
 ```bash
-npx base44 schema deploy
+printf '%s' 'sk-ant-api03-…' | gh secret set ANTHROPIC_API_KEY --repo yuvalinc/chess-dna-web
 ```
 
-This pushes `base44/entities/seo-run.jsonc` to your Base44 app. Until this runs, the `/seo` dashboard will show an error banner.
+> No `BASE44_…` secrets are needed anymore. The old `BASE44_TOKEN` / `BASE44_API_KEY` can be deleted from the repo's secrets list.
 
-### 2. Add GitHub Actions secrets
-
-Go to https://github.com/yuvalinc/chess-dna-web/settings/secrets/actions and add:
-
-| Secret name         | Value                                                        |
-| ------------------- | ------------------------------------------------------------ |
-| `ANTHROPIC_API_KEY` | API key with Managed Agents access (the one already used by the console) |
-| `BASE44_API_KEY`    | App's server-side API key from app.base44.com → ChessDNA → API page. Bypasses the host allowlist (cloud IPs are fine). Doesn't expire — set once and forget. |
-
-> **Why `BASE44_API_KEY` and not the user JWT?** The user JWT (in `~/.base44/auth/auth.json`) is subject to a host allowlist — calls from Anthropic-cloud or GitHub-Actions IPs are rejected with `403 Host not in allowlist`. The app-scoped api_key is the documented external-integration credential and is not constrained by the allowlist. It also doesn't expire every 30 days the way the JWT does.
-
-### 3. Create the daily Claude Code Routine
-
-Go to https://claude.ai/code/routines → New routine.
-
-- **Repository**: `yuvalinc/chess-dna-web` (the routine clones it for context)
-- **Schedule**: `0 7 * * *` (daily at 07:00 in your local TZ)
-- **Prompt**:
-  ```
-  Run the daily SEO agent: `npm run seo:daily`.
-
-  This script invokes the managed SEO/GEO Agent, parses today's output,
-  and writes a SeoRun entity to Base44. Required env: ANTHROPIC_API_KEY,
-  BASE44_API_KEY. If the script exits non-zero, capture the stderr and
-  exit too so the failure is visible in the routine log.
-  ```
-- **Env vars**: `ANTHROPIC_API_KEY`, `BASE44_API_KEY` (same as the GHA secrets above). Anthropic Routines (research preview) don't have a real secrets store, so set these inline at the start of the bash command sequence via `export VAR=...` — see the Instructions field of the seo-daily routine for the working pattern.
-
-### 4. Connect the keyword.com MCP
+### 3. Connect the keyword.com MCP to the agent's environment
 
 The daily agent pulls rankings from **keyword.com's hosted MCP server**
 (`https://app.keyword.com/mcp`). One-time setup, in the Anthropic Managed
@@ -93,22 +86,31 @@ Agents console:
    - **URL**: `https://app.keyword.com/mcp`
    - **Auth**: OAuth 2.0 — a browser tab opens for keyword.com consent.
 3. Approve the OAuth scope with the keyword.com account that owns the
-   chess-dna project. Tokens auto-refresh; no key to copy.
-4. Verify by running the routine once (or `npm run seo:daily` locally) —
-   the agent should call `search_projects`, `list_keywords`, `serp_movers_window`,
-   `aiv_metrics`, etc., instead of generic web search.
+   chess-dna project.
 
-**Prerequisite**: an active keyword.com account with a project tracking the
-chess-dna target keywords. Free trial works. If no project exists yet, the
-agent will propose creating it as the first task in tomorrow's run.
+Without this step, the agent falls back to generic web search.
 
-The 66 tools cover SERP rank tracking, Share of Voice, anomalies, AI Visibility
-(ChatGPT / Perplexity / Gemini / AI Overviews), competitor analysis, and
-keyword research. Full reference: https://keyword.com/docs/#mcp.
+### 4. Create the daily Claude Code Routine
 
-> The daily prompt explicitly forbids calling write tools (`add_*`, `update_*`,
-> `delete_*`, `refresh_*`). Anything that would mutate keyword.com state gets
-> proposed as a task for human approval instead.
+Go to https://claude.ai/code/routines → **New routine**.
+
+- **Name**: `seo-daily`
+- **Schedule**: Daily at 07:00 (local TZ)
+- **Repository**: leave blank (script self-clones via `git clone`)
+- **Instructions**:
+  ```
+  Daily SEO check. Run these commands in order, then exit with the status code of `npm run seo:daily`:
+
+    export ANTHROPIC_API_KEY='PASTE_ANTHROPIC_KEY_HERE'
+    export GH_TOKEN='PASTE_GITHUB_PAT_HERE'
+    git clone https://github.com/yuvalinc/chess-dna-web /tmp/chess-dna-web
+    cd /tmp/chess-dna-web
+    npm install
+    npm run seo:daily
+
+  The script is self-contained — do not modify files, do not commit, do not push.
+  ```
+- Replace the two `PASTE_…_HERE` strings with the real values from steps 1 and 2.
 
 ### 5. Customize keywords (optional)
 
@@ -117,45 +119,41 @@ Defaults are baked in to `scripts/seo-daily.mjs`. Override per-routine via env:
 ```
 SEO_KEYWORDS="how to improve at chess, chess analysis app, ..."
 SEO_SITE_URL="https://chess-dna-fdd5fbde.base44.app"
-SEO_KEYWORDCOM_PROJECT="chess-dna"   # name of the keyword.com project to scope queries to
+SEO_KEYWORDCOM_PROJECT="chess-dna"   # name of the keyword.com project
 ```
 
 ## Daily workflow
 
-1. **07:00** — Routine fires. Agent runs ~2–4 min. SeoRun lands in Base44.
-2. **Morning** — Open https://chess-dna-fdd5fbde.base44.app/seo. Review.
-   - If the analysis looks right → click **Approve Claude Code →**.
-   - If it looks off → don't approve. Edit tasks in the dashboard (skip the bad ones), then approve.
-3. **Within 15 min** — GHA cron picks up the approved run, runs Claude Code on each task. You can watch progress on the dashboard (task statuses update live as each finishes) or in the linked workflow run.
-4. **End of day** — Skim today's commits on `main` to see what landed.
+1. **07:00** — Routine fires. Agent runs ~2–4 min. New GitHub Issue lands.
+2. **Morning** — Open https://github.com/yuvalinc/chess-dna-web/issues. Skim today's issue.
+   - Looks right → add the `seo-approved` label. Done.
+   - Some tasks are wrong → uncheck them in the body before adding the label.
+   - Whole thing is wrong → close the issue, no harm.
+3. **Within 15 min** — GHA cron picks it up, runs Claude Code on each checked task. Watch progress in real time as comments land on the issue.
+4. **End of day** — Skim today's commits on `main` to see what shipped.
 
 ## Manual operations
 
 | Want to…                                | Command                                                                  |
 | --------------------------------------- | ------------------------------------------------------------------------ |
-| Test the daily run locally              | `ANTHROPIC_API_KEY=... BASE44_TOKEN=... npm run seo:daily`               |
-| Force-execute a specific run            | `gh workflow run seo-claude-code.yml -f run_id=<seo-run-id>`             |
+| Test the daily run locally              | `ANTHROPIC_API_KEY=... GH_TOKEN=$(gh auth token) npm run seo:daily`      |
+| Force-execute a specific issue          | `gh workflow run seo-claude-code.yml -f issue=<issue-number>`            |
 | Stop a running execution                | `gh run cancel <gha-run-id>`                                             |
-| Skip a task without running it          | Use the **Skip** button on the task row in the dashboard                 |
-| Re-run today (deletes today's SeoRun)   | Delete the entity row in Base44 admin, then run `npm run seo:daily`      |
+| Skip a task without running it          | Uncheck its box in the issue body before adding `seo-approved`           |
+| Re-run today                            | Close + delete today's issue, then run `npm run seo:daily` locally       |
 
 ## Gotchas
 
-- **15-min cron lag** — The executor polls every 15 min, so approved runs can take up to 15 min to start executing. If you want it faster, dispatch manually with `gh workflow run`.
+- **15-min cron lag** — The executor polls every 15 min, so approved issues can take up to 15 min to start. To dispatch immediately: `gh workflow run seo-claude-code.yml -f issue=<n>`.
 - **Auto-push to main** — The executor commits & pushes directly to main (per CLAUDE.md's "no feature branches" rule). Revert via `git revert <sha>` if Claude Code does something wrong.
-- **Token expiry** — `BASE44_TOKEN` is a JWT that expires (~30 days). When it expires, the script will fail; re-run `npx base44 login` locally and copy the new token to GHA secrets + routine env.
+- **PAT rotation** — The Anthropic Routine's GitHub PAT expires (1y max). Issue the script will fail with `401 Bad credentials` from GitHub. Generate a new PAT, update the routine env, done.
 - **No deploy on commit** — The workflow does NOT run `npm run build` or `npx base44 site deploy`. Deploys remain manual.
-- **Idempotency** — `seo-daily.mjs` checks for an existing non-failed SeoRun for today and exits early. Safe to run multiple times.
-- **keyword.com MCP not connected** — if the connector is missing or its OAuth has expired, the agent falls back to generic web search and rankings will be noisy / blank. Reconnect via the Anthropic Managed Agents console (step 4 above).
-- **No keyword.com project** — first run after setup will surface this as a P0 task ("create chess-dna project + add target keywords"). Do that in keyword.com's UI before approving — the executor will not run write tools against keyword.com.
+- **Idempotency** — `seo-daily.mjs` checks for an existing issue with today's date in the title and exits early if found. Safe to run multiple times.
 
 ## File map
 
 | File                                          | Purpose                                          |
 | --------------------------------------------- | ------------------------------------------------ |
-| `base44/entities/seo-run.jsonc`               | SeoRun entity schema                             |
-| `src/shared/types/seo.ts`                     | TS types                                         |
-| `src/pages/SeoAdmin.tsx`                      | The `/seo` dashboard                             |
-| `scripts/seo-daily.mjs`                       | Invokes the managed agent, writes SeoRun         |
-| `scripts/seo-execute.mjs`                     | Runs Claude Code on approved tasks               |
+| `scripts/seo-daily.mjs`                       | Invokes the managed agent, opens daily GH issue  |
+| `scripts/seo-execute.mjs`                     | Runs Claude Code on approved-issue tasks         |
 | `.github/workflows/seo-claude-code.yml`       | GHA cron + workflow_dispatch wiring              |

@@ -1,33 +1,26 @@
 #!/usr/bin/env node
 // Daily SEO agent run. Invokes the managed agent on Anthropic, parses output,
-// writes a SeoRun to Base44. Idempotent per runDate.
+// opens a GitHub Issue with today's SEO digest + tasks. Idempotent per day.
 //
 // Required env:
-//   ANTHROPIC_API_KEY   - Anthropic API key with Managed Agents access
-//   BASE44_API_KEY      - Base44 app api_key (server-side, bypasses host allowlist).
-//                         Get from app.base44.com → ChessDNA → API page. Never expires.
-//   BASE44_TOKEN        - (legacy fallback) Base44 JWT from ~/.base44/auth/auth.json.
-//                         Subject to host allowlist; use BASE44_API_KEY instead.
+//   ANTHROPIC_API_KEY - Anthropic API key with Managed Agents access
+//   GH_TOKEN          - GitHub PAT with `repo` scope (creates and reads issues)
 //
-// Optional env (defaults baked in for the chess-dna SEO/GEO Agent):
-//   SEO_AGENT_ID        - default: agent_01FF7U9ms15noELzXPDGk8cX
-//   SEO_ENV_ID          - default: env_01XnkgKT2C35kgoGqQSWNisG
-//   SEO_SITE_URL        - default: https://chess-dna-fdd5fbde.base44.app
-//   SEO_KEYWORDS        - comma-separated; defaults to a starter set
-//   SEO_KEYWORDCOM_PROJECT - keyword.com project name to scope queries (optional)
-//   SEO_POLL_MAX_SEC    - default: 600 (10 min)
+// Optional env:
+//   SEO_AGENT_ID           - default: agent_01FF7U9ms15noELzXPDGk8cX
+//   SEO_ENV_ID             - default: env_01XnkgKT2C35kgoGqQSWNisG
+//   SEO_SITE_URL           - default: https://chess-dna-fdd5fbde.base44.app
+//   SEO_KEYWORDS           - comma-separated; defaults to a starter set
+//   SEO_KEYWORDCOM_PROJECT - default: chess-dna
+//   SEO_GH_REPO            - default: yuvalinc/chess-dna-web
+//   SEO_POLL_MAX_SEC       - default: 600 (10 min)
 //
 // Data source: this script assumes the keyword.com MCP server
-// (https://app.keyword.com/mcp) is attached to the managed agent's environment
-// on Anthropic. See docs/seo-agent.md → "Connect the keyword.com MCP".
-//
-// Usage:
-//   node scripts/seo-daily.mjs
-
-import { createClient } from '@base44/sdk';
+// (https://app.keyword.com/mcp) is attached to the managed agent's environment.
+// See docs/seo-agent.md → "Connect the keyword.com MCP".
 
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
-const APP_ID = '69a04516fd2be6e9fdd5fbde';
+const GH_BASE = 'https://api.github.com';
 const AGENT_ID = process.env.SEO_AGENT_ID ?? 'agent_01FF7U9ms15noELzXPDGk8cX';
 const ENV_ID = process.env.SEO_ENV_ID ?? 'env_01XnkgKT2C35kgoGqQSWNisG';
 const SITE_URL = process.env.SEO_SITE_URL ?? 'https://chess-dna-fdd5fbde.base44.app';
@@ -39,6 +32,7 @@ const KEYWORDS = (
   .map(s => s.trim())
   .filter(Boolean);
 const KEYWORDCOM_PROJECT = process.env.SEO_KEYWORDCOM_PROJECT ?? 'chess-dna';
+const GH_REPO = process.env.SEO_GH_REPO ?? 'yuvalinc/chess-dna-web';
 const POLL_MAX_SEC = Number(process.env.SEO_POLL_MAX_SEC ?? 600);
 const POLL_INTERVAL_SEC = 5;
 
@@ -49,12 +43,19 @@ const ANTHROPIC_HEADERS = () => ({
   'anthropic-beta': 'managed-agents-2026-04-01',
 });
 
+const GH_HEADERS = () => ({
+  'Authorization': `Bearer ${process.env.GH_TOKEN}`,
+  'Accept': 'application/vnd.github+json',
+  'X-GitHub-Api-Version': '2022-11-28',
+  'Content-Type': 'application/json',
+});
+
 function todayIso() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-async function api(path, init = {}) {
+async function anthropic(path, init = {}) {
   const res = await fetch(`${ANTHROPIC_BASE}${path}`, {
     ...init,
     headers: { ...ANTHROPIC_HEADERS(), ...(init.headers ?? {}) },
@@ -66,8 +67,20 @@ async function api(path, init = {}) {
   return res.json();
 }
 
+async function gh(path, init = {}) {
+  const res = await fetch(`${GH_BASE}${path}`, {
+    ...init,
+    headers: { ...GH_HEADERS(), ...(init.headers ?? {}) },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${init.method ?? 'GET'} ${path} → ${res.status}: ${body.slice(0, 500)}`);
+  }
+  return res.json();
+}
+
 async function createSession() {
-  return api('/v1/sessions', {
+  return anthropic('/v1/sessions', {
     method: 'POST',
     body: JSON.stringify({
       environment_id: ENV_ID,
@@ -77,7 +90,7 @@ async function createSession() {
 }
 
 async function sendPrompt(sessionId, text) {
-  return api(`/v1/sessions/${sessionId}/events`, {
+  return anthropic(`/v1/sessions/${sessionId}/events`, {
     method: 'POST',
     body: JSON.stringify({ events: [{ type: 'user', text }] }),
   });
@@ -86,7 +99,7 @@ async function sendPrompt(sessionId, text) {
 async function pollSession(sessionId) {
   const start = Date.now();
   while ((Date.now() - start) / 1000 < POLL_MAX_SEC) {
-    const sess = await api(`/v1/sessions/${sessionId}`);
+    const sess = await anthropic(`/v1/sessions/${sessionId}`);
     const status = sess.status ?? sess.state ?? 'unknown';
     if (status === 'idle' || status === 'completed' || status === 'done') return sess;
     if (status === 'failed' || status === 'errored' || status === 'error') {
@@ -98,7 +111,7 @@ async function pollSession(sessionId) {
 }
 
 async function fetchEvents(sessionId) {
-  return api(`/v1/sessions/${sessionId}/events`);
+  return anthropic(`/v1/sessions/${sessionId}/events`);
 }
 
 function extractFinalAgentText(eventsPayload) {
@@ -159,33 +172,18 @@ function buildPrompt() {
     `## Steps`,
     ``,
     `1. **Locate the project.** Call \`search_projects\` with name "${KEYWORDCOM_PROJECT}".`,
-    `   If no match, call \`list_projects\` and pick the closest. If still nothing,`,
-    `   note "no keyword.com project yet" in the summary, propose an \`add_project\``,
-    `   + \`add_keywords\` task as P0, and skip steps 2-5.`,
-    `2. **Pull current SERP rankings.** Use \`list_keywords\` (sorted by change_7d) and`,
-    `   \`get_keyword\` for each target keyword. Capture position, URL, 7-day delta.`,
-    `   For any keyword not yet tracked, propose adding it.`,
-    `3. **Identify movement.** Call \`serp_movers_window\` (last 7 days) and`,
-    `   \`serp_anomalies\` to surface gainers, losers, and unusual drops. Call`,
-    `   \`serp_share_of_voice\` and \`serp_visibility_drivers\` for context on what's`,
-    `   moving the needle.`,
-    `4. **Check AI Visibility.** Call \`aiv_list_domains\` → \`aiv_metrics\` and`,
-    `   \`aiv_citations\` to see how ${SITE_URL} is doing across ChatGPT, Perplexity,`,
-    `   Gemini, and AI Overviews. If no AIV domain is configured, note it and`,
-    `   propose setup as a task.`,
-    `5. **Pick 3-5 actionable improvements** to ship to chess-dna THIS WEEK that`,
-    `   could move rankings or AI visibility. For each, name specific files in the`,
-    `   chess-dna codebase if you know them (e.g. src/pages/Overview.tsx,`,
-    `   index.html, base44/entities/*.jsonc).`,
+    `2. **Pull current SERP rankings.** Use \`list_keywords\` and \`get_keyword\` for each target.`,
+    `3. **Identify movement.** Call \`serp_movers_window\` (last 7 days) and \`serp_anomalies\`.`,
+    `4. **Check AI Visibility.** Call \`aiv_metrics\` and \`aiv_citations\` for ${SITE_URL}.`,
+    `5. **Pick 3-5 actionable improvements** to ship this week. For each, name specific files in the chess-dna codebase if you know them.`,
     ``,
     `## Output`,
     ``,
-    `At the very end of your reply, include a valid JSON code block matching this`,
-    `exact schema:`,
+    `At the very end of your reply, include a valid JSON code block matching this exact schema:`,
     ``,
     '```json',
     `{`,
-    `  "summary": "2-3 sentence TL;DR of today's findings and what tasks matter most.",`,
+    `  "summary": "2-3 sentence TL;DR.",`,
     `  "rankings": [`,
     `    {"keyword": "string", "engine": "google|bing|chatgpt|perplexity|claude|gemini", "position": 1, "url": "string", "notes": "string"}`,
     `  ],`,
@@ -195,95 +193,122 @@ function buildPrompt() {
     `}`,
     '```',
     ``,
-    `Rules for the JSON:`,
-    `- Use "google" as the engine for keyword.com SERP data. Use chatgpt/perplexity/gemini for AI Visibility (\`aiv_*\`) data.`,
+    `Rules:`,
     `- If a ranking is not in the top 20, set position to null.`,
-    `- Use P0 only for urgent / blocking. P1 = ship this week. P2 = nice to have.`,
     `- Maximum 5 tasks. Quality over quantity.`,
-    `- Each task description must be specific enough that Claude Code can execute it without re-research.`,
-    `- Do NOT call any keyword.com **write** tool (\`add_*\`, \`update_*\`, \`delete_*\`, \`refresh_*\`) — propose those as tasks for human approval instead.`,
+    `- Each task description must be specific enough for Claude Code to execute without re-research.`,
+    `- Do NOT call any keyword.com write tool (\`add_*\`, \`update_*\`, \`delete_*\`, \`refresh_*\`).`,
   ].join('\n');
 }
 
-function makeBase44Client() {
-  const apiKey =
-    process.env.BASE44_API_KEY ||
-    process.env.BASE44_api_key ||
-    process.env.base44_api_key;
-  const token = process.env.BASE44_TOKEN || process.env.BASE44_token;
-  if (apiKey) return createClient({ appId: APP_ID, headers: { api_key: apiKey } });
-  if (token) return createClient({ appId: APP_ID, token });
-  throw new Error('BASE44_API_KEY (preferred) or BASE44_TOKEN (legacy) is required');
+function renderRankingsTable(rankings) {
+  if (!Array.isArray(rankings) || rankings.length === 0) return '_No rankings captured._';
+  const rows = rankings.map(r => {
+    const pos = r.position == null ? '—' : String(r.position);
+    const url = r.url ? `[link](${r.url})` : '';
+    return `| ${r.keyword ?? ''} | ${r.engine ?? ''} | ${pos} | ${url} | ${(r.notes ?? '').replace(/\|/g, '\\|')} |`;
+  });
+  return [
+    '| Keyword | Engine | Position | URL | Notes |',
+    '|---|---|---|---|---|',
+    ...rows,
+  ].join('\n');
+}
+
+function renderTasks(tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return '_No tasks proposed today._';
+  return tasks
+    .map((t, i) => {
+      const id = `task-${i + 1}`;
+      const files = t.filesTouched?.length ? `\n  Files: \`${t.filesTouched.join('`, `')}\`` : '';
+      const desc = String(t.description ?? '').split('\n').map(line => `  > ${line}`).join('\n');
+      return `- [ ] **${t.priority ?? 'P2'}** — ${t.title ?? `Task ${i + 1}`} <!-- ${id} -->\n${desc}${files}`;
+    })
+    .join('\n\n');
+}
+
+function buildIssueBody({ summary, rankings, tasks, sessionId, tokensUsed, rawOutput }) {
+  return [
+    `## Summary`,
+    ``,
+    summary ?? '_(no summary)_',
+    ``,
+    `## Rankings`,
+    ``,
+    renderRankingsTable(rankings),
+    ``,
+    `## Tasks`,
+    ``,
+    `Add the \`seo-approved\` label to approve all tasks for Claude Code execution. Uncheck any task to skip.`,
+    ``,
+    renderTasks(tasks),
+    ``,
+    `---`,
+    ``,
+    `<details>`,
+    `<summary>Raw agent output</summary>`,
+    ``,
+    rawOutput ?? '',
+    ``,
+    `</details>`,
+    ``,
+    `_Anthropic session: \`${sessionId ?? '?'}\` · Tokens: ${tokensUsed ?? '?'} · Generated by \`scripts/seo-daily.mjs\`_`,
+  ].join('\n');
+}
+
+async function findExistingIssue(runDate) {
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue label:seo-daily in:title "${runDate}"`);
+  const res = await gh(`/search/issues?q=${q}`);
+  return res.items?.find(i => i.title.includes(runDate)) ?? null;
 }
 
 async function main() {
   const today = todayIso();
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
+  if (!process.env.GH_TOKEN) throw new Error('GH_TOKEN is required');
 
-  console.log(`[seo-daily] ${today} — checking for existing run...`);
-  const base44 = makeBase44Client();
-
-  const existing = await base44.entities.SeoRun.filter({ runDate: today });
-  const reusable = existing.find(r => r.status !== 'failed');
-  if (reusable) {
-    console.log(`[seo-daily] Run already exists for ${today} (id=${reusable.id}, status=${reusable.status}). Exiting.`);
+  console.log(`[seo-daily] ${today} — checking for existing issue...`);
+  const existing = await findExistingIssue(today);
+  if (existing) {
+    console.log(`[seo-daily] Issue #${existing.number} already exists for ${today} (state=${existing.state}). Exiting.`);
     return;
   }
 
-  console.log(`[seo-daily] Creating SeoRun (status=running)...`);
-  const run = await base44.entities.SeoRun.create({ runDate: today, status: 'running' });
+  console.log(`[seo-daily] Creating Anthropic session...`);
+  const session = await createSession();
+  const sessionId = session.id;
+  console.log(`[seo-daily] Session ${sessionId} created.`);
 
-  try {
-    console.log(`[seo-daily] Creating Anthropic session...`);
-    const session = await createSession();
-    const sessionId = session.id;
-    console.log(`[seo-daily] Session ${sessionId} created.`);
+  console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords)...`);
+  await sendPrompt(sessionId, buildPrompt());
 
-    await base44.entities.SeoRun.update(run.id, { agentSessionId: sessionId });
+  console.log(`[seo-daily] Polling session until idle (max ${POLL_MAX_SEC}s)...`);
+  const finished = await pollSession(sessionId);
 
-    console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords)...`);
-    await sendPrompt(sessionId, buildPrompt());
+  console.log(`[seo-daily] Fetching events...`);
+  const eventsPayload = await fetchEvents(sessionId);
+  const finalText = extractFinalAgentText(eventsPayload);
 
-    console.log(`[seo-daily] Polling session until idle (max ${POLL_MAX_SEC}s)...`);
-    const finished = await pollSession(sessionId);
+  const parsed = parseAgentJson(finalText) ?? {};
+  const tasks = Array.isArray(parsed.tasks) ? parsed.tasks.slice(0, 5) : [];
+  const rankings = Array.isArray(parsed.rankings) ? parsed.rankings : [];
+  const summary = typeof parsed.summary === 'string' ? parsed.summary : finalText.slice(0, 400);
+  const tokensUsed = sumTokensFromSession(finished);
 
-    console.log(`[seo-daily] Fetching events...`);
-    const eventsPayload = await fetchEvents(sessionId);
-    const finalText = extractFinalAgentText(eventsPayload);
+  console.log(`[seo-daily] Creating GitHub issue (${tasks.length} tasks)...`);
+  const issue = await gh(`/repos/${GH_REPO}/issues`, {
+    method: 'POST',
+    body: JSON.stringify({
+      title: `SEO ${today} — ${tasks.length} task${tasks.length === 1 ? '' : 's'}`,
+      body: buildIssueBody({ summary, rankings, tasks, sessionId, tokensUsed, rawOutput: finalText }),
+      labels: ['seo-daily', 'seo-pending'],
+    }),
+  });
 
-    const parsed = parseAgentJson(finalText) ?? {};
-    const rawTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
-    const tasksWithIds = rawTasks.map((t, i) => ({
-      id: `t${i + 1}`,
-      title: String(t.title ?? `Task ${i + 1}`),
-      description: String(t.description ?? ''),
-      priority: ['P0', 'P1', 'P2'].includes(t.priority) ? t.priority : 'P2',
-      status: 'pending',
-      filesTouched: Array.isArray(t.filesTouched) ? t.filesTouched : [],
-    }));
-    const rankings = Array.isArray(parsed.rankings) ? parsed.rankings : [];
-    const summary = typeof parsed.summary === 'string' ? parsed.summary : finalText.slice(0, 400);
-
-    const tokensUsed = sumTokensFromSession(finished);
-
-    await base44.entities.SeoRun.update(run.id, {
-      status: 'completed',
-      rawOutput: finalText,
-      summary,
-      rankings,
-      tasks: tasksWithIds,
-      tokensUsed,
-    });
-
-    console.log(`[seo-daily] Done. ${tasksWithIds.length} tasks extracted. tokens=${tokensUsed}`);
-  } catch (err) {
-    console.error(`[seo-daily] FAILED:`, err);
-    await base44.entities.SeoRun.update(run.id, {
-      status: 'failed',
-      errorMessage: err instanceof Error ? err.message : String(err),
-    });
-    process.exit(1);
-  }
+  console.log(`[seo-daily] Done. Issue #${issue.number}: ${issue.html_url}`);
 }
 
-main();
+main().catch(e => {
+  console.error('[seo-daily] FAILED:', e);
+  process.exit(1);
+});

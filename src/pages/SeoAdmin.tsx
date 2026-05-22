@@ -20,6 +20,12 @@ interface GhIssue {
   labels: GhLabel[];
 }
 
+interface GhComment {
+  id: number;
+  body: string | null;
+  created_at: string;
+}
+
 interface ParsedTask {
   id: string;
   priority: 'P0' | 'P1' | 'P2';
@@ -126,6 +132,57 @@ function extractSection(body: string | null, heading: string): string | null {
   const re = new RegExp(`##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|\\n---|$)`, 'i');
   const m = body.match(re);
   return m ? m[1].trim() : null;
+}
+
+function extractTokens(body: string | null): number {
+  if (!body) return 0;
+  const m = body.match(/Tokens:\s*([\d,]+)/i);
+  if (!m) return 0;
+  const n = parseInt(m[1].replace(/,/g, ''), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Rough cost estimate. Sonnet 4.5/4.6 list pricing is $3/M input, $15/M output,
+// $0.30/M cache-read. Without a breakdown we assume a typical agent session
+// is roughly 60% input + 30% cache + 10% output, weighting to ~$3.4/M.
+// Round up slightly for safety.
+const COST_PER_M_TOKENS_USD = 4;
+function estimateCostUsd(tokens: number): number {
+  return (tokens / 1_000_000) * COST_PER_M_TOKENS_USD;
+}
+function fmtUsd(n: number): string {
+  if (n < 0.01) return `<$0.01`;
+  if (n < 1) return `$${n.toFixed(2)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+interface TaskExecutionStatus {
+  status: 'done' | 'failed' | 'in_progress';
+  sha?: string;
+  files?: string[];
+}
+
+function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutionStatus> {
+  const map = new Map<string, TaskExecutionStatus>();
+  for (const c of comments) {
+    const body = c.body ?? '';
+    const titleM = body.match(/\*\*([^*]+?)\*\*/);
+    if (!titleM) continue;
+    const title = titleM[1].trim();
+    if (body.startsWith('✅')) {
+      const shaM = body.match(/Commit:\s*`([a-f0-9]+)`/i);
+      const filesM = body.match(/Files:\s*((?:`[^`]+`,?\s*)+)/);
+      const files = filesM
+        ? [...filesM[1].matchAll(/`([^`]+)`/g)].map(m => m[1])
+        : undefined;
+      map.set(title, { status: 'done', sha: shaM?.[1], files });
+    } else if (body.startsWith('❌')) {
+      map.set(title, { status: 'failed' });
+    } else if (body.startsWith('🔧')) {
+      if (!map.has(title)) map.set(title, { status: 'in_progress' });
+    }
+  }
+  return map;
 }
 
 function parseMarkdownTable(text: string): { headers: string[]; rows: string[][] } | null {
@@ -257,6 +314,8 @@ export default function SeoAdmin() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [showRawId, setShowRawId] = useState<number | null>(null);
+  const [selectedNum, setSelectedNum] = useState<number | null>(null);
+  const [comments, setComments] = useState<GhComment[] | null>(null);
 
   const ghFetch = async (path: string, init?: RequestInit) => {
     if (!pat) throw new Error('No GitHub PAT configured');
@@ -294,8 +353,37 @@ export default function SeoAdmin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin, pat]);
 
-  const latest = issues?.[0] ?? null;
-  const past = useMemo(() => (issues ?? []).slice(1), [issues]);
+  const displayed = useMemo(() => {
+    if (!issues || issues.length === 0) return null;
+    if (selectedNum != null) return issues.find(i => i.number === selectedNum) ?? issues[0];
+    return issues[0];
+  }, [issues, selectedNum]);
+
+  const isViewingLatest = displayed?.number === issues?.[0]?.number;
+  const past = useMemo(() => (issues ?? []).filter(i => i.number !== displayed?.number), [issues, displayed]);
+
+  useEffect(() => {
+    if (!pat || !displayed) { setComments(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await ghFetch(`/repos/${GH_REPO}/issues/${displayed.number}/comments?per_page=100`);
+        if (!cancelled) setComments(list);
+      } catch {
+        if (!cancelled) setComments(null);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayed?.number, pat]);
+
+  const execStatuses = useMemo(
+    () => (comments ? parseExecutionStatuses(comments) : new Map<string, TaskExecutionStatus>()),
+    [comments],
+  );
+
+  const dailyTokens = displayed ? extractTokens(displayed.body) : 0;
+  const totalTokens = (issues ?? []).reduce((sum, i) => sum + extractTokens(i.body), 0);
 
   const onApprove = async (issue: GhIssue) => {
     setBusy('approve');
@@ -356,8 +444,13 @@ export default function SeoAdmin() {
       <header className="flex flex-wrap items-baseline gap-3 mb-4">
         <h1 className="text-2xl font-extrabold text-chess-text">SEO Agent</h1>
         <span className="text-[12px] text-chess-text-tertiary">
-          {issues ? `${issues.length} issue${issues.length === 1 ? '' : 's'}` : 'Loading…'}
+          {issues ? `${issues.length} run${issues.length === 1 ? '' : 's'}` : 'Loading…'}
         </span>
+        {issues && issues.length > 0 && (
+          <span className="text-[11px] text-chess-text-tertiary" title={`${totalTokens.toLocaleString()} tokens total · est. ${COST_PER_M_TOKENS_USD}$/M`}>
+            Today {fmtUsd(estimateCostUsd(dailyTokens))} · Total {fmtUsd(estimateCostUsd(totalTokens))}
+          </span>
+        )}
         <a
           href={`https://github.com/${GH_REPO}/issues?q=label%3Aseo-daily`}
           target="_blank"
@@ -397,14 +490,25 @@ export default function SeoAdmin() {
         </div>
       )}
 
-      {latest && <IssueCard
-        issue={latest}
-        isLatest
-        onApprove={() => onApprove(latest)}
-        onToggleTask={(t) => onToggleTask(latest, t)}
-        showRaw={showRawId === latest.number}
-        onToggleRaw={() => setShowRawId(showRawId === latest.number ? null : latest.number)}
+      {!isViewingLatest && displayed && (
+        <button
+          onClick={() => setSelectedNum(null)}
+          className="text-[12px] text-chess-accent hover:underline mb-3 inline-flex items-center gap-1"
+        >
+          ← Back to latest run
+        </button>
+      )}
+
+      {displayed && <IssueCard
+        issue={displayed}
+        isLatest={isViewingLatest}
+        onApprove={() => onApprove(displayed)}
+        onToggleTask={(t) => onToggleTask(displayed, t)}
+        showRaw={showRawId === displayed.number}
+        onToggleRaw={() => setShowRawId(showRawId === displayed.number ? null : displayed.number)}
         busy={busy}
+        execStatuses={execStatuses}
+        tokens={dailyTokens}
       />}
 
       {past.length > 0 && (
@@ -415,19 +519,30 @@ export default function SeoAdmin() {
               const sty = STATUS_STYLES[status];
               const tasks = parseTasks(r.body);
               const done = tasks.filter(t => t.checked).length;
+              const tokens = extractTokens(r.body);
               return (
-                <a
+                <div
                   key={r.number}
-                  href={r.html_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="py-2 flex items-center gap-3 flex-wrap hover:bg-chess-bg/30 rounded px-1 -mx-1"
+                  className="py-2 flex items-center gap-3 flex-wrap hover:bg-chess-bg/30 rounded px-1 -mx-1 cursor-pointer"
+                  onClick={() => setSelectedNum(r.number)}
                 >
                   <Badge cls={sty.cls}>{sty.label}</Badge>
                   <span className="text-[12px] font-bold text-chess-text">#{r.number} · {r.title}</span>
                   <span className="text-[11px] text-chess-text-tertiary">{done} / {tasks.length} tasks</span>
+                  {tokens > 0 && (
+                    <span className="text-[11px] text-chess-text-tertiary">{fmtUsd(estimateCostUsd(tokens))}</span>
+                  )}
                   <span className="text-[11px] text-chess-text-tertiary ms-auto">{fmtTime(r.closed_at ?? r.created_at)}</span>
-                </a>
+                  <a
+                    href={r.html_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    className="text-[11px] text-chess-accent hover:underline"
+                  >
+                    GH ↗
+                  </a>
+                </div>
               );
             })}
           </div>
@@ -451,26 +566,62 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, status, busy, onToggle,
+  task, status, busy, onToggle, executionStatus,
 }: {
   task: ParsedTask;
   status: RunStatus;
   busy: boolean;
   onToggle: () => void;
+  executionStatus?: TaskExecutionStatus;
 }) {
-  const approved = !task.checked; // unchecked markdown = will run
+  // Approval state (pre-execution) comes from the markdown checkbox.
+  // Execution state (post-approval) comes from issue comments left by the executor.
+  const executed = executionStatus?.status; // 'done' | 'failed' | 'in_progress' | undefined
+  const approved = !task.checked && !executed; // unchecked AND not yet run = will run
+  const skippedByUser = task.checked && !executed; // checked but no exec record = user skipped
   const lockedAfterApproval = status !== 'pending';
 
+  let pillLabel: string;
+  let pillCls: string;
+  let pillTitle: string;
+  let cardCls: string;
+  if (executed === 'done') {
+    pillLabel = '✓ Done';
+    pillCls = 'bg-chess-best text-white border-chess-best';
+    pillTitle = 'Completed by Claude Code';
+    cardCls = 'border-chess-best/30 bg-chess-best/5';
+  } else if (executed === 'failed') {
+    pillLabel = '✕ Failed';
+    pillCls = 'bg-chess-blunder text-white border-chess-blunder';
+    pillTitle = 'Claude Code failed this task — see comment on github';
+    cardCls = 'border-chess-blunder/30 bg-chess-blunder/5';
+  } else if (executed === 'in_progress') {
+    pillLabel = '⟳ Running';
+    pillCls = 'bg-chess-inaccuracy text-white border-chess-inaccuracy animate-pulse';
+    pillTitle = 'Claude Code is working on this task right now';
+    cardCls = 'border-chess-inaccuracy/30 bg-chess-inaccuracy/5';
+  } else if (skippedByUser) {
+    pillLabel = 'Skipped — click to approve';
+    pillCls = 'bg-transparent text-chess-text-tertiary border-chess-border/40 hover:text-chess-text hover:border-chess-accent/60';
+    pillTitle = 'Click to re-approve this task';
+    cardCls = 'border-chess-border/30 bg-chess-surface/30 opacity-60';
+  } else {
+    pillLabel = '✓ Approved — click to skip';
+    pillCls = 'bg-chess-accent text-white border-chess-accent';
+    pillTitle = 'Click to skip this task (it will move to tomorrow as a candidate)';
+    cardCls = 'border-chess-accent/30 bg-chess-accent/5';
+  }
+
   return (
-    <div className={`border rounded-lg p-3 mb-2 transition-colors ${approved ? 'border-chess-accent/30 bg-chess-accent/5' : 'border-chess-border/30 bg-chess-surface/30 opacity-60'}`}>
+    <div className={`border rounded-lg p-3 mb-2 transition-colors ${cardCls}`}>
       <div className="flex items-start gap-3">
         <button
           onClick={onToggle}
-          disabled={busy || lockedAfterApproval}
-          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${approved ? 'bg-chess-accent text-white border-chess-accent' : 'bg-transparent text-chess-text-tertiary border-chess-border/40 hover:text-chess-text'} ${busy || lockedAfterApproval ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-          title={approved ? 'Click to skip this task' : 'Click to approve this task'}
+          disabled={busy || lockedAfterApproval || !!executed}
+          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${pillCls} ${busy || lockedAfterApproval || executed ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
+          title={pillTitle}
         >
-          {busy ? '…' : approved ? '✓ Approved' : 'Skipped'}
+          {busy ? '…' : pillLabel}
         </button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -512,6 +663,31 @@ function TaskRow({
               ))}
             </div>
           )}
+          {executionStatus?.status === 'done' && (
+            <div className="mt-2 text-[11px] text-chess-best">
+              {executionStatus.sha && (
+                <>
+                  Commit{' '}
+                  <a
+                    href={`https://github.com/yuvalinc/chess-dna-web/commit/${executionStatus.sha}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-chess-accent hover:underline font-mono"
+                  >
+                    {executionStatus.sha.slice(0, 7)}
+                  </a>
+                </>
+              )}
+              {executionStatus.files && executionStatus.files.length > 0 && (
+                <>
+                  {executionStatus.sha && <> · </>}
+                  Touched: {executionStatus.files.map(f => (
+                    <code key={f} className="ms-1 bg-chess-bg/60 px-1 rounded text-chess-text-tertiary">{f}</code>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -519,7 +695,7 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, showRaw, onToggleRaw, busy,
+  issue, isLatest, onApprove, onToggleTask, showRaw, onToggleRaw, busy, execStatuses, tokens,
 }: {
   issue: GhIssue;
   isLatest: boolean;
@@ -528,6 +704,8 @@ function IssueCard({
   showRaw: boolean;
   onToggleRaw: () => void;
   busy: string | null;
+  execStatuses: Map<string, TaskExecutionStatus>;
+  tokens: number;
 }) {
   const status = statusFromIssue(issue);
   const sty = STATUS_STYLES[status];
@@ -547,6 +725,11 @@ function IssueCard({
           <span className="text-[11px] text-chess-text-tertiary ms-auto">
             created {fmtTime(issue.created_at)}
           </span>
+          {tokens > 0 && (
+            <span className="text-[11px] text-chess-text-tertiary">
+              {(tokens / 1000).toFixed(1)}k tokens · ~{fmtUsd(estimateCostUsd(tokens))}
+            </span>
+          )}
         </div>
 
         {status === 'pending' && tasks.length > 0 && (
@@ -603,6 +786,7 @@ function IssueCard({
               status={status}
               busy={busy === 'task:' + task.id}
               onToggle={() => onToggleTask(task)}
+              executionStatus={execStatuses.get(task.title)}
             />
           ))}
         </Card>

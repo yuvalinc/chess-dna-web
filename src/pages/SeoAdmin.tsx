@@ -157,7 +157,7 @@ function fmtUsd(n: number): string {
 }
 
 interface TaskExecutionStatus {
-  status: 'done' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
+  status: 'done' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected' | 'needs_review' | 'reviewed';
   sha?: string;
   files?: string[];
   prNumber?: number;
@@ -198,6 +198,15 @@ function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutio
         ? [...filesM[1].matchAll(/`([^`]+)`/g)].map(m => m[1])
         : undefined;
       map.set(title, { status: 'done', sha: shaM?.[1], files });
+    } else if (body.startsWith('🔎')) {
+      // New "needs review" state for browser/no-file-change tasks. Only set if
+      // the current map state isn't already 'reviewed' (so a later "reviewed"
+      // comment doesn't get downgraded).
+      if (map.get(title)?.status !== 'reviewed') {
+        map.set(title, { status: 'needs_review' });
+      }
+    } else if (body.startsWith('👁')) {
+      map.set(title, { status: 'reviewed' });
     } else if (body.startsWith('❌')) {
       map.set(title, { status: 'failed' });
     } else if (body.startsWith('🔧')) {
@@ -479,6 +488,23 @@ export default function SeoAdmin() {
     }
   };
 
+  const onMarkReviewed = async (issue: GhIssue, task: ParsedTask) => {
+    setBusy('review:' + task.id);
+    try {
+      await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ body: `👁 **${task.title}** — reviewed by user` }),
+      });
+      // Re-fetch comments so the parser sees the new "reviewed" entry.
+      const list = await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/comments?per_page=100`);
+      setComments(list);
+    } catch (e) {
+      setError(`Mark-reviewed failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const onRejectPR = async (prNumber: number) => {
     setBusy('reject:' + prNumber);
     try {
@@ -609,6 +635,7 @@ export default function SeoAdmin() {
         onToggleTask={(t) => onToggleTask(displayed, t)}
         onMergePR={onMergePR}
         onRejectPR={onRejectPR}
+        onMarkReviewed={(t) => onMarkReviewed(displayed, t)}
         showRaw={showRawId === displayed.number}
         onToggleRaw={() => setShowRawId(showRawId === displayed.number ? null : displayed.number)}
         busy={busy}
@@ -671,7 +698,7 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, status, busy, onToggle, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy,
+  task, status, busy, onToggle, executionStatus, onMergePR, onRejectPR, onMarkReviewed, mergeBusy, rejectBusy, reviewBusy,
 }: {
   task: ParsedTask;
   status: RunStatus;
@@ -680,8 +707,10 @@ function TaskRow({
   executionStatus?: TaskExecutionStatus;
   onMergePR?: (prNumber: number, taskTitle: string) => void;
   onRejectPR?: (prNumber: number) => void;
+  onMarkReviewed?: () => void;
   mergeBusy?: boolean;
   rejectBusy?: boolean;
+  reviewBusy?: boolean;
 }) {
   // Approval state (pre-execution) comes from the markdown checkbox.
   // Execution state (post-approval) comes from issue comments left by the executor.
@@ -694,7 +723,17 @@ function TaskRow({
   let pillCls: string;
   let pillTitle: string;
   let cardCls: string;
-  if (executed === 'pr_merged') {
+  if (executed === 'reviewed') {
+    pillLabel = '👁 Reviewed';
+    pillCls = 'bg-chess-best text-white border-chess-best';
+    pillTitle = 'You marked this task as reviewed.';
+    cardCls = 'border-chess-best/30 bg-chess-best/5';
+  } else if (executed === 'needs_review') {
+    pillLabel = '🔎 Done — verify & mark reviewed';
+    pillCls = 'bg-chess-inaccuracy text-white border-chess-inaccuracy';
+    pillTitle = 'Claude reported no file changes — check that the work actually happened, then mark reviewed.';
+    cardCls = 'border-chess-inaccuracy/30 bg-chess-inaccuracy/5';
+  } else if (executed === 'pr_merged') {
     pillLabel = '🚀 Merged · deploying';
     pillCls = 'bg-chess-best text-white border-chess-best';
     pillTitle = 'PR merged. The daemon will deploy on its next tick.';
@@ -833,6 +872,22 @@ function TaskRow({
               </div>
             </div>
           )}
+          {executionStatus?.status === 'needs_review' && onMarkReviewed && (
+            <div className="mt-2 bg-chess-inaccuracy/10 rounded p-2 text-[12px]">
+              <p className="text-chess-text-secondary mb-2">
+                Claude reported no file changes for this task. It might be a browser task that genuinely needs no commit
+                (e.g. submitting to Search Console), or Claude couldn't actually do it. <strong>Verify the work happened</strong>{' '}
+                (open the relevant site / dashboard and confirm), then mark it reviewed.
+              </p>
+              <button
+                onClick={onMarkReviewed}
+                disabled={reviewBusy}
+                className="bg-chess-accent text-white font-bold text-[12px] px-3 py-1.5 rounded-md disabled:opacity-50 hover:bg-chess-accent/90"
+              >
+                {reviewBusy ? 'Marking…' : '✓ Mark reviewed'}
+              </button>
+            </div>
+          )}
           {(executionStatus?.status === 'pr_merged' || executionStatus?.status === 'done') && executionStatus.sha && (
             <div className="mt-2 text-[11px] text-chess-best">
               Commit{' '}
@@ -858,7 +913,7 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, tokens,
+  issue, isLatest, onApprove, onToggleTask, onMergePR, onRejectPR, onMarkReviewed, showRaw, onToggleRaw, busy, execStatuses, tokens,
 }: {
   issue: GhIssue;
   isLatest: boolean;
@@ -866,6 +921,7 @@ function IssueCard({
   onToggleTask: (t: ParsedTask) => void;
   onMergePR: (prNumber: number, taskTitle: string) => void;
   onRejectPR: (prNumber: number) => void;
+  onMarkReviewed: (t: ParsedTask) => void;
   showRaw: boolean;
   onToggleRaw: () => void;
   busy: string | null;
@@ -957,8 +1013,10 @@ function IssueCard({
                 executionStatus={es}
                 onMergePR={onMergePR}
                 onRejectPR={onRejectPR}
+                onMarkReviewed={() => onMarkReviewed(task)}
                 mergeBusy={prNum != null && busy === 'merge:' + prNum}
                 rejectBusy={prNum != null && busy === 'reject:' + prNum}
+                reviewBusy={busy === 'review:' + task.id}
               />
             );
           })}

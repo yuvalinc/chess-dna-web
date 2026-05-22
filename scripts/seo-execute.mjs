@@ -113,7 +113,8 @@ function buildClaudePrompt(task) {
     ``,
     `Pick the right tool for the job:`,
     `  - **File edits** (Read/Edit/Write) for code changes, schema markup, new HTML, sitemap.xml.`,
-    `  - **Chrome MCP** (mcp__Claude_in_Chrome__*) for browser tasks: Search Console, AlternativeTo, etc. The user is already logged in.`,
+    `  - **Chrome MCP** (mcp__Claude_in_Chrome__*) for browser tasks: Search Console, AlternativeTo, keyword.com web UI, etc. The user is already logged in.`,
+    `  - **keyword.com MCP** (mcp__keyword_*) IF available locally. If a task needs keyword.com (add keywords, configure AIV, etc.) check whether these tools exist first. If they do, use them. If NOT, fall back to driving https://app.keyword.com via Chrome MCP using the user's already-logged-in browser session.`,
     ``,
     `## Rules`,
     `- Make the change. Don't ask, don't propose, just do.`,
@@ -122,6 +123,7 @@ function buildClaudePrompt(task) {
     `- Do NOT create test files unless the task description says so.`,
     `- For browser tasks: stop short of irreversible "Submit / Publish" clicks unless the task explicitly authorizes it. Take a screenshot before the final click so it's auditable.`,
     `- Keep the change minimal and focused on this task only.`,
+    `- **NEVER bluff.** If you couldn't actually make the change — because a required MCP isn't connected, a login is missing, or any other reason — say so clearly in your final message. Better to fail loudly than to silently pretend success. The user will catch the lie when they verify and that's worse than upfront honesty.`,
     `- If you cannot complete the task safely, exit without changes and explain why in your final message.`,
   ].filter(Boolean).join('\n');
 }
@@ -299,12 +301,13 @@ async function processIssue(issueNumber) {
           `[View full diff →](${pr.url}/files)  ·  Approve & merge from /seo to ship + deploy.`,
         );
       } else {
-        // No file changes — e.g. a pure-browser task. Mark done immediately,
-        // since there's no PR to review.
+        // No file changes — e.g. a pure-browser task, or Claude couldn't do it.
+        // Either way, we don't auto-mark "done" — the user has to verify it
+        // actually happened (catches "bluff done" without any work).
         anyReady = true;
         await commentOnIssue(
           issue.number,
-          `✅ **${task.title}** — done (no file changes; browser-only task)`,
+          `🔎 **${task.title}** — needs review (no file changes; verify the work happened then click "Mark reviewed" in /seo)`,
         );
       }
     } catch (err) {
@@ -355,15 +358,33 @@ async function deployResolvedIssues() {
 
   for (const issueRef of candidates) {
     const prNums = await findIssuePRs(issueRef.number);
-    if (prNums.length === 0) continue;
-    const prs = await Promise.all(prNums.map(getPr));
-    const allResolved = prs.every(p => p.state === 'closed'); // closed = merged OR rejected
-    if (!allResolved) {
-      console.log(`[exec] Issue #${issueRef.number}: ${prs.filter(p => p.state === 'open').length}/${prs.length} PR(s) still open — skipping deploy.`);
+    const prs = prNums.length > 0 ? await Promise.all(prNums.map(getPr)) : [];
+    const prsResolved = prs.every(p => p.state === 'closed'); // closed = merged OR rejected
+
+    // Check needs-review tasks (browser/no-file-change tasks need explicit
+    // human "Mark reviewed" before they count as complete).
+    const comments = await gh(`/repos/${GH_REPO}/issues/${issueRef.number}/comments?per_page=100`);
+    const reviewState = new Map();
+    for (const c of comments) {
+      const body = c.body ?? '';
+      const titleM = body.match(/\*\*([^*]+?)\*\*/);
+      if (!titleM) continue;
+      const title = titleM[1].trim();
+      if (body.startsWith('🔎')) {
+        if (!reviewState.has(title)) reviewState.set(title, 'needs');
+      } else if (body.startsWith('👁') || body.startsWith('✅')) {
+        reviewState.set(title, 'reviewed');
+      }
+    }
+    const unreviewed = [...reviewState.entries()].filter(([, s]) => s !== 'reviewed').map(([t]) => t);
+
+    if (!prsResolved || unreviewed.length > 0) {
+      const stillOpen = prs.filter(p => p.state === 'open').length;
+      console.log(`[exec] Issue #${issueRef.number}: ${stillOpen} PR(s) open, ${unreviewed.length} task(s) unreviewed — skipping deploy.`);
       continue;
     }
     const anyMerged = prs.some(p => p.merged_at != null);
-    console.log(`[exec] Issue #${issueRef.number}: all ${prs.length} PR(s) resolved. ${anyMerged ? 'Deploying.' : 'No merges; closing.'}`);
+    console.log(`[exec] Issue #${issueRef.number}: all ${prs.length} PR(s) resolved + all reviews complete. ${anyMerged ? 'Deploying.' : 'No code changes; closing.'}`);
 
     if (anyMerged) {
       // Pull latest main into the local checkout, then deploy.

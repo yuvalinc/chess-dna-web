@@ -157,9 +157,12 @@ function fmtUsd(n: number): string {
 }
 
 interface TaskExecutionStatus {
-  status: 'done' | 'failed' | 'in_progress';
+  status: 'done' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
   sha?: string;
   files?: string[];
+  prNumber?: number;
+  prUrl?: string;
+  prDiffStat?: string;
 }
 
 function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutionStatus> {
@@ -169,6 +172,25 @@ function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutio
     const titleM = body.match(/\*\*([^*]+?)\*\*/);
     if (!titleM) continue;
     const title = titleM[1].trim();
+    // New flow: "📝 ... — PR [#N](url) ready for review"
+    if (body.startsWith('📝')) {
+      const prM = body.match(/PR\s+\[?#(\d+)\]?\(([^)]+)\)/);
+      const diffM = body.match(/^\s*(\d+\s+files?\s+changed[^\n]*)/m);
+      const filesM = body.match(/Files:\s*((?:`[^`]+`,?\s*)+)/);
+      const files = filesM
+        ? [...filesM[1].matchAll(/`([^`]+)`/g)].map(m => m[1])
+        : undefined;
+      if (prM) {
+        map.set(title, {
+          status: 'pr_open',
+          prNumber: Number(prM[1]),
+          prUrl: prM[2],
+          prDiffStat: diffM?.[1],
+          files,
+        });
+      }
+      continue;
+    }
     if (body.startsWith('✅')) {
       const shaM = body.match(/Commit:\s*`([a-f0-9]+)`/i);
       const filesM = body.match(/Files:\s*((?:`[^`]+`,?\s*)+)/);
@@ -316,6 +338,7 @@ export default function SeoAdmin() {
   const [showRawId, setShowRawId] = useState<number | null>(null);
   const [selectedNum, setSelectedNum] = useState<number | null>(null);
   const [comments, setComments] = useState<GhComment[] | null>(null);
+  const [prStates, setPrStates] = useState<Map<number, { state: string; merged_at: string | null; merge_commit_sha: string | null }>>(new Map());
 
   const ghFetch = async (path: string, init?: RequestInit) => {
     if (!pat) throw new Error('No GitHub PAT configured');
@@ -363,12 +386,32 @@ export default function SeoAdmin() {
   const past = useMemo(() => (issues ?? []).filter(i => i.number !== displayed?.number), [issues, displayed]);
 
   useEffect(() => {
-    if (!pat || !displayed) { setComments(null); return; }
+    if (!pat || !displayed) { setComments(null); setPrStates(new Map()); return; }
     let cancelled = false;
     (async () => {
       try {
         const list = await ghFetch(`/repos/${GH_REPO}/issues/${displayed.number}/comments?per_page=100`);
-        if (!cancelled) setComments(list);
+        if (cancelled) return;
+        setComments(list);
+        // Find PR numbers referenced in comments and fetch their current state.
+        const prNums = new Set<number>();
+        for (const c of list as GhComment[]) {
+          for (const m of (c.body ?? '').matchAll(/PR\s+\[?#(\d+)\]?/g)) prNums.add(Number(m[1]));
+        }
+        if (prNums.size > 0) {
+          const states = await Promise.all([...prNums].map(async n => {
+            try {
+              const pr = await ghFetch(`/repos/${GH_REPO}/pulls/${n}`);
+              return [n, { state: pr.state, merged_at: pr.merged_at, merge_commit_sha: pr.merge_commit_sha }] as const;
+            } catch {
+              return null;
+            }
+          }));
+          if (!cancelled) {
+            const map = new Map(states.filter(Boolean) as ReadonlyArray<readonly [number, { state: string; merged_at: string | null; merge_commit_sha: string | null }]>);
+            setPrStates(map);
+          }
+        }
       } catch {
         if (!cancelled) setComments(null);
       }
@@ -377,10 +420,21 @@ export default function SeoAdmin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayed?.number, pat]);
 
-  const execStatuses = useMemo(
-    () => (comments ? parseExecutionStatuses(comments) : new Map<string, TaskExecutionStatus>()),
-    [comments],
-  );
+  const execStatuses = useMemo(() => {
+    const base = comments ? parseExecutionStatuses(comments) : new Map<string, TaskExecutionStatus>();
+    // Override pr_open status with merged/rejected if the live PR state says so.
+    for (const [title, status] of base.entries()) {
+      if (status.status !== 'pr_open' || status.prNumber == null) continue;
+      const live = prStates.get(status.prNumber);
+      if (!live) continue;
+      if (live.merged_at) {
+        base.set(title, { ...status, status: 'pr_merged', sha: live.merge_commit_sha?.slice(0, 7) ?? status.sha });
+      } else if (live.state === 'closed') {
+        base.set(title, { ...status, status: 'pr_rejected' });
+      }
+    }
+    return base;
+  }, [comments, prStates]);
 
   const dailyTokens = displayed ? extractTokens(displayed.body) : 0;
   const totalTokens = (issues ?? []).reduce((sum, i) => sum + extractTokens(i.body), 0);
@@ -399,6 +453,47 @@ export default function SeoAdmin() {
     } catch (e) {
       setIssues(prev => prev?.map(i => i.number === issue.number ? { ...i, labels: prevLabels } : i) ?? null);
       setError(`Approve failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onMergePR = async (prNumber: number, taskTitle: string) => {
+    setBusy('merge:' + prNumber);
+    try {
+      await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}/merge`, {
+        method: 'PUT',
+        body: JSON.stringify({ merge_method: 'squash', commit_title: `[SEO] ${taskTitle}` }),
+      });
+      // Refetch PR state for this number specifically.
+      const pr = await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`);
+      setPrStates(prev => {
+        const m = new Map(prev);
+        m.set(prNumber, { state: pr.state, merged_at: pr.merged_at, merge_commit_sha: pr.merge_commit_sha });
+        return m;
+      });
+    } catch (e) {
+      setError(`Merge of PR #${prNumber} failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onRejectPR = async (prNumber: number) => {
+    setBusy('reject:' + prNumber);
+    try {
+      await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ state: 'closed' }),
+      });
+      const pr = await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`);
+      setPrStates(prev => {
+        const m = new Map(prev);
+        m.set(prNumber, { state: pr.state, merged_at: pr.merged_at, merge_commit_sha: pr.merge_commit_sha });
+        return m;
+      });
+    } catch (e) {
+      setError(`Reject of PR #${prNumber} failed: ${(e as Error).message}`);
     } finally {
       setBusy(null);
     }
@@ -512,6 +607,8 @@ export default function SeoAdmin() {
         isLatest={isViewingLatest}
         onApprove={() => onApprove(displayed)}
         onToggleTask={(t) => onToggleTask(displayed, t)}
+        onMergePR={onMergePR}
+        onRejectPR={onRejectPR}
         showRaw={showRawId === displayed.number}
         onToggleRaw={() => setShowRawId(showRawId === displayed.number ? null : displayed.number)}
         busy={busy}
@@ -574,13 +671,17 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, status, busy, onToggle, executionStatus,
+  task, status, busy, onToggle, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy,
 }: {
   task: ParsedTask;
   status: RunStatus;
   busy: boolean;
   onToggle: () => void;
   executionStatus?: TaskExecutionStatus;
+  onMergePR?: (prNumber: number, taskTitle: string) => void;
+  onRejectPR?: (prNumber: number) => void;
+  mergeBusy?: boolean;
+  rejectBusy?: boolean;
 }) {
   // Approval state (pre-execution) comes from the markdown checkbox.
   // Execution state (post-approval) comes from issue comments left by the executor.
@@ -593,10 +694,25 @@ function TaskRow({
   let pillCls: string;
   let pillTitle: string;
   let cardCls: string;
-  if (executed === 'done') {
+  if (executed === 'pr_merged') {
+    pillLabel = '🚀 Merged · deploying';
+    pillCls = 'bg-chess-best text-white border-chess-best';
+    pillTitle = 'PR merged. The daemon will deploy on its next tick.';
+    cardCls = 'border-chess-best/30 bg-chess-best/5';
+  } else if (executed === 'pr_open') {
+    pillLabel = '📝 Review PR';
+    pillCls = 'bg-chess-accent text-white border-chess-accent';
+    pillTitle = 'Pull request open — review the diff';
+    cardCls = 'border-chess-accent/30 bg-chess-accent/5';
+  } else if (executed === 'pr_rejected') {
+    pillLabel = '✕ Rejected';
+    pillCls = 'bg-chess-text-tertiary text-white border-chess-text-tertiary opacity-60';
+    pillTitle = 'PR closed without merging';
+    cardCls = 'border-chess-border/30 bg-chess-surface/30 opacity-60';
+  } else if (executed === 'done') {
     pillLabel = '✓ Done';
     pillCls = 'bg-chess-best text-white border-chess-best';
-    pillTitle = 'Completed by Claude Code';
+    pillTitle = 'Completed by Claude Code (browser task, no PR)';
     cardCls = 'border-chess-best/30 bg-chess-best/5';
   } else if (executed === 'failed') {
     pillLabel = '✕ Failed';
@@ -671,28 +787,67 @@ function TaskRow({
               ))}
             </div>
           )}
-          {executionStatus?.status === 'done' && (
-            <div className="mt-2 text-[11px] text-chess-best">
-              {executionStatus.sha && (
-                <>
-                  Commit{' '}
-                  <a
-                    href={`https://github.com/yuvalinc/chess-dna-web/commit/${executionStatus.sha}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-chess-accent hover:underline font-mono"
-                  >
-                    {executionStatus.sha.slice(0, 7)}
-                  </a>
-                </>
-              )}
+          {executionStatus?.status === 'pr_open' && executionStatus.prNumber != null && (
+            <div className="mt-2 bg-chess-bg/40 rounded p-2 text-[12px]">
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="text-chess-text font-bold">PR #{executionStatus.prNumber}</span>
+                {executionStatus.prDiffStat && (
+                  <span className="text-chess-text-tertiary">{executionStatus.prDiffStat}</span>
+                )}
+                <a
+                  href={`${executionStatus.prUrl}/files`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-chess-accent hover:underline ms-auto"
+                >
+                  View full diff on GitHub →
+                </a>
+              </div>
               {executionStatus.files && executionStatus.files.length > 0 && (
-                <>
-                  {executionStatus.sha && <> · </>}
-                  Touched: {executionStatus.files.map(f => (
-                    <code key={f} className="ms-1 bg-chess-bg/60 px-1 rounded text-chess-text-tertiary">{f}</code>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {executionStatus.files.slice(0, 8).map(f => (
+                    <code key={f} className="text-[10px] bg-chess-bg/60 px-1 py-0.5 rounded text-chess-text-tertiary">{f}</code>
                   ))}
-                </>
+                  {executionStatus.files.length > 8 && (
+                    <span className="text-[10px] text-chess-text-tertiary self-center">+{executionStatus.files.length - 8} more</span>
+                  )}
+                </div>
+              )}
+              <div className="mt-2 flex gap-2">
+                <button
+                  onClick={() => onMergePR?.(executionStatus.prNumber!, task.title)}
+                  disabled={mergeBusy || rejectBusy}
+                  className="bg-chess-accent text-white font-bold text-[12px] px-3 py-1.5 rounded-md disabled:opacity-50 hover:bg-chess-accent/90"
+                  title="Merge this PR and trigger an auto-deploy"
+                >
+                  {mergeBusy ? 'Merging…' : '✓ Approve & merge + deploy'}
+                </button>
+                <button
+                  onClick={() => onRejectPR?.(executionStatus.prNumber!)}
+                  disabled={mergeBusy || rejectBusy}
+                  className="text-chess-text-tertiary border border-chess-border/40 text-[12px] px-3 py-1.5 rounded-md hover:text-chess-blunder hover:border-chess-blunder/40"
+                  title="Close the PR without merging"
+                >
+                  {rejectBusy ? 'Closing…' : '✕ Reject'}
+                </button>
+              </div>
+            </div>
+          )}
+          {(executionStatus?.status === 'pr_merged' || executionStatus?.status === 'done') && executionStatus.sha && (
+            <div className="mt-2 text-[11px] text-chess-best">
+              Commit{' '}
+              <a
+                href={`https://github.com/yuvalinc/chess-dna-web/commit/${executionStatus.sha}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-chess-accent hover:underline font-mono"
+              >
+                {executionStatus.sha.slice(0, 7)}
+              </a>
+              {executionStatus.files && executionStatus.files.length > 0 && (
+                <> · Touched: {executionStatus.files.map(f => (
+                  <code key={f} className="ms-1 bg-chess-bg/60 px-1 rounded text-chess-text-tertiary">{f}</code>
+                ))}</>
               )}
             </div>
           )}
@@ -703,12 +858,14 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, showRaw, onToggleRaw, busy, execStatuses, tokens,
+  issue, isLatest, onApprove, onToggleTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, tokens,
 }: {
   issue: GhIssue;
   isLatest: boolean;
   onApprove: () => void;
   onToggleTask: (t: ParsedTask) => void;
+  onMergePR: (prNumber: number, taskTitle: string) => void;
+  onRejectPR: (prNumber: number) => void;
   showRaw: boolean;
   onToggleRaw: () => void;
   busy: string | null;
@@ -787,16 +944,24 @@ function IssueCard({
             </span>
           }
         >
-          {tasks.map(task => (
-            <TaskRow
-              key={task.id}
-              task={task}
-              status={status}
-              busy={busy === 'task:' + task.id}
-              onToggle={() => onToggleTask(task)}
-              executionStatus={execStatuses.get(task.title)}
-            />
-          ))}
+          {tasks.map(task => {
+            const es = execStatuses.get(task.title);
+            const prNum = es?.prNumber;
+            return (
+              <TaskRow
+                key={task.id}
+                task={task}
+                status={status}
+                busy={busy === 'task:' + task.id}
+                onToggle={() => onToggleTask(task)}
+                executionStatus={es}
+                onMergePR={onMergePR}
+                onRejectPR={onRejectPR}
+                mergeBusy={prNum != null && busy === 'merge:' + prNum}
+                rejectBusy={prNum != null && busy === 'reject:' + prNum}
+              />
+            );
+          })}
         </Card>
       )}
 

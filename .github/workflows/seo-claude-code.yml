@@ -1,18 +1,19 @@
-name: SEO Claude Code Executor
+name: SEO Claude Code Executor (manual / fallback)
 
-# Polls GitHub Issues every 15 min for `seo-approved` (but not `seo-done`)
-# and runs Claude Code (headless) on each unchecked task. Commits per task
-# and pushes to main. The auto-provided GITHUB_TOKEN has issue + contents
-# write access, so no extra secret is needed for the GH API.
+# Manual / fallback executor. The PRIMARY executor runs locally on the
+# user's Mac (`npm run seo:execute`) because that's where Chrome MCP +
+# the user's logged-in browser sessions live — needed for browser tasks
+# like "submit sitemap to Google Search Console". Code-only tasks would
+# work here too but we keep this disabled-by-default to avoid racing the
+# local runner. Trigger this with:
+#   gh workflow run seo-claude-code.yml -f issue=<n>
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       issue:
-        description: 'Specific issue number to execute (skip the poll)'
-        required: false
+        description: 'Specific issue number to execute (required)'
+        required: true
 
 permissions:
   contents: write

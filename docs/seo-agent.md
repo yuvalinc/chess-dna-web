@@ -29,16 +29,24 @@ everything else runs autonomously.
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  GHA workflow seo-claude-code.yml (cron */15 min)               │
-│  Runs: node scripts/seo-execute.mjs                             │
-│   • Lists issues with label "seo-approved" -label "seo-done"    │
+│  You run `npm run seo:execute` on your Mac                      │
+│  (after clicking Approve in the /seo dashboard)                 │
+│   • Local Claude Code session = code edits AND Chrome MCP       │
 │   • For each unchecked checklist item:                          │
-│       - `claude -p "<task description>" --print`                │
-│       - Captures git diff, commits, pushes                      │
+│       - `claude -p "<task>" --print --dangerously-skip-perms`   │
+│         (Claude picks the right tool — file edits for code      │
+│          tasks, Chrome MCP for browser tasks like Search        │
+│          Console submission, AlternativeTo listing, etc. —      │
+│          using your already-logged-in browser session)          │
+│       - Captures git diff, commits, pushes (code tasks)         │
+│       - Takes screenshot before any irreversible submit click   │
 │       - Checks the box in the issue body                        │
-│       - Comments commit SHA + files touched                     │
+│       - Comments commit SHA / screenshot link + files touched   │
 │   • All done → label "seo-done", close the issue                │
 │   • Some failed → label "seo-partial", leave open               │
+│                                                                  │
+│  GHA workflow_dispatch is kept as a fallback for code-only      │
+│  emergencies — `gh workflow run seo-claude-code.yml -f issue=N` │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -124,13 +132,19 @@ SEO_KEYWORDCOM_PROJECT="chess-dna"   # name of the keyword.com project
 
 ## Daily workflow
 
-1. **07:00** — Routine fires. Agent runs ~2–4 min. New GitHub Issue lands.
-2. **Morning** — Open https://github.com/yuvalinc/chess-dna-web/issues. Skim today's issue.
-   - Looks right → add the `seo-approved` label. Done.
-   - Some tasks are wrong → uncheck them in the body before adding the label.
+1. **07:00 (laptop can be off)** — Routine fires on Anthropic's cloud. Agent runs ~2–4 min. New GitHub Issue lands.
+2. **Morning (you open laptop)** — Visit https://chessdna.app/seo (or github.com/yuvalinc/chess-dna-web/issues). Skim today's issue:
+   - Looks right → click **Approve Claude Code →** in the dashboard.
+   - Some tasks are wrong → uncheck them first, then approve.
    - Whole thing is wrong → close the issue, no harm.
-3. **Within 15 min** — GHA cron picks it up, runs Claude Code on each checked task. Watch progress in real time as comments land on the issue.
-4. **End of day** — Skim today's commits on `main` to see what shipped.
+3. **Run the executor on your Mac** (one command, ~5-30 min depending on task count):
+   ```bash
+   npm run seo:execute
+   ```
+   Claude Code picks the right tool per task:
+   - Code tasks → file edits in chess-dna repo, commits per task, pushes to main.
+   - Browser tasks → drives Chrome via MCP using your logged-in sessions (Google Search Console, Bing Webmaster, AlternativeTo, etc.). Stops before irreversible "Submit" clicks unless the task explicitly authorizes them.
+4. **End of day** — Skim today's commits on main + comments on the closed issue to see what shipped.
 
 ## Manual operations
 

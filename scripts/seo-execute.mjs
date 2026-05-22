@@ -107,16 +107,24 @@ function buildClaudePrompt(task) {
     ``,
     task.filesTouched && task.filesTouched.length > 0
       ? `Likely files to edit (the agent's best guess — verify before editing): ${task.filesTouched.join(', ')}`
-      : `Find and edit the right files yourself.`,
+      : ``,
     ``,
-    `Rules:`,
+    `## How to execute`,
+    ``,
+    `Pick the right tool for the job — this is run from the user's Mac so you have:`,
+    `  - **File edits** (Read/Edit/Write) for code changes, schema markup, new HTML files, sitemap.xml, etc.`,
+    `  - **Chrome MCP** (mcp__Claude_in_Chrome__*) for browser tasks: submitting sitemaps to Search Console / Bing Webmaster Tools, filling directory listings (AlternativeTo, Slant, BetaList), etc. The user is already logged into their accounts in this browser — use that session.`,
+    `  - **Bash / git** for committing the file changes after they're made.`,
+    ``,
+    `## Rules`,
     `- Make the change. Don't ask, don't propose, just do.`,
-    `- Follow chess-dna's CLAUDE.md conventions.`,
+    `- Follow chess-dna's CLAUDE.md conventions for any code edits.`,
     `- Do NOT run npm run build, do NOT run npx base44 site deploy.`,
     `- Do NOT create test files unless the task description says so.`,
+    `- For browser tasks: stop short of irreversible "Submit / Publish" clicks unless the task explicitly authorizes it (it usually will). Take a screenshot before the final click so it's auditable.`,
     `- Keep the change minimal and focused on this task only.`,
     `- If you cannot complete the task safely, exit without changes and explain why in your final message.`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 async function executeTask(task) {

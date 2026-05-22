@@ -398,9 +398,12 @@ function IssueCard({
         )}
 
         {status === 'approved' && (
-          <div className="text-[12px] text-chess-text-tertiary">
-            Executor will pick this up on the next 15-min cron tick. Dispatch immediately with:{' '}
-            <code className="bg-chess-bg/60 px-1 rounded">gh workflow run seo-claude-code.yml -f issue={issue.number}</code>
+          <div className="text-[12px] text-chess-text-tertiary bg-chess-bg/40 rounded p-3">
+            Approved. Now run on your Mac to execute (code edits + Chrome MCP for browser tasks):
+            <pre className="text-chess-text font-mono text-[12px] mt-2 bg-chess-bg/60 rounded p-2 select-all">npm run seo:execute</pre>
+            <span className="text-[11px]">Or for one specific issue:{' '}
+              <code className="bg-chess-bg/60 px-1 rounded select-all">FORCE_ISSUE={issue.number} npm run seo:execute</code>
+            </span>
           </div>
         )}
       </div>

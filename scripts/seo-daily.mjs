@@ -11,7 +11,12 @@
 //   SEO_ENV_ID          - default: env_01XnkgKT2C35kgoGqQSWNisG
 //   SEO_SITE_URL        - default: https://chess-dna-fdd5fbde.base44.app
 //   SEO_KEYWORDS        - comma-separated; defaults to a starter set
+//   SEO_KEYWORDCOM_PROJECT - keyword.com project name to scope queries (optional)
 //   SEO_POLL_MAX_SEC    - default: 600 (10 min)
+//
+// Data source: this script assumes the keyword.com MCP server
+// (https://app.keyword.com/mcp) is attached to the managed agent's environment
+// on Anthropic. See docs/seo-agent.md → "Connect the keyword.com MCP".
 //
 // Usage:
 //   node scripts/seo-daily.mjs
@@ -30,6 +35,7 @@ const KEYWORDS = (
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+const KEYWORDCOM_PROJECT = process.env.SEO_KEYWORDCOM_PROJECT ?? 'chess-dna';
 const POLL_MAX_SEC = Number(process.env.SEO_POLL_MAX_SEC ?? 600);
 const POLL_INTERVAL_SEC = 5;
 
@@ -137,14 +143,42 @@ function buildPrompt() {
     `Today is ${today}. Run today's SEO/GEO analysis for ${SITE_URL}.`,
     ``,
     `Target keywords: ${KEYWORDS.join(', ')}`,
+    `Keyword.com project: "${KEYWORDCOM_PROJECT}"`,
     ``,
-    `Steps:`,
-    `1. Check current rankings at https://trakkr.ai/dashboard if accessible.`,
-    `2. Do live SERP searches in Google + Bing + ChatGPT + Perplexity + Claude + Gemini for each target keyword. Capture positions for ${SITE_URL}.`,
-    `3. Identify the top 3-5 actionable improvements I can ship to chess-dna THIS WEEK to move on these rankings.`,
-    `4. For each improvement, name specific files in the chess-dna codebase if you know them (e.g. src/pages/Overview.tsx, index.html, base44/entities/*.jsonc).`,
+    `## Data source`,
     ``,
-    `Output requirement: at the very end of your reply, include a valid JSON code block matching this exact schema:`,
+    `Use the **keyword.com MCP** as the primary source of truth for rankings and AI`,
+    `visibility. The server is connected to this environment at`,
+    `https://app.keyword.com/mcp and exposes 60+ tools. Prefer its structured data`,
+    `over generic web search — only fall back to web search if a tool fails or the`,
+    `project is missing data.`,
+    ``,
+    `## Steps`,
+    ``,
+    `1. **Locate the project.** Call \`search_projects\` with name "${KEYWORDCOM_PROJECT}".`,
+    `   If no match, call \`list_projects\` and pick the closest. If still nothing,`,
+    `   note "no keyword.com project yet" in the summary, propose an \`add_project\``,
+    `   + \`add_keywords\` task as P0, and skip steps 2-5.`,
+    `2. **Pull current SERP rankings.** Use \`list_keywords\` (sorted by change_7d) and`,
+    `   \`get_keyword\` for each target keyword. Capture position, URL, 7-day delta.`,
+    `   For any keyword not yet tracked, propose adding it.`,
+    `3. **Identify movement.** Call \`serp_movers_window\` (last 7 days) and`,
+    `   \`serp_anomalies\` to surface gainers, losers, and unusual drops. Call`,
+    `   \`serp_share_of_voice\` and \`serp_visibility_drivers\` for context on what's`,
+    `   moving the needle.`,
+    `4. **Check AI Visibility.** Call \`aiv_list_domains\` → \`aiv_metrics\` and`,
+    `   \`aiv_citations\` to see how ${SITE_URL} is doing across ChatGPT, Perplexity,`,
+    `   Gemini, and AI Overviews. If no AIV domain is configured, note it and`,
+    `   propose setup as a task.`,
+    `5. **Pick 3-5 actionable improvements** to ship to chess-dna THIS WEEK that`,
+    `   could move rankings or AI visibility. For each, name specific files in the`,
+    `   chess-dna codebase if you know them (e.g. src/pages/Overview.tsx,`,
+    `   index.html, base44/entities/*.jsonc).`,
+    ``,
+    `## Output`,
+    ``,
+    `At the very end of your reply, include a valid JSON code block matching this`,
+    `exact schema:`,
     ``,
     '```json',
     `{`,
@@ -159,10 +193,12 @@ function buildPrompt() {
     '```',
     ``,
     `Rules for the JSON:`,
+    `- Use "google" as the engine for keyword.com SERP data. Use chatgpt/perplexity/gemini for AI Visibility (\`aiv_*\`) data.`,
     `- If a ranking is not in the top 20, set position to null.`,
     `- Use P0 only for urgent / blocking. P1 = ship this week. P2 = nice to have.`,
     `- Maximum 5 tasks. Quality over quantity.`,
     `- Each task description must be specific enough that Claude Code can execute it without re-research.`,
+    `- Do NOT call any keyword.com **write** tool (\`add_*\`, \`update_*\`, \`delete_*\`, \`refresh_*\`) — propose those as tasks for human approval instead.`,
   ].join('\n');
 }
 

@@ -10,9 +10,12 @@ A self-driving SEO improvement loop for chess-dna. One human approval per day; e
 │  Runs: node scripts/seo-daily.mjs                               │
 │   1. Calls POST /v1/sessions against the managed SEO/GEO Agent  │
 │   2. Sends the daily prompt (keywords, target URL, JSON schema) │
-│   3. Polls until idle, fetches final agent message              │
-│   4. Parses the JSON block (summary + rankings + tasks)         │
-│   5. Writes a SeoRun entity to Base44 with status="completed"   │
+│   3. Agent uses the keyword.com MCP (attached to its env) to    │
+│      pull real SERP rankings, movers, share of voice, and       │
+│      AI Visibility metrics (ChatGPT / Perplexity / Gemini)      │
+│   4. Polls until idle, fetches final agent message              │
+│   5. Parses the JSON block (summary + rankings + tasks)         │
+│   6. Writes a SeoRun entity to Base44 with status="completed"   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -77,13 +80,42 @@ Go to https://claude.ai/code/routines → New routine.
   ```
 - **Env vars**: `ANTHROPIC_API_KEY`, `BASE44_TOKEN` (same as the GHA secrets above).
 
-### 4. Customize keywords (optional)
+### 4. Connect the keyword.com MCP
+
+The daily agent pulls rankings from **keyword.com's hosted MCP server**
+(`https://app.keyword.com/mcp`). One-time setup, in the Anthropic Managed
+Agents console:
+
+1. Open the SEO/GEO Agent's **Environment** (`env_01XnkgKT2C35kgoGqQSWNisG`).
+2. Under **MCP servers / Connectors**, add a Streamable-HTTP server:
+   - **URL**: `https://app.keyword.com/mcp`
+   - **Auth**: OAuth 2.0 — a browser tab opens for keyword.com consent.
+3. Approve the OAuth scope with the keyword.com account that owns the
+   chess-dna project. Tokens auto-refresh; no key to copy.
+4. Verify by running the routine once (or `npm run seo:daily` locally) —
+   the agent should call `search_projects`, `list_keywords`, `serp_movers_window`,
+   `aiv_metrics`, etc., instead of generic web search.
+
+**Prerequisite**: an active keyword.com account with a project tracking the
+chess-dna target keywords. Free trial works. If no project exists yet, the
+agent will propose creating it as the first task in tomorrow's run.
+
+The 66 tools cover SERP rank tracking, Share of Voice, anomalies, AI Visibility
+(ChatGPT / Perplexity / Gemini / AI Overviews), competitor analysis, and
+keyword research. Full reference: https://keyword.com/docs/#mcp.
+
+> The daily prompt explicitly forbids calling write tools (`add_*`, `update_*`,
+> `delete_*`, `refresh_*`). Anything that would mutate keyword.com state gets
+> proposed as a task for human approval instead.
+
+### 5. Customize keywords (optional)
 
 Defaults are baked in to `scripts/seo-daily.mjs`. Override per-routine via env:
 
 ```
 SEO_KEYWORDS="how to improve at chess, chess analysis app, ..."
 SEO_SITE_URL="https://chess-dna-fdd5fbde.base44.app"
+SEO_KEYWORDCOM_PROJECT="chess-dna"   # name of the keyword.com project to scope queries to
 ```
 
 ## Daily workflow
@@ -112,6 +144,8 @@ SEO_SITE_URL="https://chess-dna-fdd5fbde.base44.app"
 - **Token expiry** — `BASE44_TOKEN` is a JWT that expires (~30 days). When it expires, the script will fail; re-run `npx base44 login` locally and copy the new token to GHA secrets + routine env.
 - **No deploy on commit** — The workflow does NOT run `npm run build` or `npx base44 site deploy`. Deploys remain manual.
 - **Idempotency** — `seo-daily.mjs` checks for an existing non-failed SeoRun for today and exits early. Safe to run multiple times.
+- **keyword.com MCP not connected** — if the connector is missing or its OAuth has expired, the agent falls back to generic web search and rankings will be noisy / blank. Reconnect via the Anthropic Managed Agents console (step 4 above).
+- **No keyword.com project** — first run after setup will surface this as a P0 task ("create chess-dna project + add target keywords"). Do that in keyword.com's UI before approving — the executor will not run write tools against keyword.com.
 
 ## File map
 

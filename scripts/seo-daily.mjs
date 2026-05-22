@@ -206,8 +206,11 @@ function buildPrompt() {
 }
 
 function makeBase44Client() {
-  const apiKey = process.env.BASE44_API_KEY;
-  const token = process.env.BASE44_TOKEN;
+  const apiKey =
+    process.env.BASE44_API_KEY ||
+    process.env.BASE44_api_key ||
+    process.env.base44_api_key;
+  const token = process.env.BASE44_TOKEN || process.env.BASE44_token;
   if (apiKey) return createClient({ appId: APP_ID, headers: { api_key: apiKey } });
   if (token) return createClient({ appId: APP_ID, token });
   throw new Error('BASE44_API_KEY (preferred) or BASE44_TOKEN (legacy) is required');

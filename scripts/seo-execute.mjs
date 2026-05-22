@@ -85,8 +85,11 @@ function commitTaskChanges(task) {
 
 async function main() {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
-  const apiKey = process.env.BASE44_API_KEY;
-  const token = process.env.BASE44_TOKEN;
+  const apiKey =
+    process.env.BASE44_API_KEY ||
+    process.env.BASE44_api_key ||
+    process.env.base44_api_key;
+  const token = process.env.BASE44_TOKEN || process.env.BASE44_token;
   if (!apiKey && !token) throw new Error('BASE44_API_KEY (preferred) or BASE44_TOKEN is required');
   const base44 = apiKey
     ? createClient({ appId: APP_ID, headers: { api_key: apiKey } })

@@ -387,14 +387,17 @@ export default function SeoAdmin() {
 
   const onApprove = async (issue: GhIssue) => {
     setBusy('approve');
+    const prevLabels = issue.labels;
+    const nextLabelNames = [...new Set([...issue.labels.map(l => l.name).filter(n => n !== 'seo-pending'), 'seo-approved'])];
+    // Optimistic: flip local state immediately so the UI is responsive.
+    setIssues(prev => prev?.map(i => i.number === issue.number ? { ...i, labels: nextLabelNames.map(name => ({ name })) } : i) ?? null);
     try {
-      const labels = [...new Set([...issue.labels.map(l => l.name).filter(n => n !== 'seo-pending'), 'seo-approved'])];
       await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/labels`, {
         method: 'PUT',
-        body: JSON.stringify({ labels }),
+        body: JSON.stringify({ labels: nextLabelNames }),
       });
-      await refetch();
     } catch (e) {
+      setIssues(prev => prev?.map(i => i.number === issue.number ? { ...i, labels: prevLabels } : i) ?? null);
       setError(`Approve failed: ${(e as Error).message}`);
     } finally {
       setBusy(null);
@@ -403,17 +406,22 @@ export default function SeoAdmin() {
 
   const onToggleTask = async (issue: GhIssue, task: ParsedTask) => {
     setBusy('task:' + task.id);
+    const prevBody = issue.body;
+    const lines = (issue.body ?? '').split('\n');
+    lines[task.lineIndex] = task.checked
+      ? lines[task.lineIndex].replace(/^- \[(x|X)\]/, '- [ ]')
+      : lines[task.lineIndex].replace(/^- \[ \]/, '- [x]');
+    const newBody = lines.join('\n');
+    // Optimistic: flip local state immediately. The GitHub list endpoint can
+    // lag a few hundred ms behind a PATCH, which used to show stale state.
+    setIssues(prev => prev?.map(i => i.number === issue.number ? { ...i, body: newBody } : i) ?? null);
     try {
-      const lines = (issue.body ?? '').split('\n');
-      lines[task.lineIndex] = task.checked
-        ? lines[task.lineIndex].replace(/^- \[(x|X)\]/, '- [ ]')
-        : lines[task.lineIndex].replace(/^- \[ \]/, '- [x]');
       await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}`, {
         method: 'PATCH',
-        body: JSON.stringify({ body: lines.join('\n') }),
+        body: JSON.stringify({ body: newBody }),
       });
-      await refetch();
     } catch (e) {
+      setIssues(prev => prev?.map(i => i.number === issue.number ? { ...i, body: prevBody } : i) ?? null);
       setError(`Toggle failed: ${(e as Error).message}`);
     } finally {
       setBusy(null);

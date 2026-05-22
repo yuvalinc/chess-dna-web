@@ -231,7 +231,9 @@ async function processIssue(issueNumber) {
 }
 
 async function main() {
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
+  // ANTHROPIC_API_KEY is optional locally — `claude -p` uses the user's
+  // `claude login` session if no env var is set. It's only required in
+  // unattended environments (GHA), but we don't enforce that here.
   if (!process.env.GH_TOKEN) throw new Error('GH_TOKEN is required');
 
   if (process.env.FORCE_ISSUE) {

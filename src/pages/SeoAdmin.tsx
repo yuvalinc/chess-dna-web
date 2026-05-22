@@ -103,6 +103,68 @@ function extractSection(body: string | null, heading: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+function parseMarkdownTable(text: string): { headers: string[]; rows: string[][] } | null {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const headerIdx = lines.findIndex(l => l.startsWith('|'));
+  if (headerIdx === -1) return null;
+  const sepIdx = lines.findIndex((l, i) => i > headerIdx && /^\|[\s|:-]+\|$/.test(l));
+  if (sepIdx === -1) return null;
+  const splitRow = (line: string) => line.split('|').slice(1, -1).map(c => c.trim());
+  const headers = splitRow(lines[headerIdx]);
+  const rows = lines.slice(sepIdx + 1).filter(l => l.startsWith('|')).map(splitRow);
+  if (rows.length === 0) return null;
+  return { headers, rows };
+}
+
+function renderCell(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let lastIdx = 0;
+  const re = /\[([^\]]+)\]\(([^)]+)\)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > lastIdx) parts.push(text.slice(lastIdx, m.index));
+    parts.push(
+      <a key={parts.length} href={m[2]} target="_blank" rel="noreferrer" className="text-chess-accent hover:underline">
+        {m[1]}
+      </a>,
+    );
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) parts.push(text.slice(lastIdx));
+  return parts.length > 0 ? <>{parts}</> : text;
+}
+
+function MarkdownTable({ source }: { source: string }) {
+  const parsed = parseMarkdownTable(source);
+  if (!parsed) {
+    return (
+      <pre className="text-[12px] text-chess-text-secondary whitespace-pre-wrap font-sans">{source}</pre>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-[13px] border-collapse">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wider text-chess-text-tertiary border-b border-chess-border/30">
+            {parsed.headers.map((h, i) => (
+              <th key={i} className="text-left py-2 pe-3 font-bold align-bottom">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {parsed.rows.map((row, ri) => (
+            <tr key={ri} className="border-b border-chess-border/20 last:border-0 hover:bg-chess-bg/20">
+              {row.map((cell, ci) => (
+                <td key={ci} className="py-2 pe-3 align-top text-chess-text-secondary">{renderCell(cell)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function getPat(): string | null {
   try { return localStorage.getItem(PAT_STORAGE_KEY); } catch { return null; }
 }
@@ -415,7 +477,7 @@ function IssueCard({
 
       {rankings && (
         <Card title="Rankings">
-          <pre className="text-[12px] text-chess-text-secondary whitespace-pre-wrap font-sans">{rankings}</pre>
+          <MarkdownTable source={rankings} />
         </Card>
       )}
 

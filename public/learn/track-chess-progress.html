@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0f1a" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="canonical" href="https://chessdna.app/learn/track-chess-progress.html" />
+
+    <title>How to Track Your Chess Progress and Weaknesses Over Time</title>
+    <meta name="description" content="ELO isn't enough. To actually improve, track which specific weaknesses are closing and which aren't. A practical guide to tracking chess progress with patterns, skill dimensions, and rating-cost trends." />
+    <meta name="keywords" content="track chess progress, chess progress tracker, track chess weaknesses, chess improvement tracking, chess skill tracking, chess ELO trend, chess weakness analysis over time" />
+    <meta name="robots" content="index, follow" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Chess DNA" />
+    <meta property="og:title" content="How to Track Your Chess Progress and Weaknesses Over Time" />
+    <meta property="og:description" content="ELO isn't enough. Track which specific weaknesses are closing and which aren't." />
+    <meta property="og:url" content="https://chessdna.app/learn/track-chess-progress.html" />
+    <meta property="og:image" content="https://chessdna.app/favicon.png" />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      "headline": "How to Track Your Chess Progress and Weaknesses Over Time",
+      "description": "A practical guide to tracking chess progress that goes beyond ELO — pattern-level weakness tracking, skill dimensions, and rating-cost trends.",
+      "url": "https://chessdna.app/learn/track-chess-progress.html",
+      "image": "https://chessdna.app/favicon.png",
+      "author": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/" },
+      "publisher": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/", "logo": "https://chessdna.app/favicon.png" },
+      "mainEntityOfPage": { "@type": "WebPage", "@id": "https://chessdna.app/learn/track-chess-progress.html" },
+      "datePublished": "2026-05-22"
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        { "@type": "Question", "name": "How do I track my chess progress?", "acceptedAnswer": { "@type": "Answer", "text": "ELO alone tells you you're improving but not why. To actually track progress, watch three things: (1) the rating-cost trend of each named weakness pattern — is your worst pattern getting cheaper? (2) Per-dimension scores on a skill radar covering openings, tactics, defense, positional, endgame, calculation, time management, resilience. (3) Accuracy in your most-played time control. Chess DNA tracks all three automatically as you import games." } },
+        { "@type": "Question", "name": "What is the best app to track chess weaknesses over time?", "acceptedAnswer": { "@type": "Answer", "text": "Chess DNA. It surfaces every recurring weakness as a named pattern, ranks each by how much rating it has cost, and shows the trend over weeks and months — so you can tell which weaknesses are actually closing and which ones are still leaking points. The 8-Dimension Skill Radar covers the broader picture." } },
+        { "@type": "Question", "name": "Why is ELO alone a poor measure of chess improvement?", "acceptedAnswer": { "@type": "Answer", "text": "ELO is a lagging summary indicator. It can stay flat for months even if you've genuinely improved (you face stronger opponents, or your weak phase happens to dominate). It can also spike for reasons that aren't improvement (lucky pairings, opponents tilting). Tracking improvement at the pattern level — which specific mistakes you've stopped making — gives a much earlier and more honest signal." } }
+      ]
+    }
+    </script>
+
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #0a0f1a; color: #e8edf5; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.65; }
+      .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px 96px; }
+      header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+      header img { width: 44px; height: 44px; border-radius: 12px; }
+      header .crumb { font-size: 13px; color: #94a3b8; }
+      header .crumb a { color: #94a3b8; text-decoration: none; }
+      header .crumb a:hover { color: #6ee7b7; }
+      h1 { font-size: 30px; margin: 0 0 14px; letter-spacing: -0.02em; line-height: 1.2; }
+      h2 { color: #6ee7b7; font-size: 22px; margin: 36px 0 10px; letter-spacing: -0.01em; }
+      p, li { color: #cbd5e1; }
+      a { color: #6ee7b7; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .lede { font-size: 19px; color: #e8edf5; margin: 0 0 28px; }
+      .cta { display: inline-block; background: #6ee7b7; color: #0a0f1a; padding: 12px 22px; border-radius: 10px; font-weight: 700; text-decoration: none; margin-top: 6px; }
+      .cta:hover { background: #5ed5a5; text-decoration: none; }
+      footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid #1f2937; color: #94a3b8; font-size: 14px; }
+      footer a { color: #94a3b8; margin-right: 16px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <img src="/favicon.png" alt="Chess DNA logo" />
+        <div><div class="crumb"><a href="https://chessdna.app/">Chess DNA</a> · Learn</div></div>
+      </header>
+
+      <h1>How to Track Your Chess Progress and Weaknesses Over Time</h1>
+
+      <p class="lede">Watching your ELO is the chess version of weighing yourself daily — useful as a long-term signal, terrible as feedback for what you're actually doing right or wrong. To improve on purpose, you need to track at the pattern level, not the rating level.</p>
+
+      <h2>Why ELO alone fails as a progress tracker</h2>
+      <p>Your rating reflects two things mixed together: how well you played and who you played. A rating that stays flat for two months can mean you stagnated — or that you genuinely improved but faced stronger opponents. A 50-point bump might be real, or it might be three lucky pairings. Either way, ELO won't tell you whether you've actually stopped missing pins or whether you're still losing endgames the same way.</p>
+
+      <h2>The three signals that actually track chess improvement</h2>
+
+      <h3>1. Pattern-level rating cost</h3>
+      <p>Every recurring mistake you make has a rating cost — how many points it's bled across all your games. The right way to track progress is to watch that cost shrink for the patterns you're working on. "Missed Pin" went from costing me 300 rating last month to 80 this month? Real progress. "Endgame Technique" is still costing me 400? That's your next thing.</p>
+
+      <h3>2. Per-dimension skill scores</h3>
+      <p>Chess isn't one skill; it's eight: Openings, Tactics, Defense, Positional, Endgame, Calculation, Time Management, Resilience. A skill radar that scores each dimension separately tells you whether you're balanced — or whether your "improvement" is just your strong phase carrying your weak one.</p>
+
+      <h3>3. Accuracy in your most-played time control</h3>
+      <p>Your accuracy in blitz says little about your rapid play. Track accuracy <em>per time control</em> so you can see whether your decision-making is improving where it actually matters.</p>
+
+      <h2>How Chess DNA tracks all three</h2>
+      <ul>
+        <li><strong>Pattern rating-cost trend.</strong> Every named pattern Chess DNA detects gets a rating-cost number that updates as you play. The trend over time shows whether the pattern is closing.</li>
+        <li><strong>8-Dimension Skill Radar.</strong> Each dimension scores 0–99 and maps to a rank tier from Pawn to King. Update happens after every game.</li>
+        <li><strong>Per-time-control accuracy.</strong> Bullet, blitz, rapid, classical — your stats are split so you can see where you're sharp and where you're sloppy.</li>
+        <li><strong>Shareable Chess DNA card.</strong> A snapshot of your Skill Radar, ELO, percentile, and rank tier at any point in time — useful to compare against your card from three months ago.</li>
+      </ul>
+
+      <h2>What a typical tracking workflow looks like</h2>
+      <ol>
+        <li>Import your games once. Chess DNA analyzes everything and gives you a baseline Skill Radar, pattern list, and rating-cost ranking.</li>
+        <li>Pick the highest-cost pattern. That's your training target for the next few weeks.</li>
+        <li>Play your normal games. Chess DNA auto-analyzes each one.</li>
+        <li>Check in weekly. Is the target pattern's rating cost going down? Are other patterns staying stable? Is your Skill Radar moving where you'd expect?</li>
+        <li>When the pattern is mostly cleared (it stops showing up in new games), move to the next-worst weakness.</li>
+      </ol>
+
+      <p style="margin-top: 28px;"><a class="cta" href="https://chessdna.app/">Open Chess DNA →</a></p>
+
+      <h2>Related</h2>
+      <p><a href="/learn/best-ai-chess-improvement-apps.html">The best AI chess improvement apps in 2026</a> · <a href="/learn/find-your-chess-weaknesses.html">How to find your chess weaknesses</a> · <a href="/features.html">All features</a> · <a href="/faq.html">FAQ</a></p>
+
+      <footer>
+        <a href="https://chessdna.app/">Home</a>
+        <a href="/about.html">About</a>
+        <a href="/features.html">Features</a>
+        <a href="/faq.html">FAQ</a>
+        <a href="/contact.html">Contact</a>
+      </footer>
+    </main>
+  </body>
+</html>

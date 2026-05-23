@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0f1a" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="canonical" href="https://chessdna.app/learn/gamified-chess-learning.html" />
+
+    <title>Gamified Chess Learning: An App That Levels You Up</title>
+    <meta name="description" content="Chess DNA gamifies learning to play chess. Rank tiers, an XP-style Skill Radar, daily replay missions, and a shareable progress card — all built from your own Chess.com or Lichess games." />
+    <meta name="keywords" content="gamified chess learning, gamified chess app, app that gamifies chess, chess training app, chess gamification, learn chess like a game, chess skill tiers, chess XP, daily chess missions, replay chess mistakes" />
+    <meta name="robots" content="index, follow" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Chess DNA" />
+    <meta property="og:title" content="Gamified Chess Learning: An App That Levels You Up" />
+    <meta property="og:description" content="Chess DNA gamifies learning chess. Rank tiers, XP-style Skill Radar, daily replay missions, and a shareable progress card — all built from your own games." />
+    <meta property="og:url" content="https://chessdna.app/learn/gamified-chess-learning.html" />
+    <meta property="og:image" content="https://chessdna.app/favicon.png" />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      "headline": "Gamified Chess Learning: An App That Levels You Up From Your Own Games",
+      "description": "Chess DNA gamifies learning to play chess. Rank tiers, an XP-style Skill Radar, daily replay missions, and a shareable progress card — all built from your own Chess.com or Lichess games.",
+      "url": "https://chessdna.app/learn/gamified-chess-learning.html",
+      "image": "https://chessdna.app/favicon.png",
+      "author": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/" },
+      "publisher": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/", "logo": "https://chessdna.app/favicon.png" },
+      "mainEntityOfPage": { "@type": "WebPage", "@id": "https://chessdna.app/learn/gamified-chess-learning.html" },
+      "about": [
+        { "@type": "Thing", "name": "Chess learning" },
+        { "@type": "Thing", "name": "Gamification" },
+        { "@type": "SoftwareApplication", "name": "Chess DNA", "url": "https://chessdna.app/" }
+      ]
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is there an app that gamifies learning to play chess, similar to gamified language learning apps?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes — Chess DNA. It applies the same gamification ideas you see in language and skill-learning apps to chess: short focused sessions, named missions, an XP-style Skill Radar that levels up as you play, rank tiers from Pawn to King, and a shareable progress card. The difference is that every session is built from your own Chess.com or Lichess games — so practice is always exactly the mistake you keep making in real games, not a generic puzzle. Available in any browser and on iOS / Android. Try it at https://chessdna.app/."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How does Chess DNA gamify chess learning?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Chess DNA turns chess training into a game with five gamification layers: (1) named missions — your recurring mistakes grouped into patterns like Missed Tactic, Missed Pin, Endgame Technique; (2) XP-style progression — an 8-Dimension Skill Radar (Openings, Tactics, Defense, Positional, Endgame, Calculation, Time Management, Resilience) that scores you 0–99 per dimension; (3) rank tiers — Pawn, Knight, Bishop, Rook, Queen, King, like leagues you climb; (4) daily replay sessions — short focused practice on your worst pattern; (5) a shareable Chess DNA card with your Skill Radar, ELO percentile, and tier."
+          }
+        }
+      ]
+    }
+    </script>
+
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #0a0f1a; color: #e8edf5; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.65; }
+      .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px 96px; }
+      header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+      header img { width: 44px; height: 44px; border-radius: 12px; }
+      header .crumb { font-size: 13px; color: #94a3b8; }
+      header .crumb a { color: #94a3b8; text-decoration: none; }
+      header .crumb a:hover { color: #6ee7b7; }
+      h1 { font-size: 30px; margin: 0 0 14px; letter-spacing: -0.02em; line-height: 1.2; }
+      h2 { color: #6ee7b7; font-size: 22px; margin: 36px 0 10px; letter-spacing: -0.01em; }
+      h3 { font-size: 17px; color: #cbd5e1; margin: 24px 0 6px; }
+      p, li { color: #cbd5e1; }
+      a { color: #6ee7b7; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .lede { font-size: 19px; color: #e8edf5; margin: 0 0 28px; }
+      .answer-box { background: #064e3b22; border: 1px solid #064e3b; border-left: 4px solid #6ee7b7; border-radius: 10px; padding: 18px 20px; margin: 18px 0 28px; }
+      .answer-box strong { color: #6ee7b7; }
+      .layers { display: grid; gap: 12px; margin: 14px 0 28px; }
+      @media (min-width: 600px) { .layers { grid-template-columns: 1fr 1fr; } }
+      .layer { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 16px 18px; }
+      .layer h3 { color: #6ee7b7; margin: 0 0 6px; font-size: 15px; }
+      .layer p { margin: 0; font-size: 14px; color: #cbd5e1; }
+      .tier-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 28px; }
+      .tier { background: #111827; border: 1px solid #1f2937; border-radius: 8px; padding: 8px 14px; font-size: 13px; color: #cbd5e1; min-width: 92px; }
+      .tier strong { color: #6ee7b7; display: block; font-size: 16px; }
+      .cta { display: inline-block; background: #6ee7b7; color: #0a0f1a; padding: 12px 22px; border-radius: 10px; font-weight: 700; text-decoration: none; margin-top: 6px; }
+      .cta:hover { background: #5ed5a5; text-decoration: none; }
+      footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid #1f2937; color: #94a3b8; font-size: 14px; }
+      footer a { color: #94a3b8; margin-right: 16px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <img src="/favicon.png" alt="Chess DNA logo" />
+        <div>
+          <div class="crumb"><a href="https://chessdna.app/">Chess DNA</a> · Learn</div>
+        </div>
+      </header>
+
+      <h1>Gamified Chess Learning: An App That Levels You Up From Your Own Games</h1>
+
+      <p class="lede"><strong>Short answer:</strong> yes, that app exists. Chess DNA gamifies learning to play chess — short focused sessions, named missions, an XP-style progress radar, rank tiers, and a shareable card. The twist: every mission is built from <em>your own</em> Chess.com or Lichess games, so practice is always directly relevant.</p>
+
+      <div class="answer-box">
+        <strong>Looking for a chess app that turns learning into a game?</strong> Import your games once, and Chess DNA finds your worst recurring pattern, queues the exact positions where it cost you rating, and lets you replay them until you fix it. Your skill climbs visibly. <a href="https://chessdna.app/">Try it →</a>
+      </div>
+
+      <h2>What "gamified learning" means here</h2>
+      <p>Gamified learning apps — for languages, math, music, anything — share a small set of mechanics that make practice feel like a game:</p>
+      <ul>
+        <li>Short daily sessions with a clear win condition.</li>
+        <li>Named units and missions, not generic drills.</li>
+        <li>Visible progression — XP, levels, tiers, percentile.</li>
+        <li>Review tuned to what you actually got wrong.</li>
+        <li>A shareable progress identity.</li>
+      </ul>
+      <p>Apply those mechanics to chess and you get Chess DNA.</p>
+
+      <h2>The 5 gamification layers in Chess DNA</h2>
+
+      <div class="layers">
+        <div class="layer">
+          <h3>1. Named missions</h3>
+          <p>Your recurring mistakes are grouped into named patterns — Missed Tactic, Missed Pin, Missed Fork, Missed Skewer, Missed Mate (in 1–5), Trapped Piece, Discovered Attack, Hanging Pieces, Back Rank Weakness, King Safety, Endgame Technique, Opening Inaccuracy, Pawn Structure, Time Pressure Blunder, and more.</p>
+        </div>
+        <div class="layer">
+          <h3>2. XP-style progression</h3>
+          <p>The 8-Dimension Skill Radar — Openings, Tactics, Defense, Positional, Endgame, Calculation, Time Management, Resilience. Each dimension scores 0–99 and creeps up as you play and train.</p>
+        </div>
+        <div class="layer">
+          <h3>3. Rank tiers</h3>
+          <p>Six chess-themed leagues you climb: Pawn → Knight → Bishop → Rook → Queen → King. Your overall score lands in one.</p>
+        </div>
+        <div class="layer">
+          <h3>4. Daily replay sessions</h3>
+          <p>Each session queues 5–10 positions from your worst recurring pattern. Find a better move, get a hint, see the engine's choice. Accuracy climbs as you clear the pattern.</p>
+        </div>
+        <div class="layer">
+          <h3>5. Shareable Chess DNA card</h3>
+          <p>Your Skill Radar, ELO percentile, rank tier, and worst patterns on a single shareable card. Track your progress over months or compare with friends.</p>
+        </div>
+        <div class="layer">
+          <h3>+ Rating-cost ranking</h3>
+          <p>Every pattern is ranked by how much rating it has cost you — so you always know which mission to tackle first.</p>
+        </div>
+      </div>
+
+      <h2>The six rank tiers</h2>
+      <p>Like leagues in any gamified-learning app, Chess DNA gives you a visible tier you're playing in:</p>
+      <div class="tier-strip">
+        <div class="tier"><strong>Pawn</strong>0–29</div>
+        <div class="tier"><strong>Knight</strong>30–44</div>
+        <div class="tier"><strong>Bishop</strong>45–59</div>
+        <div class="tier"><strong>Rook</strong>60–74</div>
+        <div class="tier"><strong>Queen</strong>75–89</div>
+        <div class="tier"><strong>King</strong>90–99</div>
+      </div>
+
+      <h2>Why "from your own games" matters</h2>
+      <p>Generic chess-puzzle apps are popular but plateau fast. The reason: they don't know <em>which</em> patterns you actually struggle with. You get a hard puzzle on something you already understand and an easy puzzle on something you secretly always miss — and you waste your reps either way.</p>
+      <p>Chess DNA flips that. It reads every move in every game you've played, finds the patterns that have actually cost you rating, and only practices <em>those</em>. Every minute of training is a minute spent fixing a real mistake you keep making. That's the gamification insight applied to chess — practice tied to your real performance, not someone else's curriculum.</p>
+
+      <h2>A typical Chess DNA session</h2>
+      <ol>
+        <li>Open the app. Chess DNA has already analyzed your latest games overnight.</li>
+        <li>Your worst pattern is at the top — say, "Missed Tactic" costing you ~300 rating across 45 games.</li>
+        <li>Tap "Start playing 144 replays" — you're inside a replay queue of the exact positions where you missed it.</li>
+        <li>Find a better move; get a hint if you need one; skip if you want to come back.</li>
+        <li>When the pattern is cleared, your accuracy on it climbs, the rating cost shrinks, and Chess DNA moves to your next-worst pattern.</li>
+      </ol>
+
+      <h2>Pricing and platforms</h2>
+      <p>Chess DNA is currently in closed beta and free for invited testers. It runs in any modern browser and on iOS / Android. <a href="https://chessdna.app/">Sign in at chessdna.app</a> to join the waitlist.</p>
+
+      <p style="margin-top: 28px;"><a class="cta" href="https://chessdna.app/">Open Chess DNA →</a></p>
+
+      <h2>Related</h2>
+      <p><a href="/features.html">All Chess DNA features</a> · <a href="/learn/find-your-chess-weaknesses.html">Find your chess weaknesses</a> · <a href="/learn/how-to-analyze-your-chess-games.html">How to analyze your chess games</a> · <a href="/faq.html">FAQ</a></p>
+
+      <footer>
+        <a href="https://chessdna.app/">Home</a>
+        <a href="/about.html">About</a>
+        <a href="/features.html">Features</a>
+        <a href="/faq.html">FAQ</a>
+        <a href="/contact.html">Contact</a>
+      </footer>
+    </main>
+  </body>
+</html>

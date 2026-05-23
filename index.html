@@ -6,6 +6,40 @@
     <link rel="apple-touch-icon" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chess DNA</title>
+    <meta name="description" content="Chess DNA turns every chess game into progress. AI insights from your Chess.com or Lichess games: find your patterns, fix your weaknesses, replay your mistakes." />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Chess DNA",
+      "applicationCategory": "GameApplication",
+      "operatingSystem": "Web, iOS, Android",
+      "description": "Chess DNA turns every chess game into progress. AI insights from your Chess.com or Lichess games: find your patterns, fix your weaknesses, replay your mistakes.",
+      "url": "https://chessdna.app/",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      }
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Chess DNA",
+      "url": "https://chessdna.app/",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": {
+          "@type": "EntryPoint",
+          "urlTemplate": "https://chessdna.app/?q={search_term_string}"
+        },
+        "query-input": "required name=search_term_string"
+      }
+    }
+    </script>
   </head>
   <body>
     <div id="root"></div>

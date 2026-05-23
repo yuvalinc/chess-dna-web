@@ -715,7 +715,6 @@ function TaskRow({
   // Approval state (pre-execution) comes from the markdown checkbox.
   // Execution state (post-approval) comes from issue comments left by the executor.
   const executed = executionStatus?.status; // 'done' | 'failed' | 'in_progress' | undefined
-  const approved = !task.checked && !executed; // unchecked AND not yet run = will run
   const skippedByUser = task.checked && !executed; // checked but no exec record = user skipped
   const lockedAfterApproval = status !== 'pending';
 

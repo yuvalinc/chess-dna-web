@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0f1a" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="canonical" href="https://chessdna.app/learn/how-to-analyze-your-chess-games.html" />
+
+    <title>How to Analyze Your Chess Games: A Practical Guide</title>
+    <meta name="description" content="A practical guide to analyzing your own chess games — what to look for, how to read engine evaluations, and how to turn each review into a lasting improvement." />
+    <meta name="keywords" content="how to analyze chess games, chess game analysis, analyze my chess games, chess game review, chess.com game review, lichess analysis, chess.com analysis, AI chess analysis" />
+    <meta name="robots" content="index, follow" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Chess DNA" />
+    <meta property="og:title" content="How to Analyze Your Chess Games: A Practical Guide" />
+    <meta property="og:description" content="What to look for when reviewing your own chess games, how to read engine evaluations, and how to turn each review into a real improvement." />
+    <meta property="og:url" content="https://chessdna.app/learn/how-to-analyze-your-chess-games.html" />
+    <meta property="og:image" content="https://chessdna.app/favicon.png" />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      "headline": "How to Analyze Your Chess Games: A Practical Guide",
+      "description": "A practical guide to analyzing your own chess games. Includes what to look for, how to read engine evaluations, and how to turn each review into a lasting improvement.",
+      "url": "https://chessdna.app/learn/how-to-analyze-your-chess-games.html",
+      "image": "https://chessdna.app/favicon.png",
+      "datePublished": "2026-05-18",
+      "dateModified": "2026-05-23",
+      "author": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/" },
+      "publisher": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/", "logo": "https://chessdna.app/favicon.png" },
+      "mainEntityOfPage": { "@type": "WebPage", "@id": "https://chessdna.app/learn/how-to-analyze-your-chess-games.html" }
+    }
+    </script>
+
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #0a0f1a; color: #e8edf5; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.65; }
+      .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
+      header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+      header img { width: 44px; height: 44px; border-radius: 12px; }
+      header .crumb { font-size: 13px; color: #94a3b8; }
+      header .crumb a { color: #94a3b8; text-decoration: none; }
+      header .crumb a:hover { color: #6ee7b7; }
+      h1 { font-size: 30px; margin: 0 0 14px; letter-spacing: -0.02em; line-height: 1.2; }
+      h2 { color: #6ee7b7; font-size: 21px; margin: 36px 0 10px; letter-spacing: -0.01em; }
+      h3 { font-size: 17px; color: #cbd5e1; margin: 24px 0 6px; }
+      p, li { color: #cbd5e1; }
+      a { color: #6ee7b7; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      ol li, ul li { margin: 6px 0; }
+      .lede { font-size: 19px; color: #e8edf5; margin: 0 0 28px; }
+      .callout { background: #111827; border: 1px solid #1f2937; border-left: 3px solid #6ee7b7; border-radius: 8px; padding: 14px 18px; margin: 18px 0; }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0; }
+      th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1f2937; }
+      th { color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+      footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid #1f2937; color: #94a3b8; font-size: 14px; }
+      footer a { color: #94a3b8; margin-right: 16px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <img src="/favicon.png" alt="Chess DNA logo" />
+        <div>
+          <div class="crumb"><a href="https://chessdna.app/">Chess DNA</a> · Learn</div>
+        </div>
+      </header>
+
+      <h1>How to Analyze Your Chess Games: A Practical Guide</h1>
+      <p class="lede">Most players "analyze" their games by clicking through with the engine and nodding at red squares. That's not analysis — it's narration. Here's how to turn each game review into a permanent improvement: what to look for, what to ignore, and how to translate centipawn numbers into something you can act on.</p>
+
+      <h2>Stop scrolling through evaluations</h2>
+      <p>The engine bar swings up and down throughout a game, but only a few of those swings matter. Most are tiny inaccuracies that won't change how you play next time. Pick the moments where the evaluation flipped — neutral to losing, winning to drawn — and ignore the rest.</p>
+
+      <h2>The 4 questions to ask at every key moment</h2>
+      <ol>
+        <li><strong>What did I think was going on?</strong> Try to remember what you were calculating before you made the move. If you can't, write the position FEN somewhere and come back to it.</li>
+        <li><strong>What did the engine see that I missed?</strong> Don't just read the best move — figure out the threat or idea behind it. A move is only useful when you understand what it does.</li>
+        <li><strong>What pattern does this mistake belong to?</strong> A missed pin, a hanging piece, a back-rank weakness, an endgame technique you didn't know. The pattern matters more than the specific position.</li>
+        <li><strong>Have I made this mistake before?</strong> If the answer is yes, this pattern is your real weakness. If you can't answer because you don't track your games, that's a problem worth fixing.</li>
+      </ol>
+
+      <h2>What engine evaluations actually mean</h2>
+      <p>Centipawn loss measures how much a move costs you in pawns ×100. Useful as a sort key, useless as a teacher. A 200cp blunder where you missed a fork is a totally different problem from a 200cp inaccuracy in a sterile endgame. Both are "blunders" by centipawn, but only one is a recurring pattern.</p>
+      <table>
+        <thead><tr><th>Move quality</th><th>Win-chance loss</th><th>What it usually means</th></tr></thead>
+        <tbody>
+          <tr><td>Best</td><td>0</td><td>The engine's top choice. Take credit.</td></tr>
+          <tr><td>Good</td><td>up to ~5%</td><td>Reasonable. Move on.</td></tr>
+          <tr><td>Inaccuracy</td><td>up to ~10%</td><td>Worth noting; rarely worth studying alone.</td></tr>
+          <tr><td>Mistake</td><td>up to ~20%</td><td>Look for a pattern. This is the gold.</td></tr>
+          <tr><td>Blunder</td><td>more than ~20%</td><td>Always look for the pattern. Almost always recurring.</td></tr>
+        </tbody>
+      </table>
+
+      <h2>How Chess DNA does this for you</h2>
+      <p>Chess DNA's <a href="/features.html">Instant Game Analysis</a> handles the first part — evaluations, key moments, plain-English explanations — automatically for every game you import. The harder part (grouping mistakes into patterns across many games and ranking them by rating cost) is what Chess DNA's <a href="/features.html">AI Pattern Detection</a> is built for.</p>
+      <p>You import your Chess.com or Lichess games once. From then on, every new game gets analyzed automatically, the patterns update, and the <a href="/features.html">replays</a> queue up positions from your worst pattern so you can practice exactly the mistake you keep making.</p>
+
+      <div class="callout">
+        <strong>The short version:</strong> a good game review identifies the pattern the mistake belongs to, not just the move that was wrong. Patterns repeat. Specific moves don't.
+      </div>
+
+      <h2>Related</h2>
+      <p><a href="/learn/find-your-chess-weaknesses.html">How to find your chess weaknesses from your own games</a> · <a href="/learn/chess-pattern-recognition.html">Chess pattern recognition: how to train on your own patterns</a> · <a href="/features.html">All Chess DNA features</a> · <a href="/faq.html">FAQ</a></p>
+
+      <footer>
+        <a href="https://chessdna.app/">Home</a>
+        <a href="/about.html">About</a>
+        <a href="/features.html">Features</a>
+        <a href="/faq.html">FAQ</a>
+        <a href="/contact.html">Contact</a>
+      </footer>
+    </main>
+  </body>
+</html>

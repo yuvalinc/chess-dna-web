@@ -95,6 +95,31 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
     return computeWindowedProfile(games, analyses, windowDef.sinceMsAgo);
   }, [games, analyses, activeWindow]);
 
+  // Per-window analyzed-game counts, used to disable empty tabs in
+  // TimeWindowTabs and to detect when the selected window is empty.
+  const windowCounts = useMemo(() => {
+    const now = Date.now();
+    const counts: Partial<Record<TimeWindowId, number>> = {};
+    for (const w of TIME_WINDOWS) {
+      const cutoff = w.sinceMsAgo && w.sinceMsAgo > 0 ? now - w.sinceMsAgo : 0;
+      counts[w.id] = games.filter(
+        (g) => g.analysisStatus === 'complete' && g.playedAt >= cutoff,
+      ).length;
+    }
+    return counts;
+  }, [games]);
+
+  // Auto-fall-back to "All Time" when the current window has no analyzed
+  // games but other windows do. Prevents the radar from showing the all-50s
+  // fallback for users whose recent games haven't been analyzed yet, or who
+  // simply haven't played in the last day/week.
+  useEffect(() => {
+    if (activeWindow === 'all') return;
+    if ((windowCounts[activeWindow] ?? 0) > 0) return;
+    if ((windowCounts.all ?? 0) === 0) return;
+    setActiveWindow('all');
+  }, [activeWindow, windowCounts]);
+
   // Windowed analyses (filtered to match windowed games — for chart gallery)
   const windowedAnalyses = useMemo(() => {
     const gameIds = new Set(windowedData.games.map((g) => g.id));
@@ -326,6 +351,7 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
             activeWindow={activeWindow}
             onWindowChange={setActiveWindow}
             analyzedGameCount={analyzedCount}
+            windowCounts={windowCounts}
           />
 
           {/* Desktop: two-column grid / Mobile: single column */}

@@ -182,7 +182,7 @@ function sumTokensFromSession(sess) {
   return (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
 }
 
-function buildPrompt(carryover = []) {
+function buildPrompt(carryover = [], completed = []) {
   const today = todayIso();
   const carryoverBlock = carryover.length === 0
     ? ''
@@ -197,12 +197,26 @@ function buildPrompt(carryover = []) {
         ...carryover.map(t => `- **${t.priority}** — ${t.title}: ${t.description}`),
         ``,
       ].join('\n');
+  const completedBlock = completed.length === 0
+    ? ''
+    : [
+        ``,
+        `## Already shipped (do NOT propose again)`,
+        ``,
+        `These tasks were proposed and either executed by Claude Code, merged via PR, or manually reviewed-and-confirmed in prior runs. The underlying changes are LIVE on ${SITE_URL}. Do not re-propose anything semantically equivalent — find different opportunities:`,
+        ``,
+        ...completed.slice(0, 40).map(t => `- ${t.title}  _(shipped ${t.fromDate}, #${t.fromIssue})_`),
+        ``,
+        `If you genuinely believe one of these needs further follow-up work, propose it with a clearly *different* title that explains the increment (e.g. "Extend JSON-LD to /learn/* article pages" rather than "Add JSON-LD structured data").`,
+        ``,
+      ].join('\n');
   return [
     `Today is ${today}. Run today's SEO/GEO analysis for ${SITE_URL}.`,
     ``,
     `Target keywords: ${KEYWORDS.join(', ')}`,
     `Keyword.com project: "${KEYWORDCOM_PROJECT}"`,
     carryoverBlock,
+    completedBlock,
     ``,
     `## Data source`,
     ``,
@@ -337,53 +351,99 @@ async function findExistingIssue(runDate) {
   return res.items?.find(i => i.title.includes(runDate)) ?? null;
 }
 
-// Look at the previous seo-daily issue (excluding today's, if any). For each
-// task that ended up marked `[x]` WITHOUT a matching ✅ Done comment from the
-// executor, that task was skipped by the user. We return its title +
-// description so today's agent can reconsider them.
-async function fetchCarryoverTasks(todayDate) {
+// Walks recent seo-daily issues (excluding today's) and partitions their tasks
+// into three buckets the prompt can use:
+//
+//   carryover: user-skipped tasks from the *most recent* prior issue —
+//     present to the agent as candidates to reconsider for today.
+//   completed: tasks across the last N issues that the executor marked
+//     ✅ done / 🔎 needs-review / 👁 reviewed / 🚀 merged. The agent must
+//     NOT propose these again — that's how it "knows what we already did".
+//   removed:   tasks the user explicitly 🗑 removed. Excluded everywhere
+//     (no carryover, no need to inform the agent — they don't exist).
+//
+// Only the most-recent issue contributes to `carryover` (otherwise old
+// proposals would loop forever). Completed/removed are aggregated across
+// the last 10 issues to give the agent a wider memory of shipped work.
+async function fetchPriorWork(todayDate) {
   const q = encodeURIComponent(`repo:${GH_REPO} is:issue label:seo-daily sort:created-desc`);
   const search = await gh(`/search/issues?q=${q}&per_page=10`);
   const recent = (search.items ?? []).filter(i => !i.title.includes(todayDate));
-  if (recent.length === 0) return [];
-  const prev = recent[0];
-  const [bodyIssue, comments] = await Promise.all([
-    gh(`/repos/${GH_REPO}/issues/${prev.number}`),
-    gh(`/repos/${GH_REPO}/issues/${prev.number}/comments?per_page=100`),
-  ]);
-  const body = bodyIssue.body ?? '';
-  const lines = body.split('\n');
-  const skipped = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^- \[(x|X)\] \*\*(P[012])\*\* — (.+?)(?:\s*<!-- task-\d+ -->)?$/);
-    if (!m) continue;
-    const [, , priority, title] = m;
-    const cleanTitle = title.trim();
-    const wasDone = (comments ?? []).some(c => {
-      const cb = c.body ?? '';
-      return cb.startsWith('✅') && cb.includes(`**${cleanTitle}**`);
-    });
-    const wasFailed = (comments ?? []).some(c => {
-      const cb = c.body ?? '';
-      return cb.startsWith('❌') && cb.includes(`**${cleanTitle}**`);
-    });
-    if (wasDone || wasFailed) continue;
-    const descLines = [];
-    let j = i + 1;
-    while (j < lines.length && /^\s+/.test(lines[j])) {
-      const trimmed = lines[j].trim();
-      if (trimmed.startsWith('>')) descLines.push(trimmed.replace(/^>\s?/, ''));
-      j++;
+  if (recent.length === 0) return { carryover: [], completed: [] };
+
+  const issues = await Promise.all(
+    recent.slice(0, 10).map(async i => {
+      const [bodyIssue, comments] = await Promise.all([
+        gh(`/repos/${GH_REPO}/issues/${i.number}`),
+        gh(`/repos/${GH_REPO}/issues/${i.number}/comments?per_page=100`),
+      ]);
+      return { issueMeta: i, body: bodyIssue.body ?? '', comments: comments ?? [] };
+    }),
+  );
+
+  const completed = [];
+  const carryover = [];
+
+  issues.forEach((bundle, idx) => {
+    const { issueMeta, body, comments } = bundle;
+    const fromDate = (issueMeta.title.match(/SEO\s+(\d{4}-\d{2}-\d{2})/) || [])[1] ?? 'recent';
+    const lines = body.split('\n');
+    const isMostRecent = idx === 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^- \[( |x|X)\] \*\*(P[012])\*\* — (.+?)(?:\s*<!-- task-\d+ -->)?$/);
+      if (!m) continue;
+      const [, checkboxChar, priority, title] = m;
+      const cleanTitle = title.trim();
+      const checked = checkboxChar.toLowerCase() === 'x';
+
+      const wasRemoved = comments.some(c => (c.body ?? '').startsWith('🗑') && (c.body ?? '').includes(`**${cleanTitle}**`));
+      if (wasRemoved) continue; // gone — pretend it never existed
+
+      const wasDone = comments.some(c => (c.body ?? '').startsWith('✅') && (c.body ?? '').includes(`**${cleanTitle}**`));
+      const wasReviewed = comments.some(c => (c.body ?? '').startsWith('👁') && (c.body ?? '').includes(`**${cleanTitle}**`));
+      const wasNeedsReview = comments.some(c => (c.body ?? '').startsWith('🔎') && (c.body ?? '').includes(`**${cleanTitle}**`));
+      const wasMerged = comments.some(c => (c.body ?? '').startsWith('🚀') && (c.body ?? '').includes(`**${cleanTitle}**`));
+      const wasFailed = comments.some(c => (c.body ?? '').startsWith('❌') && (c.body ?? '').includes(`**${cleanTitle}**`));
+
+      if (wasDone || wasReviewed || wasMerged) {
+        completed.push({ title: cleanTitle, fromDate, fromIssue: issueMeta.number });
+        continue;
+      }
+
+      // Skipped-by-user candidate: only from the most recent issue, only if
+      // checkbox is checked (= user unchecked → re-checked = skip) AND no
+      // executor activity at all (no needs-review, no failure).
+      if (isMostRecent && checked && !wasNeedsReview && !wasFailed) {
+        const descLines = [];
+        let j = i + 1;
+        while (j < lines.length && /^\s+/.test(lines[j])) {
+          const trimmed = lines[j].trim();
+          if (trimmed.startsWith('>')) descLines.push(trimmed.replace(/^>\s?/, ''));
+          j++;
+        }
+        carryover.push({
+          title: cleanTitle,
+          description: descLines.join(' ').slice(0, 240),
+          priority,
+          fromIssue: issueMeta.number,
+          fromDate,
+        });
+      }
     }
-    skipped.push({
-      title: cleanTitle,
-      description: descLines.join(' ').slice(0, 240),
-      priority,
-      fromIssue: prev.number,
-      fromDate: (prev.title.match(/SEO\s+(\d{4}-\d{2}-\d{2})/) || [])[1] ?? 'recent',
-    });
-  }
-  return skipped;
+  });
+
+  // De-dupe completed by title (latest wins, but we just keep first occurrence
+  // since `issues` is already newest-first).
+  const seen = new Set();
+  const uniqueCompleted = completed.filter(t => {
+    const key = t.title.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return { carryover, completed: uniqueCompleted };
 }
 
 async function main() {
@@ -403,19 +463,23 @@ async function main() {
   const sessionId = session.id;
   console.log(`[seo-daily] Session ${sessionId} created.`);
 
-  console.log(`[seo-daily] Looking up previously-skipped tasks…`);
+  console.log(`[seo-daily] Looking up prior work (carryover + completed)…`);
   let carryover = [];
+  let completed = [];
   try {
-    carryover = await fetchCarryoverTasks(today);
+    ({ carryover, completed } = await fetchPriorWork(today));
     if (carryover.length > 0) {
       console.log(`[seo-daily] Carrying forward ${carryover.length} skipped task(s) from prior runs.`);
     }
+    if (completed.length > 0) {
+      console.log(`[seo-daily] Informing agent of ${completed.length} already-shipped task(s) to avoid duplicates.`);
+    }
   } catch (e) {
-    console.warn(`[seo-daily] Carryover lookup failed (non-fatal):`, e.message);
+    console.warn(`[seo-daily] Prior-work lookup failed (non-fatal):`, e.message);
   }
 
-  console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords, ${carryover.length} carryover)...`);
-  await sendPrompt(sessionId, buildPrompt(carryover));
+  console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords, ${carryover.length} carryover, ${completed.length} completed)...`);
+  await sendPrompt(sessionId, buildPrompt(carryover, completed));
 
   console.log(`[seo-daily] Polling session until idle (max ${POLL_MAX_SEC}s)...`);
   const { session: finished, events: eventsPayload } = await pollSession(sessionId);

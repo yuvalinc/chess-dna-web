@@ -165,6 +165,20 @@ interface TaskExecutionStatus {
   prDiffStat?: string;
 }
 
+// Titles the user marked as 🗑 removed → hidden from the dashboard entirely.
+// Returned separately from execution statuses so the render layer can filter
+// them out without needing a new "removed" status enum value.
+function parseRemovedTitles(comments: GhComment[]): Set<string> {
+  const out = new Set<string>();
+  for (const c of comments) {
+    const body = c.body ?? '';
+    if (!body.startsWith('🗑')) continue;
+    const titleM = body.match(/\*\*([^*]+?)\*\*/);
+    if (titleM) out.add(titleM[1].trim());
+  }
+  return out;
+}
+
 function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutionStatus> {
   const map = new Map<string, TaskExecutionStatus>();
   for (const c of comments) {
@@ -452,6 +466,11 @@ export default function SeoAdmin() {
     return base;
   }, [comments, prStates]);
 
+  const removedTitles = useMemo(
+    () => (comments ? parseRemovedTitles(comments) : new Set<string>()),
+    [comments],
+  );
+
   const dailyTokens = displayed ? extractTokens(displayed.body) : 0;
   const totalTokens = (issues ?? []).reduce((sum, i) => sum + extractTokens(i.body), 0);
 
@@ -510,6 +529,29 @@ export default function SeoAdmin() {
       });
     } catch (e) {
       setError(`Reject of PR #${prNumber} failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onRemoveTask = async (issue: GhIssue, task: ParsedTask) => {
+    setBusy('remove:' + task.id);
+    // Optimistic: synthesize a 🗑 comment so the row hides immediately.
+    const synthetic: GhComment = {
+      id: -Date.now(),
+      body: `🗑 **${task.title}** — removed by user`,
+      created_at: new Date().toISOString(),
+    };
+    setComments(prev => [...(prev ?? []), synthetic]);
+    try {
+      await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ body: synthetic.body }),
+      });
+    } catch (e) {
+      // Rollback the optimistic insert.
+      setComments(prev => (prev ?? []).filter(c => c.id !== synthetic.id));
+      setError(`Remove failed: ${(e as Error).message}`);
     } finally {
       setBusy(null);
     }
@@ -623,12 +665,14 @@ export default function SeoAdmin() {
         isLatest={isViewingLatest}
         onApprove={() => onApprove(displayed)}
         onToggleTask={(t) => onToggleTask(displayed, t)}
+        onRemoveTask={(t) => onRemoveTask(displayed, t)}
         onMergePR={onMergePR}
         onRejectPR={onRejectPR}
         showRaw={showRawId === displayed.number}
         onToggleRaw={() => setShowRawId(showRawId === displayed.number ? null : displayed.number)}
         busy={busy}
         execStatuses={execStatuses}
+        removedTitles={removedTitles}
         tokens={dailyTokens}
       />}
 
@@ -687,23 +731,27 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, status, busy, onToggle, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy,
+  task, busy, onToggle, onRemove, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy, removeBusy,
 }: {
   task: ParsedTask;
-  status: RunStatus;
   busy: boolean;
   onToggle: () => void;
+  onRemove: () => void;
   executionStatus?: TaskExecutionStatus;
   onMergePR?: (prNumber: number, taskTitle: string) => void;
   onRejectPR?: (prNumber: number) => void;
   mergeBusy?: boolean;
   rejectBusy?: boolean;
+  removeBusy?: boolean;
 }) {
   // Approval state (pre-execution) comes from the markdown checkbox.
   // Execution state (post-approval) comes from issue comments left by the executor.
   const executed = executionStatus?.status; // 'done' | 'failed' | 'in_progress' | undefined
   const skippedByUser = task.checked && !executed; // checked but no exec record = user skipped
-  const lockedAfterApproval = status !== 'pending';
+  // The toggle is locked ONLY once the executor has picked the task up.
+  // Issue-level approval no longer locks the per-task toggle — the user can
+  // flip individual tasks at any time before the daemon claims them.
+  const toggleLocked = !!executed;
 
   let pillLabel: string;
   let pillCls: string;
@@ -754,14 +802,26 @@ function TaskRow({
   return (
     <div className={`border rounded-lg p-3 mb-2 transition-colors ${cardCls}`}>
       <div className="flex items-start gap-3">
-        <button
-          onClick={onToggle}
-          disabled={busy || lockedAfterApproval || !!executed}
-          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${pillCls} ${busy || lockedAfterApproval || executed ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
-          title={pillTitle}
-        >
-          {busy ? '…' : pillLabel}
-        </button>
+        <div className="shrink-0 mt-0.5 flex flex-col gap-1">
+          <button
+            onClick={onToggle}
+            disabled={busy || toggleLocked}
+            className={`text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${pillCls} ${busy || toggleLocked ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
+            title={pillTitle}
+          >
+            {busy ? '…' : pillLabel}
+          </button>
+          {!toggleLocked && (
+            <button
+              onClick={onRemove}
+              disabled={removeBusy}
+              className="text-[10px] text-chess-text-tertiary hover:text-chess-blunder transition-colors disabled:opacity-50"
+              title="Remove this task entirely. It will not run today and will not be re-suggested."
+            >
+              {removeBusy ? '…' : '✕ Remove'}
+            </button>
+          )}
+        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-[11px] font-bold text-chess-text-tertiary">{task.priority}</span>
@@ -873,23 +933,25 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, tokens,
+  issue, isLatest, onApprove, onToggleTask, onRemoveTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, removedTitles, tokens,
 }: {
   issue: GhIssue;
   isLatest: boolean;
   onApprove: () => void;
   onToggleTask: (t: ParsedTask) => void;
+  onRemoveTask: (t: ParsedTask) => void;
   onMergePR: (prNumber: number, taskTitle: string) => void;
   onRejectPR: (prNumber: number) => void;
   showRaw: boolean;
   onToggleRaw: () => void;
   busy: string | null;
   execStatuses: Map<string, TaskExecutionStatus>;
+  removedTitles: Set<string>;
   tokens: number;
 }) {
   const status = statusFromIssue(issue);
   const sty = STATUS_STYLES[status];
-  const tasks = parseTasks(issue.body);
+  const tasks = parseTasks(issue.body).filter(t => !removedTitles.has(t.title));
   const summary = extractSection(issue.body, 'Summary');
   const rankings = extractSection(issue.body, 'Rankings');
 
@@ -966,14 +1028,15 @@ function IssueCard({
               <TaskRow
                 key={task.id}
                 task={task}
-                status={status}
                 busy={busy === 'task:' + task.id}
                 onToggle={() => onToggleTask(task)}
+                onRemove={() => onRemoveTask(task)}
                 executionStatus={es}
                 onMergePR={onMergePR}
                 onRejectPR={onRejectPR}
                 mergeBusy={prNum != null && busy === 'merge:' + prNum}
                 rejectBusy={prNum != null && busy === 'reject:' + prNum}
+                removeBusy={busy === 'remove:' + task.id}
               />
             );
           })}

@@ -15,9 +15,9 @@ import { calculateSkillProfile } from './skill-calculator';
  *  Time-Window definitions
  * ──────────────────────────────────────────────────────────── */
 
-/* Date-based windows — Today / This Week / All Time per Claude Design.
-   The `sinceMsAgo` field controls the lower bound (null = no lower bound). */
-export type TimeWindowId = 'today' | 'week' | 'all';
+/* Date-based windows — Last Week / Last Month / All Time. The
+   `sinceMsAgo` field controls the lower bound (null = include all). */
+export type TimeWindowId = 'week' | 'month' | 'all';
 
 export interface TimeWindow {
   id: TimeWindowId;
@@ -29,12 +29,12 @@ export interface TimeWindow {
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 export const TIME_WINDOWS: TimeWindow[] = [
-  { id: 'today', label: 'Today',     sinceMsAgo: ONE_DAY_MS },
-  { id: 'week',  label: 'This Week', sinceMsAgo: 7 * ONE_DAY_MS },
-  { id: 'all',   label: 'All Time',  sinceMsAgo: null },
+  { id: 'week',  label: 'Last Week',  sinceMsAgo: 7 * ONE_DAY_MS },
+  { id: 'month', label: 'Last Month', sinceMsAgo: 30 * ONE_DAY_MS },
+  { id: 'all',   label: 'All Time',   sinceMsAgo: null },
 ];
 
-export const DEFAULT_WINDOW: TimeWindowId = 'week';
+export const DEFAULT_WINDOW: TimeWindowId = 'month';
 
 /* ────────────────────────────────────────────────────────────
  *  Impact labels (user-facing terminology for severity)
@@ -244,8 +244,8 @@ export interface WindowedProfileResult {
 /**
  * Compute a SkillProfile scoped to the games inside a given time window.
  *
- * `windowSize` is the lower-bound cutoff in ms before now. Pass `null` (or 0)
- * to include all games regardless of age.
+ * `windowSize` is the lower-bound cutoff in ms before now. Pass `null`
+ * (or 0) to include all games regardless of age.
  */
 export function computeWindowedProfile(
   allGames: GameRecord[],

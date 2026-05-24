@@ -1,0 +1,4 @@
+{
+  "name": "claude-proxy",
+  "entry": "entry.ts"
+}

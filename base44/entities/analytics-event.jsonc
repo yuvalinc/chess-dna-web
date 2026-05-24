@@ -1,5 +1,6 @@
 {
   "name": "AnalyticsEvent",
+  "description": "First-party product-analytics event emitted by the Chess DNA frontend: page views, feature usage, onboarding step transitions, and AI feature invocations. Used by the admin Analytics dashboard.",
   "type": "object",
   "properties": {
     // Stable per-browser identifier (localStorage). Lets us count unique

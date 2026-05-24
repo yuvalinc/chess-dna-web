@@ -1,5 +1,6 @@
 {
   "name": "Lesson",
+  "description": "A chess lesson targeting one of the user's weakness themes. Includes an explanation, example positions, and an engine-verified flag.",
   "type": "object",
   "properties": {
     "themeId": { "type": "string" },

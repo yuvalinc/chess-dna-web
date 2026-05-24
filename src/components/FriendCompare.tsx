@@ -37,7 +37,7 @@ function useFlag(username: string | null | undefined): string {
   return code ? countryToFlag(code) : '';
 }
 
-const COMPARE_GAME_COUNT = 10;
+const COMPARE_GAME_COUNT = 5;
 
 export default function FriendCompare({ initialCompareUsername, timeClass = 'all' }: { initialCompareUsername?: string | null; timeClass?: string } = {}) {
   const { t } = useT();
@@ -98,7 +98,9 @@ export default function FriendCompare({ initialCompareUsername, timeClass = 'all
         target,
         timeClass as import('@shared/types/game').TimeClass | 'all',
         COMPARE_GAME_COUNT,
-        settings.analysisDepth ? Math.min(settings.analysisDepth, 14) : 14,
+        // Compare uses depth 10 for a 2-3s pass; we don't need full
+        // 18-ply accuracy here — patterns surface fine at depth 10.
+        Math.min(settings.analysisDepth ?? 10, 10),
         setProgress,
       );
       setFriend(result);
@@ -458,9 +460,43 @@ function formatTimeAgo(timestamp: number, t?: (key: any, params?: any) => string
 
 function InviteShareButtons({ friendName, myScore }: { friendName: string; myScore: number }) {
   const { t } = useT();
-  const shareText = `Hey ${friendName}! I just analyzed my chess DNA — my score is ${myScore}. Want to compare? Check it out: https://chessdna.com`;
+  const [copied, setCopied] = useState(false);
+  const siteUrl = typeof window !== 'undefined' ? window.location.origin : 'https://chessdna.com';
+  const shareText = `Hey ${friendName}! I just analyzed my chess DNA — my score is ${myScore}. Want to compare? Check it out: ${siteUrl}`;
+  const hasNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
-  const links = [
+  const handleNativeShare = async () => {
+    if (!hasNativeShare) {
+      await fallbackCopyLink();
+      return;
+    }
+    try {
+      await navigator.share({
+        title: 'Chess DNA',
+        text: shareText,
+        url: siteUrl,
+      });
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      // Some desktop browsers expose navigator.share but throw on invocation —
+      // fall back to clipboard so the user still gets the message.
+      await fallbackCopyLink();
+    }
+  };
+
+  const fallbackCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Ignore — clipboard may be blocked in non-secure contexts.
+    }
+  };
+
+  // Per-platform deep links — kept as secondary options for users who'd rather
+  // skip the native sheet and fire-and-forget into a specific app.
+  const platformLinks = [
     {
       name: 'WhatsApp',
       icon: (
@@ -479,7 +515,7 @@ function InviteShareButtons({ friendName, myScore }: { friendName: string; mySco
         </svg>
       ),
       color: 'hover:text-blue-300',
-      url: `https://t.me/share/url?url=${encodeURIComponent('https://chessdna.com')}&text=${encodeURIComponent(shareText)}`,
+      url: `https://t.me/share/url?url=${encodeURIComponent(siteUrl)}&text=${encodeURIComponent(shareText)}`,
     },
     {
       name: 'Facebook',
@@ -491,40 +527,46 @@ function InviteShareButtons({ friendName, myScore }: { friendName: string; mySco
       color: 'hover:text-blue-400',
       url: `https://www.facebook.com/sharer/sharer.php?quote=${encodeURIComponent(shareText)}`,
     },
-    {
-      name: t('compare_copy_link'),
-      icon: (
-        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-        </svg>
-      ),
-      color: 'hover:text-chess-accent',
-      url: null,
-    },
   ];
 
-  const handleShare = (url: string | null) => {
-    if (url) {
-      window.open(url, '_blank', 'width=600,height=400');
-    } else {
-      navigator.clipboard.writeText(shareText);
-    }
-  };
-
   return (
-    <div className="flex items-center justify-center gap-3">
-      {links.map((link) => (
+    <div className="flex flex-col items-center gap-2">
+      {/* Primary share — always tries the OS sheet first. */}
+      <button
+        onClick={handleNativeShare}
+        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-chess-accent/15 text-chess-accent hover:bg-chess-accent/25 transition-colors font-bold text-[13px]"
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+          <polyline points="16 6 12 2 8 6" />
+          <line x1="12" y1="2" x2="12" y2="15" />
+        </svg>
+        {copied ? '✓ Copied' : 'Share'}
+      </button>
+      <div className="flex items-center justify-center gap-3">
+        {platformLinks.map((link) => (
+          <button
+            key={link.name}
+            onClick={() => window.open(link.url, '_blank', 'width=600,height=400')}
+            className={`flex flex-col items-center gap-1 text-gray-500 ${link.color} transition-colors p-2 rounded-lg hover:bg-white/5`}
+            title={link.name}
+          >
+            {link.icon}
+            <span className="text-[11px]">{link.name}</span>
+          </button>
+        ))}
         <button
-          key={link.name}
-          onClick={() => handleShare(link.url)}
-          className={`flex flex-col items-center gap-1 text-gray-500 ${link.color} transition-colors p-2 rounded-lg hover:bg-white/5`}
-          title={link.name}
+          onClick={fallbackCopyLink}
+          className="flex flex-col items-center gap-1 text-gray-500 hover:text-chess-accent transition-colors p-2 rounded-lg hover:bg-white/5"
+          title={t('compare_copy_link')}
         >
-          {link.icon}
-          <span className="text-[11px]">{link.name}</span>
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+          <span className="text-[11px]">{t('compare_copy_link')}</span>
         </button>
-      ))}
+      </div>
     </div>
   );
 }

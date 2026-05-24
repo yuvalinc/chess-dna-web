@@ -1,20 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { DataAttribution } from '@/components/PlatformBadge';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChessData } from '@/contexts/ChessDataContext';
+import { importChessComGames } from '@/api/chess-com-import';
 import type { TimeClass } from '@shared/types/game';
 import type { UserSettings } from '@shared/types/storage';
-import { calculateSkillProfile, getWeakestDimensions, getStrongestDimensions } from '@/patterns/skill-calculator';
-import { getTierForScore, getTierColor, getTierGlowColor, getTierProgress, getNextTier, pointsToNextTier, ALL_TIERS } from '@/patterns/rank-tiers';
+import type { SkillProfile } from '@shared/types/patterns';
+import { calculateSkillProfile } from '@/patterns/skill-calculator';
+import { getTierForScore, getTierColor, getNextTier, pointsToNextTier, ALL_TIERS } from '@/patterns/rank-tiers';
 import { computeWindowedProfile, TIME_WINDOWS, DEFAULT_WINDOW, type TimeWindowId } from '@/patterns/windowed-profile';
 import ChartGallery from '@/components/ChartGallery/ChartGallery';
-import TimeWindowTabs from '@/components/TimeWindowTabs';
-import { useAudioPlayer } from '@/contexts/AudioPlayerContext';
+import { RadarLegend, SkillIcon } from '@/components/SkillRadar';
 import { type JourneyStage } from '@/components/Onboarding';
 import {
-  LandingScreen,
   ConnectScreen,
   DecodingScreen,
   UnlockScreen,
@@ -23,8 +22,7 @@ import {
 import OrbitDnaLoader from '@/components/OrbitDnaLoader';
 import PlayerCardShare from '@/components/share/PlayerCardShare';
 import { useTheme } from '@/components/ThemeContext';
-import { useT, translateTierName, translateTierTitle } from '@/i18n/index';
-import NumberTicker from '@/components/NumberTicker';
+import { useT, translateTierName } from '@/i18n/index';
 // FriendCompare moved to /compare page
 
 interface OverviewProps {
@@ -35,19 +33,17 @@ interface OverviewProps {
 export default function Overview({ stageOverride, timeClassFilter: timeClassFilterProp }: OverviewProps) {
   const navigate = useNavigate();
   const { t } = useT();
-  const { settings, updateSettings, isAdmin } = useTheme();
-  const { isGuest } = useAuth();
+  const { settings, updateSettings, isAdmin, settingsLoading } = useTheme();
+  const { isGuest, userId } = useAuth();
   const {
     patterns,
     games,
     analyses,
     dataLoading,
     gamesLoading,
-    filteredAnalyzedCount: analyzedCount,
-    totalGameCount,
-    analyzedCount: globalAnalyzedCount,
     playerElo,
     journeyStage,
+    profile,
     refetchGames,
     refetchAnalyses,
     refetchPatterns,
@@ -74,18 +70,19 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
   // S1 progress updates are now handled by the analysis event listener in
   // ChessDataContext (refetches every 5 completed games). No polling needed.
 
-  const [activeWindow, setActiveWindow] = useState<TimeWindowId>(DEFAULT_WINDOW);
+  // Time-window tabs were removed in favor of all 3 timeframes overlaid on
+  // the radar. Right-column recap components still want a single "active"
+  // window — keep the default but no longer expose a setter.
+  const activeWindow: TimeWindowId = DEFAULT_WINDOW;
+  const [showScoringInfo, setShowScoringInfo] = useState(false);
+  const [showShareCard, setShowShareCard] = useState(false);
   const [, setActiveChartIndex] = useState(0);
-  // S0 wrapper: switches between Landing and Connect once user clicks Get Started.
-  const [s0ShowConnect, setS0ShowConnect] = useState(false);
+  // S0 wrapper: kept for backwards compatibility with deep-links; landing
+  // step removed so S0 starts on the connect screen.
+  const [, setS0ShowConnect] = useState(false);
   // S2 fallback: if the journeyStage hasn't recomputed yet after radar reveal,
   // this flag lets us fall through to the S5 view immediately.
   const [s2Continued, setS2Continued] = useState(false);
-  // Global audio player — controls used only when the recap CTA is visible
-  // (currently hidden), so we mark it as void to keep the lint clean.
-  const { controls: audioControls } = useAudioPlayer();
-  void audioControls;
-
   // syncTriggeredRef — kept to coordinate with analysis effect
   const syncTriggeredRef = useRef(false);
 
@@ -101,10 +98,108 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
     return analyses.filter((a) => gameIds.has(a.gameId));
   }, [analyses, windowedData.games]);
 
-  // Windowed dimensions for stat squares
-  // Used in expanded stat view
-  void getWeakestDimensions;
-  void getStrongestDimensions;
+  // Three-profile bundle for the radar overlays (last week / last month /
+  // all time, all rendered simultaneously).
+  //
+  // Cached per (user, timeClass) so the radar paints from the previous
+  // session's compute on cold load — otherwise the user sees the 50s
+  // baseline for 5–10s while analyses fetch, deserialize, and re-memo.
+  // Total cache is ~6 KB (3 windowed profiles × ~2 KB each) so quota is
+  // a non-issue. Live data swaps in the moment it's available.
+  const radarCacheKey = userId
+    ? `chess-dna-radar-${userId}-${settings.selectedTimeClass ?? 'all'}`
+    : null;
+  const [cachedRadarProfiles] = useState<{
+    week: SkillProfile;
+    month: SkillProfile;
+    all: SkillProfile;
+  } | null>(() => {
+    if (!radarCacheKey || typeof localStorage === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem(radarCacheKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed?.week || !parsed?.month || !parsed?.all) return null;
+      if ((parsed.month.gamesUsed ?? 0) === 0) return null;
+      return parsed;
+    } catch { return null; }
+  });
+  const computedRadarProfiles = useMemo(() => {
+    const find = (id: TimeWindowId) => TIME_WINDOWS.find(w => w.id === id)!;
+    return {
+      week:  computeWindowedProfile(games, analyses, find('week').sinceMsAgo).profile,
+      month: computeWindowedProfile(games, analyses, find('month').sinceMsAgo).profile,
+      all:   computeWindowedProfile(games, analyses, find('all').sinceMsAgo).profile,
+    };
+  }, [games, analyses]);
+  // Prefer the freshly-computed bundle once `month` has real data. Until
+  // then fall back to the cached one so the radar shows real values from
+  // the moment the page paints.
+  const radarProfiles = computedRadarProfiles.month.gamesUsed > 0
+    ? computedRadarProfiles
+    : (cachedRadarProfiles ?? computedRadarProfiles);
+  useEffect(() => {
+    if (!radarCacheKey) return;
+    if (computedRadarProfiles.month.gamesUsed === 0) return;
+    if (typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(radarCacheKey, JSON.stringify(computedRadarProfiles)); }
+    catch { /* quota — best-effort */ }
+  }, [computedRadarProfiles, radarCacheKey]);
+
+  // Overlays definition — kept stable across renders so we can pass the
+  // same array to both the radar and the standalone legend.
+  const radarOverlays = useMemo(() => [
+    {
+      id: 'week',
+      label: t('tab_week'),
+      profile: radarProfiles.week,
+      color: '#4ade80', /* green — Last week */
+    },
+    {
+      id: 'all',
+      label: t('tab_all_time'),
+      profile: radarProfiles.all,
+      color: '#c084fc', /* purple — All time */
+    },
+  ], [t, radarProfiles.week, radarProfiles.all]);
+
+  // Overlays without enough data → render checkbox as disabled. The same
+  // gamesUsed === 0 check keeps SkillRadar from drawing the all-50 polygon.
+  const disabledOverlayIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const ov of radarOverlays) {
+      if (ov.profile.gamesUsed === 0) s.add(ov.id);
+    }
+    return s;
+  }, [radarOverlays]);
+
+  // Radar timeframe visibility — owned here so the legend (rendered below
+  // the tier-info line) can drive the radar's polygon visibility.
+  const [radarPrimaryVisible, setRadarPrimaryVisible] = useState<boolean>(true);
+  const [radarVisibleOverlayIds, setRadarVisibleOverlayIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // Visibility toggles enforce a "≥1 checked" rule — un-toggling the last
+  // visible polygon would leave a blank radar, so we silently ignore that.
+  const togglePrimaryVisible = useCallback(() => {
+    setRadarPrimaryVisible((v) => {
+      if (v && radarVisibleOverlayIds.size === 0) return v; // keep last visible
+      return !v;
+    });
+  }, [radarVisibleOverlayIds]);
+  const toggleOverlayVisible = useCallback((id: string) => {
+    setRadarVisibleOverlayIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        // Don't allow disabling the last visible polygon.
+        if (next.size === 1 && !radarPrimaryVisible) return prev;
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, [radarPrimaryVisible]);
 
   // radarBenchmarks removed — no longer using vs-mode comparison
 
@@ -123,10 +218,17 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
   // Auto-analyze games that aren't complete (works at any stage)
   // Pushes game IDs into the shared analysis queue in ChessDataContext,
   // which ensures a single analysis pipeline (no duplicate batch runs).
-  const analysisTriggeredRef = useRef(false);
+  //
+  // Tracks per-ID so the effect can pick up newly-arrived pending games:
+  // the games array first fills from the localStorage cache (possibly
+  // stale), then gets replaced by the fresh server fetch which may
+  // include additional pending games. Without per-ID tracking, the
+  // cache-driven first fire would set a boolean ref and the genuine
+  // pending games from the fresh fetch would never be queued.
+  const queuedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (games.length === 0) return;
-    if (analysisTriggeredRef.current || syncTriggeredRef.current) return;
+    if (syncTriggeredRef.current) return;
 
     const onboardingIds = settings.onboardingGameIds ?? [];
     const isOnboarding = onboardingIds.length > 0 && !settings.radarRevealedAt;
@@ -143,26 +245,74 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
     } else {
       toAnalyze = games.filter(needsAnalysis);
     }
+    // Skip IDs we've already queued this session.
+    toAnalyze = toAnalyze.filter((g) => !queuedIdsRef.current.has(g.id));
     // Analyze newest games first (highest playedAt first)
     toAnalyze.sort((a, b) => (b.playedAt ?? 0) - (a.playedAt ?? 0));
 
     if (toAnalyze.length === 0) return;
 
-    analysisTriggeredRef.current = true;
     const gameIds = toAnalyze.map((g) => g.id);
+    for (const id of gameIds) queuedIdsRef.current.add(id);
     console.log('[Chess DNA] Queuing', gameIds.length, 'games for analysis', isOnboarding ? '(onboarding only)' : '');
     queueForAnalysis(gameIds);
   }, [games, settings.onboardingGameIds, settings.radarRevealedAt, queueForAnalysis]);
 
+  // Post-onboarding cross-time-class bulk import. Runs once, after the radar
+  // reveal, so it never competes with the 5 onboarding games for the analysis
+  // queue. Idempotent via the `bulkImportDone` settings flag.
+  const bulkImportTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (bulkImportTriggeredRef.current) return;
+    if (!settings.radarRevealedAt) return;
+    if (settings.bulkImportDone) return;
+    const username = settings.chesscomUsername;
+    if (!username) return;
+    const startedFrom = settings.onboardingTimeClass;
+    bulkImportTriggeredRef.current = true;
+    (async () => {
+      const allNewIds: string[] = [];
+      try {
+        for (const tc of ['rapid', 'blitz', 'bullet', 'daily'] as TimeClass[]) {
+          if (tc === startedFrom) continue;
+          // Catch per-time-class so a transient chess.com failure on one
+          // (now throws ChessComFetchError instead of silently returning [])
+          // doesn't abort the whole bulk import.
+          try {
+            const ids = await importChessComGames(username, { timeClass: tc, maxGames: 30, guest: isGuest });
+            allNewIds.push(...ids);
+          } catch (err) {
+            console.warn('[Chess DNA] Bulk import failed for', tc, err);
+          }
+        }
+        if (allNewIds.length > 0) queueForAnalysis(allNewIds);
+        refetchGames();
+        refetchAnalyses();
+      } finally {
+        updateSettings({ bulkImportDone: true });
+      }
+    })();
+  }, [settings.radarRevealedAt, settings.bulkImportDone, settings.chesscomUsername, settings.onboardingTimeClass, isGuest, refetchGames, refetchAnalyses, updateSettings, queueForAnalysis]);
+
   // Note: Game sync is now handled globally by useChessComSync in ChessDataContext.
   // The old per-page-load sync effect has been removed.
 
-  const handleDimensionClick = useCallback((id: string) => {
-    document.getElementById(`dim-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const [activeDimension, setActiveDimension] = useState<{
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const handleDimensionClick = useCallback((id: string, event?: React.MouseEvent) => {
+    if (event) {
+      setActiveDimension({ id, x: event.clientX, y: event.clientY });
+    } else {
+      setActiveDimension({ id, x: window.innerWidth / 2, y: window.innerHeight / 2 });
+    }
   }, []);
 
-  /* --- Admin stage navigator (floating overlay) --- */
-  const adminNav = isAdmin ? (
+  /* --- Admin stage navigator (floating overlay) — localhost only --- */
+  const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const adminNav = isAdmin && isLocalhost ? (
     <AdminStageNav
       currentStage={effectiveStage}
       autoStage={journeyStage}
@@ -179,7 +329,11 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
   // loading — wait until we know whether they have any. (Once gamesLoading
   // resolves, journeyStage updates from 0 to 5 in the same render so the
   // user goes straight to their DNA view.)
-  if (effectiveStage === 0 && gamesLoading) {
+  // Hold the loading splash until BOTH games + settings have come back
+  // once. Without this we'd flash S1 (decoding) for a fraction of a
+  // second on every reload — games returning first (totalGameCount > 0)
+  // while `radarRevealedAt` is still its default `null`.
+  if (settingsLoading || (effectiveStage === 0 && gamesLoading)) {
     return (
       <div className="fixed inset-0 z-30 bg-chess-bg flex items-center justify-center">
         <OrbitDnaLoader size={96} caption="Loading your Chess DNA..." />
@@ -191,23 +345,18 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
       console.log('[Chess DNA] onImportComplete — calling refetchGames, refetchAnalyses & refetchPatterns');
       refetchGames(); refetchAnalyses(); refetchPatterns();
     };
+    // S0 now starts directly on the username-connect screen — the landing
+    // page is the marketing site outside the app, so showing it again here
+    // is redundant. Kept on the route only as a stage-fallback for admin.
     return (
       <>
         {adminNav}
-        {s0ShowConnect ? (
-          <ConnectScreen
-            isGuest={isGuest}
-            onSettingsChange={updateSettings}
-            onImportComplete={refetchAll}
-            onBack={() => setS0ShowConnect(false)}
-          />
-        ) : (
-          <LandingScreen
-            settings={settings}
-            onSettingsChange={updateSettings}
-            onGetStarted={() => setS0ShowConnect(true)}
-          />
-        )}
+        <ConnectScreen
+          isGuest={isGuest}
+          onSettingsChange={updateSettings}
+          onImportComplete={refetchAll}
+          onBack={() => setS0ShowConnect(false)}
+        />
       </>
     );
   }
@@ -284,271 +433,257 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
 
   /* --- S5: Fully onboarded -- combined DNA view --- */
 
-  // Windowed tier info -- so hero matches the radar
-  const windowedTier = getTierForScore(windowedData.profile.overallRating);
-  const windowedTierProgress = getTierProgress(windowedData.profile.overallRating);
-  const windowedNextTier = getNextTier(windowedData.profile.overallRating);
+  // Windowed tier info — used by the share button for card branding.
+  // Route through the CACHED radarProfiles[activeWindow] (not windowedData)
+  // so the score paints from cache on cold load. windowedData is an
+  // identical compute but uncached; using radarProfiles here means the
+  // visible "X overall" number, tier, and "Y to next tier" line all
+  // benefit from the prior-session cache instead of flashing 50.
+  const activeProfile = radarProfiles[activeWindow] ?? radarProfiles.month;
+  const windowedTier = getTierForScore(activeProfile.overallRating);
 
 
   return (
-    <div className="pb-20">
+    <div className="pb-2 min-h-[calc(100dvh-110px)] flex flex-col">
       {adminNav}
 
-      {/* Progress badge — fixed top-start so it sits on the same row as the
-          game-type filter (Blitz ▼) which lives in AppShell at top-end. */}
-      {globalAnalyzedCount < totalGameCount && (
-        <div className="fixed top-3 start-3 z-50">
-          <div className="border-beam inline-flex items-center gap-1.5 bg-chess-surface/90 backdrop-blur-md rounded-lg px-2.5 py-1.5 border border-chess-border/30 text-[11px] shadow-lg">
-            <span className="text-chess-accent animate-pulse">{'🧬'}</span>
-            <span className="text-chess-text-secondary">{t('overview_analyzing')}</span>
-            <span className="text-chess-accent font-semibold">{globalAnalyzedCount}/{totalGameCount}</span>
-            <div className="w-16 bg-chess-muted/40 rounded-full h-1 overflow-hidden">
-              <div className="bg-chess-accent h-full rounded-full transition-all duration-500" style={{ width: `${totalGameCount > 0 ? (globalAnalyzedCount / totalGameCount) * 100 : 0}%` }} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Score hero + radar — gate on data loaded to prevent number flash.
-          The loader sits at the top of the content area (where the score
-          hero will land) so the screen doesn't jump when data arrives. */}
-      {dataLoading ? (
-        <div className="fixed inset-0 z-30 bg-chess-bg flex items-center justify-center pointer-events-none">
+      {/* Score hero + radar — render whenever we have profile data, even if
+          live data is still streaming in. The context rehydrates a cached
+          profile synchronously on mount, so returning users see their real
+          DNA scores immediately instead of staring at the loader for 5–10s
+          while analyses fetch + deserialize. Loader appears only when we
+          genuinely have no data yet (first-ever load or cleared cache). */}
+      {dataLoading && profile.gamesUsed === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16">
           <OrbitDnaLoader size={96} caption="Loading your Chess DNA..." />
         </div>
       ) : (
         <>
-          {/* Score hero -- uses WINDOWED profile to match the radar below */}
-          <ScoreHero profile={windowedData.profile} tier={windowedTier} tierProgress={windowedTierProgress} nextTier={windowedNextTier} playerElo={playerElo} totalAnalyzed={analyzedCount} />
-
-          {/* Time window tabs */}
-          <TimeWindowTabs
-            activeWindow={activeWindow}
-            onWindowChange={setActiveWindow}
-            analyzedGameCount={analyzedCount}
-          />
-
-          {/* Desktop: two-column grid / Mobile: single column */}
-          <div className="md:grid md:grid-cols-[3fr_2fr] md:gap-6 space-y-4 md:space-y-0">
+          {/* Desktop: two-column grid / Mobile: single flex column with
+              the CTAs pinned to the bottom (mt-auto on the right column)
+              — kills the dead space between the radar block and the
+              bottom-nav. */}
+          <div className="flex flex-col flex-1 gap-4 md:grid md:grid-cols-[3fr_2fr] md:gap-6 md:flex-none">
             {/* Left column: Charts */}
-            <div className="space-y-4" data-tutorial-target="dna-radar">
+            <div className="space-y-3" data-tutorial-target="dna-radar">
               <ChartGallery
                 games={windowedData.games}
                 analyses={windowedAnalyses}
-                profile={windowedData.profile}
+                profile={radarProfiles.month}
                 onDimensionClick={handleDimensionClick}
                 onChartChange={setActiveChartIndex}
+                primaryLabel={t('tab_month')}
+                primaryColor="#60a5fa" /* blue — Last month (default) */
+                overlays={radarOverlays}
+                primaryVisible={radarPrimaryVisible}
+                visibleOverlayIds={radarVisibleOverlayIds}
+                showLegend={false}
+              />
+              {/* Tier-info line — sits directly under the radar. ELO +
+                  percentile lead, then tier progress, then the overall
+                  score with an (i) info button next to it. */}
+              <div className="text-center text-[12px] text-chess-text-tertiary tabular-nums">
+                {playerElo > 0 && (
+                  <span>{playerElo} ELO</span>
+                )}
+                {(() => {
+                  const next = getNextTier(activeProfile.overallRating);
+                  const pts = pointsToNextTier(activeProfile.overallRating);
+                  if (!next || pts <= 0) return null;
+                  return (
+                    <>
+                      <span className="mx-1.5 inline-block w-1 h-1 rounded-full bg-chess-text-tertiary/50 align-middle" />
+                      <span>{pts} to {translateTierName(next.id, t)}</span>
+                    </>
+                  );
+                })()}
+                <span className="mx-1.5 inline-block w-1 h-1 rounded-full bg-chess-text-tertiary/50 align-middle" />
+                <span>
+                  <span className="text-chess-text font-extrabold">{activeProfile.overallRating}</span>
+                  <span className="ms-1">overall</span>
+                </span>
+                <button
+                  onClick={() => setShowScoringInfo(true)}
+                  className="ml-1.5 text-gray-500 hover:text-chess-accent transition-colors align-middle"
+                  title="How is this calculated?"
+                >
+                  <span className="text-[9px] border border-gray-500/40 rounded-full w-3.5 h-3.5 inline-flex items-center justify-center hover:border-chess-accent/40">i</span>
+                </button>
+              </div>
+              {/* Timeframe checkboxes — sit below the tier-info line so the
+                  user can toggle which polygons are drawn on the radar. */}
+              <RadarLegend
+                primaryLabel={t('tab_month')}
+                primaryColor="#60a5fa"
+                primaryVisible={radarPrimaryVisible}
+                primaryDisabled={radarProfiles.month.gamesUsed === 0}
+                onTogglePrimary={togglePrimaryVisible}
+                overlays={radarOverlays}
+                visibleOverlayIds={radarVisibleOverlayIds}
+                disabledOverlayIds={disabledOverlayIds}
+                onToggleOverlay={toggleOverlayVisible}
               />
             </div>
 
-            {/* Right column: Latest Game, Share, Compare */}
-            <div className="space-y-4">
-
-
-            {/* Share button */}
-            <ShareButton profile={windowedData.profile} tier={windowedTier} playerElo={playerElo} />
-
-            {/* Settings shortcut */}
-            <div className="mt-4 md:mt-0">
-              <button
-                onClick={() => navigate('/settings')}
-                className="w-full bg-chess-surface rounded-lg px-4 py-3 border border-chess-border/20 flex items-center gap-3 hover:border-chess-border/40 transition-all group"
-              >
-                <span className="text-lg">⚙️</span>
-                <div className="flex-1 text-left">
-                  <div className="text-sm font-bold text-chess-text">{t('overview_settings')}</div>
-                  <div className="text-xs text-gray-500">{t('overview_settings_sub')}</div>
-                </div>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-500 group-hover:text-chess-accent transition-colors rtl:rotate-180"><path d="M9 18l6-6-6-6"/></svg>
-              </button>
+            {/* Right column: 4 main CTAs (Share / Progress / Profile /
+                Replay). Divider above visually separates the radar block
+                (chart + tier-info + checkboxes) from the action area.
+                On mobile, mt-auto pushes the CTAs to the bottom so the
+                space between them and the bottom-nav disappears. */}
+            <div className="space-y-2 mt-auto md:mt-0">
+              <div className="border-t border-chess-border/30" />
+              <FourCtaGrid
+                onShareClick={() => setShowShareCard(true)}
+                onSettingsClick={() => navigate('/settings')}
+                onProgressClick={() => navigate('/games?tab=progress')}
+                onReplayClick={() => navigate('/timemachine')}
+              />
             </div>
+            </div>{/* end grid */}
 
-            {/* Sign Out */}
-            <button
-              onClick={() => base44.auth.logout()}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm text-gray-500 hover:text-red-400 transition-colors"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-              {t('settings_sign_out')}
-            </button>
-            </div>{/* end right column */}
-          </div>{/* end grid */}
+          {showShareCard && (
+            <PlayerCardShare
+              profile={windowedData.profile}
+              tier={windowedTier}
+              playerElo={playerElo}
+              username={settings.chesscomUsername || settings.lichessUsername || 'player'}
+              lichessUsername={settings.lichessUsername}
+              onClose={() => setShowShareCard(false)}
+            />
+          )}
+
+          {/* Popups rendered at the page root so their fixed-position render
+              doesn't sit inside the `space-y-5` flow above (which was
+              causing a small layout shift on click). */}
+          {showScoringInfo && (
+            <ScoringInfoPopup profile={windowedData.profile} onClose={() => setShowScoringInfo(false)} />
+          )}
+          {activeDimension && (
+            <DimensionInfoTooltip
+              profile={radarProfiles.month}
+              dimensionId={activeDimension.id}
+              anchorX={activeDimension.x}
+              anchorY={activeDimension.y}
+              onClose={() => setActiveDimension(null)}
+            />
+          )}
         </>
       )}
 
-      {/* Sticky bottom CTA — sits above the bottom-nav with enough clearance
-          that it doesn't clip the active-tab highlight (which extends a few
-          pixels above the nav's interior). Larger offset for guests because
-          the signup strip adds ~40px on top of the nav. */}
-      <div className={`fixed left-0 right-0 z-[51] bg-chess-bg/95 backdrop-blur-md px-3 py-2 ${isGuest ? 'bottom-[116px]' : 'bottom-[76px]'}`}>
-        <div className="max-w-6xl mx-auto">
-          <button
-            onClick={() => navigate('/timemachine')}
-            className="shimmer-btn w-full bg-chess-accent text-chess-bg py-3 rounded-xl text-sm font-black hover:brightness-110 transition-all shadow-[0_0_12px_rgba(74,222,128,0.2)] flex items-center justify-center gap-2"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M5 22h14" /><path d="M5 2h14" />
-              <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" />
-              <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+    </div>
+  );
+}
+
+/* ================================================================
+ *  Four-CTA Grid (Share / Settings / Progress / Replay)
+ *
+ *  Renders the four primary actions inline so the DNA screen fits the
+ *  viewport without scrolling. Replaces the older right-column recap +
+ *  sticky bottom CTA combo.
+ * ================================================================ */
+function FourCtaGrid({
+  onShareClick,
+  onSettingsClick,
+  onProgressClick,
+  onReplayClick,
+}: {
+  onShareClick: () => void;
+  onSettingsClick: () => void;
+  onProgressClick: () => void;
+  onReplayClick: () => void;
+}) {
+  const { t } = useT();
+  return (
+    <div className="space-y-1.5">
+      {/* Top row: Share DNA · Your Progress · Profile (3 equal columns) */}
+      <div className="grid grid-cols-3 gap-1.5">
+        <CtaCard
+          label={t('overview_share_dna')}
+          onClick={onShareClick}
+          icon={(
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="18" cy="5" r="3" />
+              <circle cx="6" cy="12" r="3" />
+              <circle cx="18" cy="19" r="3" />
+              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+              <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
             </svg>
-            {t('overview_practice_mistakes')}
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="rtl:rotate-180"><path d="M9 18l6-6-6-6"/></svg>
-          </button>
-        </div>
-      </div>
-      {/* Data attribution — only render after the page is fully loaded so
-          it doesn't appear floating mid-loader. */}
-      {!dataLoading && <DataAttribution />}
-    </div>
-  );
-}
-
-/* ================================================================
- *  Patterns Panel (right column in S5)
- * ================================================================ */
-
-
-/* ================================================================
- *  Share Button (Facebook, Instagram, WhatsApp)
- * ================================================================ */
-
-function ShareButton({
-  profile,
-  tier,
-  playerElo,
-}: {
-  profile: ReturnType<typeof calculateSkillProfile>;
-  tier: ReturnType<typeof getTierForScore>;
-  playerElo: number;
-}) {
-  const { t } = useT();
-  const { settings } = useTheme();
-  const [showCardShare, setShowCardShare] = useState(false);
-  // Username/lichessUsername come from settings \u2014 keep the existing
-  // text-share fallback off the menu since the new flow opens a visual
-  // card composer with a native share sheet at the end.
-  const username = settings.chesscomUsername || settings.lichessUsername || 'player';
-  void playerElo;
-
-  return (
-    <div className="w-full">
-      <button
-        onClick={() => setShowCardShare(true)}
-        className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-chess-surface/40 border border-chess-border/30 text-sm text-gray-400 hover:text-chess-text hover:border-chess-accent/30 transition-all"
-      >
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
-          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-        </svg>
-        {t('overview_share_dna')}
-      </button>
-
-      {showCardShare && (
-        <PlayerCardShare
-          profile={profile}
-          tier={tier}
-          playerElo={playerElo}
-          username={username}
-          lichessUsername={settings.lichessUsername}
-          onClose={() => setShowCardShare(false)}
+          )}
         />
-      )}
+        <CtaCard
+          label={t('overview_progress')}
+          onClick={onProgressClick}
+          icon={(
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+              <polyline points="16 7 22 7 22 13" />
+            </svg>
+          )}
+        />
+        <CtaCard
+          label={t('overview_profile')}
+          onClick={onSettingsClick}
+          icon={(
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="8" r="4" />
+              <path d="M4 21c0-4 4-7 8-7s8 3 8 7" />
+            </svg>
+          )}
+        />
+      </div>
+      {/* Primary CTA — full width */}
+      <CtaCard
+        label={t('overview_replay_mistakes')}
+        onClick={onReplayClick}
+        primary
+        fullWidth
+        icon={(
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none" />
+          </svg>
+        )}
+      />
     </div>
   );
 }
 
-
-/* ================================================================
- *  Score Hero
- * ================================================================ */
-
-function ScoreHero({
-  profile,
-  tier,
-  tierProgress,
-  nextTier,
-  playerElo,
-  totalAnalyzed,
+function CtaCard({
+  icon,
+  label,
+  onClick,
+  primary = false,
+  fullWidth = false,
 }: {
-  profile: ReturnType<typeof calculateSkillProfile>;
-  tier: ReturnType<typeof getTierForScore>;
-  tierProgress: number;
-  nextTier: ReturnType<typeof getNextTier>;
-  playerElo: number;
-  totalAnalyzed: number;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  primary?: boolean;
+  fullWidth?: boolean;
 }) {
-  const [showInfo, setShowInfo] = useState(false);
-  const { theme } = useTheme();
-  const { t } = useT();
+  // Primary CTA: flat at rest. On hover, layered shadows kick in (top
+  // white highlight, bottom inner shadow, accent-tinted drop) so the
+  // button lifts off the page. On press it sinks slightly. Same accent
+  // hue at all times.
+  const baseClasses = primary
+    ? 'rounded-xl bg-chess-accent text-chess-bg font-bold transition-all hover:brightness-110 hover:shadow-[inset_0_2px_0_rgba(255,255,255,0.28),inset_0_-3px_0_rgba(0,0,0,0.18),0_6px_14px_rgba(74,222,128,0.35),0_2px_4px_rgba(0,0,0,0.25)] active:translate-y-px active:shadow-[inset_0_2px_4px_rgba(0,0,0,0.18),0_2px_6px_rgba(74,222,128,0.25)]'
+    : 'rounded-xl bg-chess-surface border border-chess-border/20 text-chess-text hover:border-chess-accent/40 transition-all';
 
-  const tierColor = getTierColor(tier, theme);
-  const tierGlow = getTierGlowColor(tier, theme);
+  // Wide button: icon + label inline (bigger). Square button: icon above label.
+  const layoutClasses = fullWidth
+    ? 'w-full flex items-center justify-center gap-3 px-4 py-3.5 min-h-[64px]'
+    : 'flex flex-col items-center justify-center gap-1.5 px-3 py-3.5 min-h-[80px]';
+  const labelClasses = fullWidth ? 'text-[17px] font-bold' : 'text-[13px] font-semibold leading-tight text-center';
 
   return (
-    <div className="mb-4">
-      {/* Neon Gradient Card wrapping the tier display */}
-      <div
-        className="neon-card px-5 py-3 mb-3"
-        style={{ '--neon-color-a': tierColor, '--neon-color-b': '#4ade80' } as React.CSSProperties}
-      >
-        {/* Big white tier number on the left, chess piece + tier label
-            inline beside, ELO + percentile underneath. Matches Claude Design. */}
-        <div className="flex items-center gap-4">
-          <NumberTicker
-            value={profile.overallRating}
-            className="text-[60px] sm:text-[68px] font-black leading-none tabular-nums tracking-[-0.04em] text-chess-text shrink-0"
-            delay={200}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span
-                className="text-2xl leading-none"
-                style={{ filter: `drop-shadow(0 0 12px ${tierGlow})` }}
-              >
-                {tier.icon}
-              </span>
-              <span className="text-lg font-extrabold text-chess-text tracking-tight">
-                {translateTierName(tier.id, t)}
-              </span>
-              <button
-                onClick={() => setShowInfo(true)}
-                className="text-gray-500 hover:text-chess-accent transition-colors"
-                title="How is this calculated?"
-              >
-                <span className="text-[10px] border border-gray-500/40 rounded-full w-4 h-4 inline-flex items-center justify-center hover:border-chess-accent/40">i</span>
-              </button>
-            </div>
-            <p className="text-[13px] text-chess-text-secondary mt-1 tabular-nums">{playerElo} ELO · {translateTierTitle(tier.id, t)}{totalAnalyzed > 0 ? ` · ${totalAnalyzed} ` : ""}{totalAnalyzed > 0 ? t("common_games") : ""}</p>
-          </div>
-        </div>
-        {nextTier && (
-          <div className="mt-3.5">
-            {/* Slim Bishop ___|___ Rook progress bar with from-to gradient */}
-            <div className="flex items-center justify-between text-[11px] text-chess-text-secondary mb-1.5">
-              <span className="font-semibold" style={{ color: tierColor }}>
-                {translateTierName(tier.id, t)}
-              </span>
-              <span className="tabular-nums">
-                {pointsToNextTier(profile.overallRating)} to {translateTierName(nextTier.id, t)}
-              </span>
-            </div>
-            <div className="bg-chess-muted/50 rounded-full h-2 overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all duration-700"
-                style={{
-                  width: `${tierProgress}%`,
-                  background: `linear-gradient(90deg, ${tierColor}, ${getTierColor(nextTier, theme)})`,
-                  boxShadow: `0 0 8px ${tierGlow}`,
-                }}
-              />
-            </div>
-          </div>
-        )}
-      </div>
-      {showInfo && <ScoringInfoPopup profile={profile} onClose={() => setShowInfo(false)} />}
-    </div>
+    <button onClick={onClick} className={`${baseClasses} ${layoutClasses}`}>
+      <span className={primary ? 'text-chess-bg' : 'text-chess-text-secondary'}>{icon}</span>
+      <span className={labelClasses}>{label}</span>
+    </button>
   );
 }
+
+
 
 /* ================================================================
  *  Scoring Info Popup
@@ -657,7 +792,9 @@ function ScoringInfoPopup({
             return (
               <div key={dim.id} className="rounded-xl bg-chess-surface/20 border border-chess-border/20 p-3">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm">{info.icon}</span>
+                  <span className="text-chess-text-secondary">
+                    <SkillIcon id={dim.id} size={16} />
+                  </span>
                   <span className="text-sm font-bold text-chess-text">{t(`skill_${dim.id}` as any)}</span>
                   <span className="ml-auto text-sm font-black" style={{ color: getTierColor(dimTier, theme) }}>{dim.score}</span>
                 </div>
@@ -676,6 +813,97 @@ function ScoringInfoPopup({
           {t('overview_got_it')}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ================================================================
+ *  Dimension Info Tooltip — small floating tooltip anchored next to
+ *  the clicked vertex on the radar. Shows the skill's icon, name,
+ *  big score, and a one-line "what" description.
+ * ================================================================ */
+function DimensionInfoTooltip({
+  profile,
+  dimensionId,
+  anchorX,
+  anchorY,
+  onClose,
+}: {
+  profile: ReturnType<typeof calculateSkillProfile>;
+  dimensionId: string;
+  anchorX: number;
+  anchorY: number;
+  onClose: () => void;
+}) {
+  const { theme } = useTheme();
+  const { t } = useT();
+  const dim = profile.dimensions.find((d) => d.id === dimensionId);
+
+  // Dismiss on outside click / Escape.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-dim-tooltip="1"]')) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    // Defer the click listener so the click that opened us doesn't immediately close.
+    const id = window.setTimeout(() => window.addEventListener('mousedown', onDown), 0);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+      window.clearTimeout(id);
+    };
+  }, [onClose]);
+
+  if (!dim) return null;
+
+  const info = getCategoryInfo(t)[dim.id];
+  const tier = getTierForScore(dim.score);
+  const color = getTierColor(tier, theme);
+
+  // Position the tooltip beside the click, keeping it inside the viewport.
+  const TOOLTIP_W = 220;
+  const TOOLTIP_H_EST = 130;
+  const margin = 8;
+  let left = anchorX + 12;
+  let top = anchorY - 12;
+  if (typeof window !== 'undefined') {
+    if (left + TOOLTIP_W + margin > window.innerWidth) left = anchorX - TOOLTIP_W - 12;
+    if (left < margin) left = margin;
+    if (top + TOOLTIP_H_EST + margin > window.innerHeight) top = window.innerHeight - TOOLTIP_H_EST - margin;
+    if (top < margin) top = margin;
+  }
+
+  return (
+    <div
+      data-dim-tooltip="1"
+      className="fixed z-50 bg-chess-bg border border-chess-border/50 rounded-lg shadow-xl p-3"
+      style={{ left, top, width: TOOLTIP_W }}
+      role="tooltip"
+    >
+      <div className="flex items-start gap-2">
+        <span className="text-chess-text-secondary mt-0.5">
+          <SkillIcon id={dim.id} size={18} />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-bold text-chess-text leading-tight">
+            {t(`skill_${dim.id}` as any)}
+          </div>
+        </div>
+        <div
+          className="text-2xl font-extrabold tabular-nums leading-none"
+          style={{ color }}
+        >
+          {dim.score}
+        </div>
+      </div>
+      {info?.what && (
+        <p className="mt-2 text-[11px] text-chess-text-secondary leading-snug">
+          {info.what}
+        </p>
+      )}
     </div>
   );
 }
@@ -723,13 +951,10 @@ function AdminStageNav({
   const PAGES: { label: string; path: string; title: string }[] = [
     { label: 'DNA', path: '/', title: 'DNA Overview' },
     { label: 'Games', path: '/games', title: 'Recent Games' },
-    { label: 'TM', path: '/timemachine', title: 'Time Machine' },
+    { label: 'TM', path: '/timemachine', title: 'Replays' },
     { label: 'Cmp', path: '/compare', title: 'Compare' },
     { label: 'Set', path: '/settings', title: 'Settings' },
     { label: 'Pat', path: '/patterns', title: 'Patterns (legacy)' },
-    { label: 'Les', path: '/lessons', title: 'Lessons (legacy)' },
-    { label: 'Exr', path: '/exercises', title: 'Exercises (legacy)' },
-    { label: 'Trn', path: '/training', title: 'Training (GettingBetter)' },
     { label: 'Sk', path: '/skill', title: 'SkillStudio' },
   ];
 
@@ -754,14 +979,14 @@ function AdminStageNav({
 
   const handleFullReset = async () => {
     if (resetting) return;
-    if (!window.confirm('Delete ALL your games, analyses, patterns, lessons, exercises and reset onboarding to S0?\n\nThis is irreversible.')) return;
+    if (!window.confirm('Delete ALL your games, analyses, patterns and reset onboarding to S0?\n\nThis is irreversible.')) return;
 
     setResetting(true);
     try {
       // 1. Delete all entity records (RLS scopes to current user)
       // Sequential with delay to avoid 429 rate limits.
       const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
-      const entityNames = ['Game', 'Analysis', 'Pattern', 'PatternSnapshot', 'TrainingPlan', 'Lesson', 'Exercise'];
+      const entityNames = ['Game', 'Analysis', 'Pattern', 'PatternSnapshot'];
       for (const name of entityNames) {
         try {
           const entity = (base44.entities as Record<string, any>)[name];
@@ -917,3 +1142,4 @@ function AdminStageNav({
     </div>
   );
 }
+

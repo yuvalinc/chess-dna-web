@@ -5,7 +5,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useChessData } from '@/contexts/ChessDataContext';
 import { useTutorial } from '@/contexts/TutorialContext';
 import { useT } from '@/i18n/index';
-import MiniAudioPlayer from '@/components/MiniAudioPlayer';
 import SyncStatusIndicator from '@/components/SyncStatusIndicator';
 import TutorialCoachmark from '@/components/TutorialCoachmark';
 import { base44 } from '@/api/base44Client';
@@ -37,22 +36,22 @@ function DnaIcon({ className }: { className?: string }) {
   );
 }
 
-function PersonIcon({ className }: { className?: string }) {
+function AnalyzeIcon({ className }: { className?: string }) {
+  // Chart-line in a frame — represents "Analyze" (the games review tab).
   return (
     <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="8" r="4" />
-      <path d="M20 21a8 8 0 1 0-16 0" />
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <polyline points="7 14 11 10 14 13 18 8" />
     </svg>
   );
 }
 
-function HourglassIcon({ className }: { className?: string }) {
+function ReplayIcon({ className }: { className?: string }) {
+  // Play-in-a-circle — represents "Replays" (the Time Machine tab).
   return (
     <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 22h14" />
-      <path d="M5 2h14" />
-      <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22" />
-      <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2" />
+      <circle cx="12" cy="12" r="9" />
+      <polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -70,16 +69,17 @@ function CompareIcon({ className }: { className?: string }) {
 
 const NAV_ICONS: Record<Tab, React.FC<{ className?: string }>> = {
   dna: DnaIcon,
-  games: PersonIcon,
-  training: HourglassIcon,
+  games: AnalyzeIcon,
+  training: ReplayIcon,
   compare: CompareIcon,
 };
 
+// Bottom nav: DNA · Analyze · Replays. Compare keeps its route at /compare
+// for deep-links / share-card flows but is no longer surfaced in the menu.
 const BOTTOM_NAV_PATHS: { id: Tab; path: string }[] = [
   { id: 'dna', path: '/' },
   { id: 'games', path: '/games' },
   { id: 'training', path: '/timemachine' },
-  { id: 'compare', path: '/compare' },
 ];
 
 const TAB_LABEL_KEYS: Record<Tab, 'nav_dna' | 'nav_games' | 'nav_timemachine' | 'nav_compare'> = {
@@ -92,7 +92,7 @@ const TAB_LABEL_KEYS: Record<Tab, 'nav_dna' | 'nav_games' | 'nav_timemachine' | 
 // Map URL paths → tabs
 function pathToTab(path: string): Tab {
   if (path.startsWith('/games')) return 'games';
-  if (path.startsWith('/timemachine') || path.startsWith('/training') || path.startsWith('/lessons') || path.startsWith('/exercises')) return 'training';
+  if (path.startsWith('/timemachine')) return 'training';
   if (path.startsWith('/compare')) return 'compare';
   return 'dna';
 }
@@ -103,7 +103,7 @@ export default function AppShell() {
   const { settings, updateSettings } = useTheme();
   const { t } = useT();
   const [pillsOpen, setPillsOpen] = useState(false);
-  const { journeyStage, availableTimeClasses } = useChessData();
+  const { journeyStage, availableTimeClasses, analyzedCount, totalGameCount } = useChessData();
   const { isActive: tutorialActive, currentDef: tutorialDef } = useTutorial();
 
   const activeTab = pathToTab(location.pathname);
@@ -157,27 +157,44 @@ export default function AppShell() {
 
   const isDnaTab = activeTab === 'dna';
   const hasGames = journeyStage >= 1;
-  const isFullyOnboarded = journeyStage >= 5;
   // The DNA hero (with score + filter) renders for stages 2+ via the s2Continued
   // shortcut in Overview, so the chrome (top padding + game-type filter) needs
-  // to follow the same threshold — not the strict "isFullyOnboarded".
+  // to follow the same threshold.
   const showHeroChrome = journeyStage >= 2;
 
-  // Compute remaining guest time for display
+  // Compute remaining guest time for display — single unit only so the
+  // top popup stays compact: "Xd left" / "Xh left" / "Xm left".
   const [guestTimeLabel, setGuestTimeLabel] = useState('');
   useEffect(() => {
     if (!isGuest) return;
     const update = () => {
       const ms = guestSessionRemainingMs();
       if (ms <= 0) { setGuestTimeLabel(''); return; }
+      const dayMs = 24 * 60 * 60 * 1000;
+      if (ms >= dayMs) {
+        setGuestTimeLabel(`${Math.ceil(ms / dayMs)}d left`);
+        return;
+      }
       const h = Math.floor(ms / 3600000);
-      const m = Math.floor((ms % 3600000) / 60000);
-      setGuestTimeLabel(h > 0 ? `${h}h ${m}m left` : `${m}m left`);
+      if (h >= 1) { setGuestTimeLabel(`${h}h left`); return; }
+      const m = Math.max(1, Math.floor(ms / 60000));
+      setGuestTimeLabel(`${m}m left`);
     };
     update();
     const id = setInterval(update, 60000);
     return () => clearInterval(id);
   }, [isGuest]);
+
+  // Dismissible top signup popup — once user clicks X, hide for the
+  // session (returns on reload) so it stays gentle, not nagging.
+  const [signupDismissed, setSignupDismissed] = useState(() => {
+    try { return sessionStorage.getItem('chess-dna-signup-banner-dismissed') === '1'; }
+    catch { return false; }
+  });
+  const dismissSignup = () => {
+    setSignupDismissed(true);
+    try { sessionStorage.setItem('chess-dna-signup-banner-dismissed', '1'); } catch { /* ignore */ }
+  };
 
   return (
     <div className="min-h-screen bg-chess-bg text-chess-text flex flex-col">
@@ -196,6 +213,39 @@ export default function AppShell() {
               <span>{displayLabel}</span>
               <span className="text-[10px] text-gray-500 ml-0.5">{pillsOpen ? '▲' : '▼'}</span>
             </button>
+            {/* Analyze progress indicator — small row centered under the
+                game-type filter when background analysis is in flight.
+                Static green progress ring (no motion). */}
+            {analyzedCount < totalGameCount && (() => {
+              const pct = totalGameCount > 0 ? analyzedCount / totalGameCount : 0;
+              const radius = 10;
+              const circumference = 2 * Math.PI * radius;
+              const dashOffset = circumference * (1 - pct);
+              return (
+                <div className="mt-1 flex justify-center">
+                  <div className="inline-flex items-center gap-1.5 text-[10px] text-chess-text-secondary tabular-nums">
+                    <svg
+                      className="w-3 h-3 text-chess-accent"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r={radius} stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+                      <circle
+                        cx="12" cy="12" r={radius}
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                        strokeDasharray={circumference}
+                        strokeDashoffset={dashOffset}
+                        transform="rotate(-90 12 12)"
+                      />
+                    </svg>
+                    <span>{analyzedCount}/{totalGameCount}</span>
+                  </div>
+                </div>
+              );
+            })()}
             {pillsOpen && (
               <div className="absolute top-full end-0 mt-1 bg-chess-surface/95 backdrop-blur-md rounded-xl border border-chess-border/30 shadow-xl p-1.5 min-w-[120px]">
                 {ALL_TIME_CLASSES.map((tc) => {
@@ -235,12 +285,18 @@ export default function AppShell() {
            pt-10 reserves room for the floating time-class pill in the
            top-right; it appears on every tab that shows the dropdown,
            so all of those tabs need the same top padding. */}
-      <main className={`flex-1 ${(isDnaTab || activeTab === 'games' || activeTab === 'training' || activeTab === 'compare') && showHeroChrome ? 'pt-14' : 'pt-4'} ${hasGames && isGuest ? 'pb-32' : hasGames ? 'pb-24' : 'pb-4'} px-4 sm:px-6 overflow-y-auto max-w-6xl mx-auto w-full`}>
+      <main className={`flex-1 pt-2 ${hasGames ? 'pb-20' : 'pb-4'} px-4 sm:px-6 overflow-y-auto max-w-6xl mx-auto w-full`}>
+        {/* Chess DNA brand wordmark — inline at the top of every page,
+            scrolls with content (not sticky). Hidden during the tutorial
+            so coachmarks read clean. */}
+        {!tutorialActive && (
+          <div className="mb-3 inline-flex items-center gap-1.5 select-none">
+            <img src="/favicon.png" alt="" className="w-5 h-5" />
+            <span className="text-[12px] font-extrabold tracking-[1.5px] text-chess-text uppercase">Chess DNA</span>
+          </div>
+        )}
         <Outlet />
       </main>
-
-      {/* ── Mini audio player — sits above bottom nav ── */}
-      {isFullyOnboarded && <MiniAudioPlayer />}
 
       {/* ── Tutorial coachmark overlay — auto-fires on each main screen
             when settings.tutorialStep matches the screen's step. Persists
@@ -254,28 +310,38 @@ export default function AppShell() {
             During the tutorial, raise the whole bar above the coachmark dim
             (z-[110] beats z-[100]) so the whole menu stays bright + clickable
             and the spotlight tab visibly pops. ── */}
-      {/* Guest signup strip — rendered as a SIBLING of the nav (instead of
-          a child) so the tutorial dim (z-100) can sit on top of it during
-          the tutorial. The nav itself is bumped to z-110 below to keep the
-          active-tab spotlight clearly visible. */}
-      {hasGames && isGuest && (
+      {/* Guest signup banner — full-width strip docked just above the
+          bottom navigation (env safe-area aware). Hidden during the
+          tutorial so coachmarks stay clean. */}
+      {hasGames && isGuest && !signupDismissed && !tutorialActive && (
         <div
-          className={`fixed left-0 right-0 ${tutorialActive ? 'z-[40]' : 'z-50'} bg-chess-bg/98 backdrop-blur-md border-t border-chess-border/30 px-4 py-1.5 flex items-center justify-between border-b border-chess-border/20`}
+          className="fixed left-0 right-0 z-50 px-3"
           style={{
-            bottom: `calc(env(safe-area-inset-bottom) + 56px)`,
-            background: 'rgba(13,17,28,0.96)',
+            // Sits right above the bottom-nav (~72px tall + safe-area).
+            bottom: 'calc(env(safe-area-inset-bottom) + 72px)',
           }}
         >
-          <span className="text-[11px] text-gray-400 truncate">
-            Save your progress
-            {guestTimeLabel && <span className="text-gray-500 ml-1">· {guestTimeLabel}</span>}
-          </span>
-          <button
-            onClick={() => base44.auth.redirectToLogin(window.location.href)}
-            className="shrink-0 bg-chess-accent text-chess-bg text-[11px] font-semibold px-2.5 py-1 rounded-md hover:opacity-90 transition-all"
-          >
-            Sign Up
-          </button>
+          <div className="max-w-6xl mx-auto flex items-center justify-center gap-2 rounded-xl px-3 py-2 border border-chess-accent/30 shadow-[0_8px_24px_rgba(0,0,0,0.5)] bg-chess-surface/95 backdrop-blur-md">
+            <span className="text-[11px] font-semibold text-chess-text whitespace-nowrap">
+              Save progress
+              {guestTimeLabel && <span className="text-chess-text-tertiary ml-1 font-normal">· {guestTimeLabel}</span>}
+            </span>
+            <button
+              onClick={() => base44.auth.redirectToLogin(window.location.href)}
+              className="shrink-0 bg-chess-accent text-chess-bg text-[11px] font-bold px-2.5 py-1 rounded-full hover:opacity-90 transition-all"
+            >
+              Sign Up
+            </button>
+            <button
+              onClick={dismissSignup}
+              aria-label="Dismiss"
+              className="shrink-0 w-6 h-6 rounded-full text-chess-text-tertiary hover:text-chess-text hover:bg-chess-overlay flex items-center justify-center transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
       )}
       {hasGames && (

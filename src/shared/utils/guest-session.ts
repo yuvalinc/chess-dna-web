@@ -1,15 +1,15 @@
 /**
- * Guest session tracking — manages the 24-hour guest trial window.
+ * Guest session tracking — manages the 1-week guest trial window.
  *
  * When a user clicks "Try as Guest", we record a timestamp.
- * After 24 hours, the session expires and signup is required.
+ * After 7 days, the session expires and signup is required.
  */
 
 // IMPORTANT: This key must NOT start with 'chess-dna-guest-' because
 // that prefix is used by hasGuestData() to detect entity data for migration.
 // Using that prefix causes false migrations for authenticated users.
 const GUEST_SESSION_KEY = 'chess-dna-trial-session-started';
-const GUEST_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+const GUEST_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /** Start a new guest session (records current timestamp). */
 export function startGuestSession(): void {

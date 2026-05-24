@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -16,25 +17,29 @@ interface EvalChartProps {
   onMoveClick: (index: number) => void;
 }
 
-export default function EvalChart({ moves, currentMoveIndex, onMoveClick }: EvalChartProps) {
-  const data = moves.map((move, index) => {
-    const cp = move.evalAfter.scoreType === 'mate'
-      ? (move.evalAfter.score > 0 ? 1000 : -1000)
-      : Math.max(-600, Math.min(600, move.evalAfter.score));
+function EvalChart({ moves, currentMoveIndex, onMoveClick }: EvalChartProps) {
+  const data = useMemo(
+    () =>
+      moves.map((move, index) => {
+        const cp = move.evalAfter.scoreType === 'mate'
+          ? (move.evalAfter.score > 0 ? 1000 : -1000)
+          : Math.max(-600, Math.min(600, move.evalAfter.score));
 
-    return {
-      index,
-      moveNum: move.color === 'white'
-        ? `${move.moveNumber}.`
-        : `${move.moveNumber}...`,
-      eval: cp / 100,
-      quality: move.quality,
-      phase: move.phase,
-    };
-  });
+        return {
+          index,
+          moveNum: move.color === 'white'
+            ? `${move.moveNumber}.`
+            : `${move.moveNumber}...`,
+          eval: cp / 100,
+          quality: move.quality,
+          phase: move.phase,
+        };
+      }),
+    [moves],
+  );
 
   // Find phase boundaries
-  const phaseBoundaries = findPhaseBoundaries(moves);
+  const phaseBoundaries = useMemo(() => findPhaseBoundaries(moves), [moves]);
 
   return (
     <div className="w-full h-16 bg-chess-surface rounded-lg p-1.5">
@@ -111,6 +116,8 @@ export default function EvalChart({ moves, currentMoveIndex, onMoveClick }: Eval
     </div>
   );
 }
+
+export default memo(EvalChart);
 
 interface PhaseBoundary {
   phase: string;

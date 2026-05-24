@@ -66,14 +66,12 @@ export function Welcome({ onDismiss, onGoToSettings }: WelcomeProps) {
         <div className="space-y-4 text-sm text-gray-400">
           <p>
             Chess DNA watches you play on chess.com and builds a personalized profile
-            of your strengths, weaknesses, and patterns — then creates lessons and
-            exercises targeting exactly where you need to improve.
+            of your strengths, weaknesses, and patterns — so you know exactly where
+            to focus to improve.
           </p>
           <div className="grid grid-cols-2 gap-3">
             <FeatureCard icon="&#128202;" label="Your Chess DNA" desc="8-dimension skill radar scored 0-99" />
             <FeatureCard icon="&#128269;" label="Pattern Detection" desc="Finds your recurring mistakes" />
-            <FeatureCard icon="&#128218;" label="AI Lessons" desc="Personalized to your weaknesses" />
-            <FeatureCard icon="&#9823;" label="Exercises" desc="Practice exactly what you need" />
           </div>
         </div>
       ),
@@ -115,7 +113,7 @@ export function Welcome({ onDismiss, onGoToSettings }: WelcomeProps) {
         <div className="space-y-4 text-sm text-gray-400">
           <p>
             Add an API key from Claude, OpenAI, or Gemini and I'll generate
-            personalized lessons and exercises that target your specific weaknesses.
+            personalized move-by-move commentary on every game.
           </p>
           <div className="bg-chess-bg/50 rounded-xl p-4 border border-chess-border/40">
             <div className="text-xs text-gray-500 uppercase tracking-wider mb-2 font-bold">Without AI</div>
@@ -123,7 +121,7 @@ export function Welcome({ onDismiss, onGoToSettings }: WelcomeProps) {
           </div>
           <div className="bg-chess-accent/5 rounded-xl p-4 border border-chess-accent/20">
             <div className="text-xs text-chess-accent uppercase tracking-wider mb-2 font-bold">With AI</div>
-            <p className="text-chess-text-secondary">Everything above <span className="text-chess-accent font-medium">+ AI-generated lessons + practice exercises</span> tailored to your exact weaknesses.</p>
+            <p className="text-chess-text-secondary">Everything above <span className="text-chess-accent font-medium">+ AI move explanations</span> that walk you through every critical decision.</p>
           </div>
           <div className="flex gap-2">
             <button
@@ -292,7 +290,7 @@ export function JourneyProgress({
         {stage === 3 && (
           <div className="flex items-center justify-between">
             <p className="text-xs text-gray-400">
-              &#127881; Patterns unlocked! Add an AI provider to get personalized lessons.
+              &#127881; Patterns unlocked! Add an AI provider for personalized move commentary.
             </p>
             <button
               onClick={onGoToSettings}

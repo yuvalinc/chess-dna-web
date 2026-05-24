@@ -1,5 +1,6 @@
 {
   "name": "Exercise",
+  "description": "A chess puzzle paired with a Lesson: position, solution, distractor moves, and an engine-verified flag.",
   "type": "object",
   "properties": {
     "themeId": { "type": "string" },

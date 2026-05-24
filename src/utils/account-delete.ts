@@ -22,9 +22,6 @@ const USER_ENTITIES = [
   'PatternSnapshot',
   'UserPreferences',
   'Insight',
-  'Lesson',
-  'Exercise',
-  'TrainingPlan',
 ];
 
 /** How many delete requests to run concurrently. Keep small to avoid 429. */

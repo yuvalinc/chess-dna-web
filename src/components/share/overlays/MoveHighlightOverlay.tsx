@@ -5,6 +5,7 @@
 import { Chessboard } from 'react-chessboard';
 import { SHARE_COLORS, getQualityColor } from '../share-colors';
 import { getBoardTheme } from '@/components/board-themes';
+import { cburnettShadowPieces } from '@/components/cburnett-shadow-pieces';
 import type { GameRecord } from '@shared/types/game';
 import type { MoveAnalysis } from '@shared/types/analysis';
 import type { PositionEval } from '@shared/types/engine';
@@ -152,6 +153,7 @@ export default function MoveHighlightOverlay({ game, move, boardThemeId, format,
             <div style={{ width: boardSize, height: boardSize, flexShrink: 0, borderRadius: 10, overflow: 'hidden', boxShadow: '0 6px 32px rgba(0,0,0,0.5)' }}>
               <div dir="ltr">
                 <Chessboard position={move.fenAfter} boardWidth={boardSize} arePiecesDraggable={false} animationDuration={0}
+                  customPieces={cburnettShadowPieces}
                   customDarkSquareStyle={{ backgroundColor: theme.darkSquare }} customLightSquareStyle={{ backgroundColor: theme.lightSquare }}
                   customBoardStyle={{ borderRadius: '8px' }}
                   customArrows={[[from as Square, to as Square, 'rgba(255,170,0,0.8)'] as [Square, Square, string]]}

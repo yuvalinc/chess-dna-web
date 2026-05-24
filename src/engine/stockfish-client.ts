@@ -12,8 +12,10 @@ export interface MultiPVLine {
 
 type OutputCallback = (line: string) => void;
 
-const CDN_BASE = 'https://unpkg.com/stockfish@17.1.0/src';
-const SF_WASM = CDN_BASE + '/stockfish-17.1-lite-single-03e3232.wasm';
+// Self-hosted WASM. The worker reads this URL from its hash fragment and
+// streams the binary directly — no third-party CDN involved, so the engine
+// always loads as long as the app itself loaded.
+const SF_WASM = '/stockfish/stockfish-17.1-lite-single-03e3232.wasm';
 
 /** Default timeout per position analysis: 30 seconds */
 const POSITION_TIMEOUT_MS = 30_000;
@@ -103,6 +105,22 @@ class StockfishClient {
 
     this.isInitialized = true;
     this.consecutiveTimeouts = 0;
+
+    // Stockfish 17 defaults Hash to 16MB. Combined with the 7.3MB WASM
+    // binary and per-game move arrays, this pushes mobile Safari toward
+    // its ~250–400MB tab-kill threshold. Drop to 4MB on iPhone/iPad/Android.
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(ua);
+    if (isMobile) {
+      try {
+        this.sendCommand('setoption name Hash value 4');
+        await this.collectOutput(['isready'], ['readyok'], COMMAND_TIMEOUT_MS);
+        console.log('[Chess DNA] Stockfish Hash set to 4MB for mobile');
+      } catch (err) {
+        console.warn('[Chess DNA] Failed to lower Stockfish Hash on mobile:', err);
+      }
+    }
+
     console.log('[Chess DNA] Stockfish engine initialized');
   }
 
@@ -301,6 +319,46 @@ class StockfishClient {
   async setOption(name: string, value: string | number): Promise<void> {
     this.sendCommand(`setoption name ${name} value ${value}`);
     await this.collectOutput(['isready'], ['readyok'], COMMAND_TIMEOUT_MS);
+  }
+
+  /**
+   * Get the best move at a position, optionally throttled to a target rating.
+   * When `elo` is provided, enables `UCI_LimitStrength` so Stockfish plays at
+   * roughly that rating. Stockfish caps `UCI_Elo` to the range 1320–3190.
+   * The strength limit is reset after the call so subsequent analysis runs
+   * at full strength.
+   */
+  async getBestMove(
+    fen: string,
+    options: { elo?: number; depth?: number } = {},
+  ): Promise<string | null> {
+    const { elo, depth = 14 } = options;
+    await this.ensureHealthy();
+    await this.collectOutput(['isready'], ['readyok'], COMMAND_TIMEOUT_MS);
+
+    if (elo !== undefined) {
+      const clamped = Math.max(1320, Math.min(3190, Math.round(elo)));
+      this.sendCommand('setoption name UCI_LimitStrength value true');
+      this.sendCommand(`setoption name UCI_Elo value ${clamped}`);
+      await this.collectOutput(['isready'], ['readyok'], COMMAND_TIMEOUT_MS);
+    }
+
+    const lines = await this.collectOutput(
+      [`position fen ${fen}`, `go depth ${depth}`],
+      ['bestmove'],
+      POSITION_TIMEOUT_MS,
+    );
+
+    if (elo !== undefined) {
+      this.sendCommand('setoption name UCI_LimitStrength value false');
+      await this.collectOutput(['isready'], ['readyok'], COMMAND_TIMEOUT_MS);
+    }
+
+    for (const line of lines) {
+      const bm = parseBestMove(line);
+      if (bm?.bestMove) return bm.bestMove;
+    }
+    return null;
   }
 
   /**

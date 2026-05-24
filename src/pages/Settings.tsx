@@ -1,30 +1,32 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { OPENAI_TTS_VOICES, OPENAI_TTS_ENDPOINT, TTS_SPEAKER_A_INSTRUCTIONS, TTS_SPEAKER_B_INSTRUCTIONS } from '@shared/constants';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { TokenUsage } from '@shared/types/storage';
 import { DEFAULT_TOKEN_USAGE } from '@shared/types/storage';
-import { getTokenUsage, resetTokenUsage } from '@/storage/settings-store';
+import { getTokenUsage } from '@/storage/settings-store';
 import type { TimeClass as _TimeClass } from '@shared/types/game';
 import type { PositionEval } from '@shared/types/engine';
 import { useTheme } from '@/components/ThemeContext';
 import { useT, SUPPORTED_LANGUAGES } from '@/i18n/index';
 import { useChessData } from '@/contexts/ChessDataContext';
-import { ChessComBadge, LichessBadge, DataAttribution } from '@/components/PlatformBadge';
+import { ChessComBadge, LichessBadge } from '@/components/PlatformBadge';
 import { importLichessGames } from '@/api/lichess-import';
+import { trackAnalysis } from '@/analytics/client';
 import { splitMultiGamePgn, parsePgnToGameRecord } from '@shared/utils/chess-utils';
 import { BOARD_THEMES } from '@/components/board-themes';
 import ThemedChessboard from '@/components/ThemedChessboard';
 import { recognizePosition, resizeImageForAPI } from '@/ai/position-recognizer';
 import { StockfishClient } from '@/engine/stockfish-client';
 import { hasAnyProvider } from '@/ai/ai-router';
-import { AUDIO_SYSTEM_PROMPT_DEFAULT } from '@/ai/prompt-builder';
 import { uciToSan } from '@shared/utils/chess-utils';
 import { base44 } from '../api/base44Client';
 import { importChessComGames } from '@/api/chess-com-import';
 import { deleteAccountData, type DeleteProgress } from '@/utils/account-delete';
+import DedupDiagnosticsPanel from '@/components/DedupDiagnosticsPanel';
 
 type PositionPhase = 'idle' | 'recognizing' | 'recognized' | 'analyzing' | 'complete' | 'error';
 
 export default function Settings() {
+  const navigate = useNavigate();
   const { theme, boardTheme, setTheme, setBoardTheme, settings, updateSettings, isAdmin } = useTheme();
   const { t: tFunc } = useT();
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>(DEFAULT_TOKEN_USAGE);
@@ -34,8 +36,6 @@ export default function Settings() {
     getTokenUsage().then(setTokenUsage);
   }, []);
   const { allGames: _allGames, availableTimeClasses, refetchGames } = useChessData();
-  const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
-  const [tempApiKey, setTempApiKey] = useState<Record<string, string>>({});
   const [importTimeClass, setImportTimeClass] = useState('rapid');
   const [importState, setImportState] = useState<{
     phase: 'idle' | 'fetching' | 'analyzing' | 'done';
@@ -146,62 +146,15 @@ export default function Settings() {
     setManualFen('');
   }, []);
 
-  // Voice preview state
-  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
-  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-
-  const previewVoice = useCallback(async (voice: string, speaker: 'A' | 'B') => {
-    if (!settings.openaiApiKey) return;
-    // Stop any currently playing preview
-    if (previewAudioRef.current) {
-      previewAudioRef.current.pause();
-      URL.revokeObjectURL(previewAudioRef.current.src);
-      previewAudioRef.current = null;
-    }
-    setPreviewingVoice(voice);
-    try {
-      const sampleText = speaker === 'A'
-        ? 'Welcome to your chess game review! Let\'s dive into the key moments.'
-        : 'Oh WOW, what a BRILLIANT sacrifice! This changes EVERYTHING!';
-      const instructions = speaker === 'A' ? TTS_SPEAKER_A_INSTRUCTIONS : TTS_SPEAKER_B_INSTRUCTIONS;
-      const body: Record<string, unknown> = {
-        model: settings.ttsModel || 'gpt-4o-mini-tts',
-        input: sampleText,
-        voice,
-        response_format: 'mp3',
-      };
-      if (settings.ttsModel?.includes('gpt-4o')) {
-        body.instructions = instructions;
-      }
-      const res = await fetch(OPENAI_TTS_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${settings.openaiApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`TTS error ${res.status}`);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      previewAudioRef.current = audio;
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        previewAudioRef.current = null;
-        setPreviewingVoice(null);
-      };
-      await audio.play();
-      // Audio is playing — onended will handle cleanup
-    } catch (err) {
-      console.error('[Chess DNA] Voice preview failed:', err);
-      setPreviewingVoice(null);
-    }
-  }, [settings.openaiApiKey, settings.ttsModel]);
 
   const handleImportGames = async () => {
     if (!settings.chesscomUsername) return;
     setImportState({ phase: 'fetching', fetched: 0, total: 0 });
+    trackAnalysis('chesscom_import_started', {
+      username: settings.chesscomUsername,
+      timeClass: importTimeClass,
+      source: 'settings',
+    });
 
     try {
       const newGameIds = await importChessComGames(settings.chesscomUsername, {
@@ -224,6 +177,12 @@ export default function Settings() {
           error: undefined,
         }));
       }
+      trackAnalysis('chesscom_import_complete', {
+        username: settings.chesscomUsername,
+        timeClass: importTimeClass,
+        source: 'settings',
+        gamesImported: newGameIds.length,
+      });
     } catch (err) {
       setImportState({
         phase: 'done',
@@ -231,12 +190,22 @@ export default function Settings() {
         total: 0,
         error: `Import failed: ${String(err)}`,
       });
+      trackAnalysis('chesscom_import_error', {
+        username: settings.chesscomUsername,
+        source: 'settings',
+        error: String(err).slice(0, 200),
+      });
     }
   };
 
   const handleLichessImport = async () => {
     if (!settings.lichessUsername) return;
     setLichessImportState({ phase: 'fetching', fetched: 0, total: 0 });
+    trackAnalysis('lichess_import_started', {
+      username: settings.lichessUsername,
+      timeClass: importTimeClass,
+      source: 'settings',
+    });
     try {
       const newGameIds = await importLichessGames(settings.lichessUsername, {
         maxGames: 20,
@@ -254,8 +223,19 @@ export default function Settings() {
         setLichessImportState(prev => ({ ...prev, phase: 'done', error: undefined }));
         refetchGames();
       }
+      trackAnalysis('lichess_import_complete', {
+        username: settings.lichessUsername,
+        timeClass: importTimeClass,
+        source: 'settings',
+        gamesImported: newGameIds.length,
+      });
     } catch (err) {
       setLichessImportState({ phase: 'done', fetched: 0, total: 0, error: `Import failed: ${String(err)}` });
+      trackAnalysis('lichess_import_error', {
+        username: settings.lichessUsername,
+        source: 'settings',
+        error: String(err).slice(0, 200),
+      });
     }
   };
 
@@ -363,31 +343,6 @@ export default function Settings() {
     e.target.value = ''; // reset to allow re-upload
   };
 
-  const handleSaveApiKey = async (provider: string) => {
-    const key = tempApiKey[provider] || '';
-    if (!key) return;
-    const fieldMap: Record<string, string> = { claude: 'claudeApiKey', openai: 'openaiApiKey', gemini: 'geminiApiKey' };
-    await updateSettings({ [fieldMap[provider]]: key });
-    setTempApiKey(prev => ({ ...prev, [provider]: '' }));
-  };
-
-  const handleClearApiKey = async (provider: string) => {
-    const fieldMap: Record<string, string> = { claude: 'claudeApiKey', openai: 'openaiApiKey', gemini: 'geminiApiKey' };
-    await updateSettings({ [fieldMap[provider]]: null });
-  };
-
-  // Estimated cost calculation
-  const estimatedCost = useMemo(() => {
-    // Rough average pricing across providers (Claude Sonnet ballpark)
-    const inputCostPerM = 3; // $3 per million input tokens
-    const outputCostPerM = 15; // $15 per million output tokens
-    const inputCost = (tokenUsage.totalInputTokens / 1_000_000) * inputCostPerM;
-    const outputCost = (tokenUsage.totalOutputTokens / 1_000_000) * outputCostPerM;
-    return (inputCost + outputCost).toFixed(2);
-  }, [tokenUsage]);
-
-  const [settingsTab, setSettingsTab] = useState<'profile' | 'ai' | 'settings' | 'analytics'>('profile');
-
   const handleLogout = useCallback(() => {
     base44.auth.logout();
   }, []);
@@ -420,156 +375,188 @@ export default function Settings() {
 
   return (
     <div className="max-w-2xl">
-      <h2 className="text-xl font-bold mb-4">{tFunc('settings_profile')}</h2>
-
-      {/* Tab bar */}
-      <div className="flex gap-1 mb-5 border-b border-chess-border/30 pb-2">
-        {([
-          { id: 'profile' as const, label: `\u{1F464} ${tFunc('settings_tab_profile')}` },
-          ...(isAdmin ? [{ id: 'ai' as const, label: `\u{1F916} ${tFunc('settings_tab_ai')}` }] : []),
-          { id: 'settings' as const, label: `\u2699\uFE0F ${tFunc('settings_tab_settings')}` },
-          ...(isAdmin ? [{ id: 'analytics' as const, label: `\u{1F4CA} ${tFunc('settings_tab_analytics')}` }] : []),
-        ]).map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setSettingsTab(t.id)}
-            className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              settingsTab === t.id
-                ? 'bg-chess-accent/10 text-chess-accent border border-chess-accent/20'
-                : 'text-gray-500 hover:text-chess-text-secondary hover:bg-white/[0.03] border border-transparent'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      {/* Back button + title \u2014 unified single-page Profile (no inner tabs) */}
+      <div className="flex items-center gap-3 mb-4">
+        <button
+          onClick={() => navigate('/')}
+          className="flex items-center text-chess-text-secondary hover:text-chess-text transition-colors"
+          aria-label="Back to DNA"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="rtl:rotate-180">
+            <path d="M19 12H5" />
+            <polyline points="12 19 5 12 12 5" />
+          </svg>
+        </button>
+        <h2 className="text-xl font-bold">{tFunc('settings_profile')}</h2>
       </div>
 
-      {/* Profile tab */}
-      {settingsTab === 'profile' && (
+      {/* All sections rendered inline (Profile + Settings unified). Admin-
+          only sections (AI / Analytics / Diagnostics) follow the user-
+          facing ones. */}
+      {true && (
         <>
-          <Section title={<span className="flex items-center gap-2">{tFunc('settings_chess_com')} <ChessComBadge size="xs" /></span>}>
-            <div className="flex items-center gap-3">
-              <label className="text-sm text-gray-400 w-32">Username</label>
-              <input
-                type="text"
-                value={settings.chesscomUsername ?? ''}
-                onChange={(e) =>
-                  updateSettings({ chesscomUsername: e.target.value || null })
-                }
-                placeholder="Auto-detected from games"
-                className="bg-chess-surface border border-chess-border rounded px-3 py-1.5 text-sm flex-1 text-chess-text"
-              />
-            </div>
+          {/* ── Preferences: Language + Theme + Board theme in a single card ── */}
+          <Section title="Preferences">
+            <SubSection label={<span>{'🌐'} {tFunc('settings_language')}</span>}>
+              <div className="flex flex-wrap gap-1.5">
+                {SUPPORTED_LANGUAGES.map((lang) => (
+                  <button
+                    key={lang.code}
+                    onClick={() => { updateSettings({ language: lang.code as 'en' | 'he' | 'es' }); try { localStorage.setItem('chess-dna-language', lang.code); } catch {} }}
+                    className={`px-2.5 py-1 rounded text-[11px] transition-all ${
+                      (settings.language ?? 'en') === lang.code
+                        ? 'bg-chess-accent/20 text-chess-accent font-semibold'
+                        : 'bg-chess-bg/60 text-gray-400'
+                    }`}
+                  >
+                    {lang.label}
+                  </button>
+                ))}
+              </div>
+            </SubSection>
+
+            <SubSection label={<span>{tFunc('settings_theme')}</span>}>
+              <div className="flex gap-1.5">
+                {(['dark', 'light'] as const).map((themeOpt) => (
+                  <button
+                    key={themeOpt}
+                    onClick={() => setTheme(themeOpt)}
+                    className={`px-2.5 py-1 rounded text-[11px] transition-all ${
+                      theme === themeOpt
+                        ? 'bg-chess-accent/20 text-chess-accent'
+                        : 'bg-chess-bg/60 text-gray-400'
+                    }`}
+                  >
+                    {themeOpt === 'dark' ? tFunc('settings_theme_dark') : tFunc('settings_theme_light')}
+                  </button>
+                ))}
+              </div>
+            </SubSection>
+
+            <SubSection label={<span>{tFunc('settings_board_theme')}</span>}>
+              <div className="flex flex-wrap gap-1.5">
+                {BOARD_THEMES.map((bt) => (
+                  <button
+                    key={bt.id}
+                    onClick={() => setBoardTheme(bt.id)}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded text-[11px] transition-all ${
+                      boardTheme === bt.id
+                        ? 'ring-2 ring-chess-accent bg-chess-accent/10'
+                        : 'ring-1 ring-chess-border/50 hover:ring-chess-border'
+                    }`}
+                  >
+                    <div className="w-4 h-4 grid grid-cols-2 rounded-sm overflow-hidden shrink-0">
+                      <div style={{ backgroundColor: bt.lightSquare }} />
+                      <div style={{ backgroundColor: bt.darkSquare }} />
+                      <div style={{ backgroundColor: bt.darkSquare }} />
+                      <div style={{ backgroundColor: bt.lightSquare }} />
+                    </div>
+                    <span>{bt.name}</span>
+                  </button>
+                ))}
+              </div>
+            </SubSection>
           </Section>
 
-          {settings.chesscomUsername && (
-            <Section title={tFunc('settings_import_games')}>
-              <div className="space-y-3">
-                <p className="text-xs text-gray-400">
-                  Fetch more games from chess.com for <span className="text-chess-accent font-bold">{settings.chesscomUsername}</span>
-                </p>
-
-                {/* Time class picker */}
-                <div className="flex gap-1.5">
-                  {(['rapid', 'blitz', 'bullet', 'daily'] as const).map(tc => {
-                    const hasGames = availableTimeClasses.has(tc);
-                    return (
-                      <button
-                        key={tc}
-                        onClick={() => setImportTimeClass(tc)}
-                        disabled={importState.phase === 'fetching' || importState.phase === 'analyzing'}
-                        className={`px-3 py-1.5 rounded text-xs font-medium capitalize transition-colors flex items-center gap-1.5 ${
-                          importTimeClass === tc
-                            ? 'bg-chess-accent/15 text-chess-accent border border-chess-accent/30'
-                            : 'bg-chess-surface border border-chess-border/30 text-chess-text-secondary hover:text-chess-text'
-                        } disabled:opacity-40`}
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full ${hasGames ? 'bg-chess-accent' : 'bg-gray-500/40'}`} />
-                        {tc}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Import button */}
-                <button
-                  onClick={handleImportGames}
-                  disabled={importState.phase === 'fetching' || importState.phase === 'analyzing'}
-                  className="bg-chess-accent text-chess-bg px-4 py-1.5 rounded text-sm font-bold hover:brightness-110 transition-all disabled:opacity-50"
-                >
-                  {importState.phase === 'fetching' || importState.phase === 'analyzing' ? 'Importing...' : 'Import Games'}
-                </button>
-
-                {/* Progress / status */}
-                {importState.phase === 'fetching' && (
-                  <div className="bg-chess-surface/50 rounded-lg p-3 border border-chess-border/30">
-                    <div className="flex justify-between text-[11px] text-chess-text-secondary mb-2">
-                      <span>Importing {importTimeClass} games...</span>
-                      <span>{importState.fetched}{importState.total > 0 ? ` / ${importState.total}` : ''}</span>
-                    </div>
-                    <div className="w-full bg-chess-muted/60 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className="bg-chess-accent h-full rounded-full transition-all duration-500"
-                        style={{ width: importState.total > 0 ? `${(importState.fetched / importState.total) * 100}%` : '30%' }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {importState.phase === 'analyzing' && (
-                  <div className="bg-chess-surface/50 rounded-lg p-3 border border-chess-border/30">
-                    <p className="text-xs text-chess-text-secondary animate-pulse">
-                      Analyzing {importState.fetched} game{importState.fetched !== 1 ? 's' : ''} with Stockfish...
-                    </p>
-                  </div>
-                )}
-
-                {importState.phase === 'done' && importState.error && (
-                  <p className="text-xs text-chess-blunder">{importState.error}</p>
-                )}
-
-                {importState.phase === 'done' && !importState.error && (
-                  <p className="text-xs text-chess-accent">
-                    {importState.fetched} game{importState.fetched !== 1 ? 's' : ''} imported and analyzed!
-                  </p>
-                )}
-              </div>
-            </Section>
-          )}
-
-          {/* ── Lichess ── */}
-          <Section title={<span className="flex items-center gap-2">Lichess <LichessBadge size="xs" /></span>}>
-            <div className="flex items-center gap-3 mb-3">
-              <label className="text-sm text-gray-400 w-32">Username</label>
-              <input
-                type="text"
-                value={settings.lichessUsername ?? ''}
-                onChange={(e) => updateSettings({ lichessUsername: e.target.value || null })}
-                placeholder="Your Lichess username"
-                className="bg-chess-surface border border-chess-border rounded px-3 py-1.5 text-sm flex-1 text-chess-text"
-              />
-            </div>
-            {settings.lichessUsername && (
+          {/* ── Connected Accounts: Chess.com + Lichess in a single compact card ── */}
+          <Section title="Connected Accounts">
+            {/* Chess.com row */}
+            <SubSection label={<><ChessComBadge size="xs" /><span>Chess.com</span></>}>
               <div className="space-y-2">
-                <button
-                  onClick={handleLichessImport}
-                  disabled={lichessImportState.phase === 'fetching'}
-                  className="bg-chess-accent text-chess-bg px-4 py-1.5 rounded text-sm font-bold hover:brightness-110 transition-all disabled:opacity-50"
-                >
-                  {lichessImportState.phase === 'fetching' ? 'Importing...' : 'Import Lichess Games'}
-                </button>
-                {lichessImportState.phase === 'done' && !lichessImportState.error && (
-                  <p className="text-xs text-chess-accent">{lichessImportState.fetched} game{lichessImportState.fetched !== 1 ? 's' : ''} imported!</p>
-                )}
-                {lichessImportState.error && (
-                  <p className="text-xs text-chess-blunder">{lichessImportState.error}</p>
+                <input
+                  type="text"
+                  value={settings.chesscomUsername ?? ''}
+                  onChange={(e) => updateSettings({ chesscomUsername: e.target.value || null })}
+                  placeholder="Username"
+                  className="w-full bg-chess-bg border border-chess-border/40 rounded px-2.5 py-1.5 text-sm text-chess-text"
+                />
+                {settings.chesscomUsername && (
+                  <>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(['rapid', 'blitz', 'bullet', 'daily'] as const).map(tc => {
+                        const hasGames = availableTimeClasses.has(tc);
+                        return (
+                          <button
+                            key={tc}
+                            onClick={() => setImportTimeClass(tc)}
+                            disabled={importState.phase === 'fetching' || importState.phase === 'analyzing'}
+                            className={`px-2.5 py-1 rounded text-[11px] font-medium capitalize transition-colors flex items-center gap-1.5 ${
+                              importTimeClass === tc
+                                ? 'bg-chess-accent/15 text-chess-accent border border-chess-accent/30'
+                                : 'bg-chess-bg border border-chess-border/30 text-chess-text-secondary hover:text-chess-text'
+                            } disabled:opacity-40`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${hasGames ? 'bg-chess-accent' : 'bg-gray-500/40'}`} />
+                            {tc}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      onClick={handleImportGames}
+                      disabled={importState.phase === 'fetching' || importState.phase === 'analyzing'}
+                      className="bg-chess-accent text-chess-bg px-3 py-1.5 rounded text-xs font-bold hover:brightness-110 transition-all disabled:opacity-50"
+                    >
+                      {importState.phase === 'fetching' || importState.phase === 'analyzing' ? 'Importing…' : 'Import games'}
+                    </button>
+                    {importState.phase === 'fetching' && (
+                      <div className="text-[11px] text-chess-text-secondary">
+                        Importing {importTimeClass}: {importState.fetched}{importState.total > 0 ? ` / ${importState.total}` : ''}
+                      </div>
+                    )}
+                    {importState.phase === 'analyzing' && (
+                      <div className="text-[11px] text-chess-text-secondary animate-pulse">
+                        Analyzing {importState.fetched} game{importState.fetched !== 1 ? 's' : ''}…
+                      </div>
+                    )}
+                    {importState.phase === 'done' && importState.error && (
+                      <p className="text-[11px] text-chess-blunder">{importState.error}</p>
+                    )}
+                    {importState.phase === 'done' && !importState.error && (
+                      <p className="text-[11px] text-chess-accent">
+                        {importState.fetched} game{importState.fetched !== 1 ? 's' : ''} imported.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
-            )}
+            </SubSection>
+
+            {/* Lichess row */}
+            <SubSection label={<><LichessBadge size="xs" /><span>Lichess</span></>}>
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={settings.lichessUsername ?? ''}
+                  onChange={(e) => updateSettings({ lichessUsername: e.target.value || null })}
+                  placeholder="Username"
+                  className="w-full bg-chess-bg border border-chess-border/40 rounded px-2.5 py-1.5 text-sm text-chess-text"
+                />
+                {settings.lichessUsername && (
+                  <>
+                    <button
+                      onClick={handleLichessImport}
+                      disabled={lichessImportState.phase === 'fetching'}
+                      className="bg-chess-accent text-chess-bg px-3 py-1.5 rounded text-xs font-bold hover:brightness-110 transition-all disabled:opacity-50"
+                    >
+                      {lichessImportState.phase === 'fetching' ? 'Importing…' : 'Import games'}
+                    </button>
+                    {lichessImportState.phase === 'done' && !lichessImportState.error && (
+                      <p className="text-[11px] text-chess-accent">
+                        {lichessImportState.fetched} game{lichessImportState.fetched !== 1 ? 's' : ''} imported.
+                      </p>
+                    )}
+                    {lichessImportState.error && (
+                      <p className="text-[11px] text-chess-blunder">{lichessImportState.error}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            </SubSection>
           </Section>
 
           {/* ── Manual PGN Upload ── */}
-          <Section title="Manual Import (PGN)">
+          <CollapsibleSection title="Manual Import (PGN)">
             <div className="space-y-3">
               {/* Instructions accordion */}
               <button
@@ -630,10 +617,10 @@ export default function Settings() {
                 <p className={`text-xs ${pgnImportState.imported > 0 || pgnImportState.error.includes('already') ? 'text-amber-400' : 'text-chess-blunder'}`}>{pgnImportState.error}</p>
               )}
             </div>
-          </Section>
+          </CollapsibleSection>
 
-          {/* Analyze Position from Image */}
-          <Section title="Analyze Position">
+          {/* Analyze Position from Image — power-user tool, collapsed by default */}
+          <CollapsibleSection title="Analyze Position from Image">
             <div className="space-y-3">
               <p className="text-xs text-gray-400">
                 Upload a chess board screenshot or paste from clipboard. AI extracts the position, then Stockfish analyzes it.
@@ -792,350 +779,13 @@ export default function Settings() {
                 </div>
               )}
             </div>
-          </Section>
-          <DataAttribution />
+          </CollapsibleSection>
         </>
       )}
 
-      {/* AI tab */}
-      {settingsTab === 'ai' && (
-      <>
-        <Section title="AI Providers">
-          <p className="text-xs text-gray-500 mb-4">
-            Add one or more API keys. The first configured provider is used, with automatic fallback to others.
-          </p>
-
-          <ProviderRow
-            name="Claude"
-            providerId="claude"
-            apiKey={settings.claudeApiKey}
-            showKey={showApiKey['claude'] ?? false}
-            tempKey={tempApiKey['claude'] ?? ''}
-            placeholder="sk-ant-..."
-            onTempKeyChange={(v) => setTempApiKey(prev => ({ ...prev, claude: v }))}
-            onSave={() => handleSaveApiKey('claude')}
-            onClear={() => handleClearApiKey('claude')}
-            onToggleShow={() => setShowApiKey(prev => ({ ...prev, claude: !prev['claude'] }))}
-            model={settings.claudeModel}
-            onModelChange={(v) => updateSettings({ claudeModel: v })}
-            modelOptions={[
-              { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
-              { value: 'claude-opus-4-6', label: 'Claude Opus 4.6 (most capable)' },
-              { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5' },
-              { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-            ]}
-          />
-
-          <ProviderRow
-            name="OpenAI"
-            providerId="openai"
-            apiKey={settings.openaiApiKey}
-            showKey={showApiKey['openai'] ?? false}
-            tempKey={tempApiKey['openai'] ?? ''}
-            placeholder="sk-..."
-            onTempKeyChange={(v) => setTempApiKey(prev => ({ ...prev, openai: v }))}
-            onSave={() => handleSaveApiKey('openai')}
-            onClear={() => handleClearApiKey('openai')}
-            onToggleShow={() => setShowApiKey(prev => ({ ...prev, openai: !prev['openai'] }))}
-            model={settings.openaiModel}
-            onModelChange={(v) => updateSettings({ openaiModel: v })}
-            modelOptions={[
-              { value: 'gpt-4o', label: 'GPT-4o (recommended)' },
-              { value: 'gpt-4o-mini', label: 'GPT-4o Mini (cheaper)' },
-            ]}
-          />
-
-          <ProviderRow
-            name="Gemini"
-            providerId="gemini"
-            apiKey={settings.geminiApiKey}
-            showKey={showApiKey['gemini'] ?? false}
-            tempKey={tempApiKey['gemini'] ?? ''}
-            placeholder="AIza..."
-            onTempKeyChange={(v) => setTempApiKey(prev => ({ ...prev, gemini: v }))}
-            onSave={() => handleSaveApiKey('gemini')}
-            onClear={() => handleClearApiKey('gemini')}
-            onToggleShow={() => setShowApiKey(prev => ({ ...prev, gemini: !prev['gemini'] }))}
-            model={settings.geminiModel}
-            onModelChange={(v) => updateSettings({ geminiModel: v })}
-            modelOptions={[
-              { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (recommended)' },
-              { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (smartest)' },
-            ]}
-          />
-        </Section>
-
-        {/* Audio Prompt Editor — admin only */}
-        {isAdmin && (
-          <AudioPromptEditor settings={settings} updateSettings={updateSettings} />
-        )}
-      </>
-      )}
-
-      {/* Settings tab */}
-      {settingsTab === 'settings' && (
+      {/* Settings section — always shown (unified with Profile) */}
+      {true && (
         <>
-          <Section title={(() => { try { return tFunc('settings_language'); } catch { return 'Language'; } })()}>
-            <div className="flex items-center gap-3">
-              <label className="text-sm text-gray-400 w-32">{'\uD83C\uDF10'} {tFunc('settings_language')}</label>
-              <div className="flex gap-2 flex-wrap">
-                {SUPPORTED_LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.code}
-                    onClick={() => { updateSettings({ language: lang.code as 'en' | 'he' | 'es' }); try { localStorage.setItem('chess-dna-language', lang.code); } catch {} }}
-                    className={`px-3 py-1.5 rounded text-sm transition-all ${
-                      (settings.language ?? 'en') === lang.code
-                        ? 'bg-chess-accent/20 text-chess-accent font-semibold'
-                        : 'bg-chess-muted text-gray-400'
-                    }`}
-                  >
-                    {lang.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </Section>
-
-          <Section title={tFunc('settings_appearance')}>
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-gray-400 w-32">{tFunc('settings_theme')}</label>
-                <div className="flex gap-2">
-                  {(['dark', 'light'] as const).map((themeOpt) => (
-                    <button
-                      key={themeOpt}
-                      onClick={() => setTheme(themeOpt)}
-                      className={`px-3 py-1.5 rounded text-sm transition-all ${
-                        theme === themeOpt
-                          ? 'bg-chess-accent/20 text-chess-accent'
-                          : 'bg-chess-muted text-gray-400'
-                      }`}
-                    >
-                      {themeOpt === 'dark' ? tFunc('settings_theme_dark') : tFunc('settings_theme_light')}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <label className="text-sm text-gray-400 w-32 pt-1">{tFunc('settings_board_theme')}</label>
-                <div className="flex flex-wrap gap-2">
-                  {BOARD_THEMES.map((bt) => (
-                    <button
-                      key={bt.id}
-                      onClick={() => setBoardTheme(bt.id)}
-                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition-all ${
-                        boardTheme === bt.id
-                          ? 'ring-2 ring-chess-accent bg-chess-accent/10'
-                          : 'ring-1 ring-chess-border/50 hover:ring-chess-border'
-                      }`}
-                    >
-                      <div className="w-5 h-5 grid grid-cols-2 rounded-sm overflow-hidden shrink-0">
-                        <div style={{ backgroundColor: bt.lightSquare }} />
-                        <div style={{ backgroundColor: bt.darkSquare }} />
-                        <div style={{ backgroundColor: bt.darkSquare }} />
-                        <div style={{ backgroundColor: bt.lightSquare }} />
-                      </div>
-                      <span>{bt.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </Section>
-
-          <Section title={tFunc('settings_analysis')}>
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-gray-400 w-32">Engine Depth</label>
-                <input
-                  type="range"
-                  min="10"
-                  max="24"
-                  value={settings.analysisDepth}
-                  onChange={(e) =>
-                    updateSettings({ analysisDepth: parseInt(e.target.value) })
-                  }
-                  className="flex-1"
-                />
-                <span className="text-sm w-8 text-center">{settings.analysisDepth}</span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-gray-400 w-32">Auto-analyze</label>
-                <button
-                  onClick={() =>
-                    updateSettings({ autoAnalyze: !settings.autoAnalyze })
-                  }
-                  className={`px-3 py-1 rounded text-sm ${
-                    settings.autoAnalyze
-                      ? 'bg-chess-accent/20 text-chess-accent'
-                      : 'bg-chess-border text-gray-400'
-                  }`}
-                >
-                  {settings.autoAnalyze ? 'On' : 'Off'}
-                </button>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-gray-400 w-32">Pattern Window</label>
-                <input
-                  type="number"
-                  min="10"
-                  max="200"
-                  value={settings.windowSize}
-                  onChange={(e) =>
-                    updateSettings({ windowSize: parseInt(e.target.value) || 50 })
-                  }
-                  className="bg-chess-surface border border-chess-border rounded px-3 py-1.5 text-sm w-20 text-chess-text"
-                />
-                <span className="text-xs text-gray-500">games</span>
-              </div>
-            </div>
-          </Section>
-
-          {settings.openaiApiKey && (
-            <Section title={tFunc('settings_tts')}>
-              <div className="space-y-3">
-                <p className="text-xs text-gray-400">
-                  Audio analysis uses OpenAI TTS for natural voices. Cost: ~$0.015 per 1,000 characters (~$0.03-0.05 per script).
-                </p>
-
-                <div className="flex items-center gap-3">
-                  <label className="text-sm text-gray-400 w-32">Quality</label>
-                  <select
-                    value={settings.ttsModel}
-                    onChange={(e) => updateSettings({ ttsModel: e.target.value })}
-                    className="bg-chess-surface border border-chess-border rounded px-2 py-1 text-xs text-chess-text"
-                  >
-                    <option value="gpt-4o-mini-tts">Natural (gpt-4o-mini-tts)</option>
-                    <option value="tts-1">Fast (tts-1)</option>
-                    <option value="tts-1-hd">High Quality (tts-1-hd)</option>
-                  </select>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <label className="text-sm text-gray-400 w-32">Host voice</label>
-                  <select
-                    value={settings.ttsVoiceA}
-                    onChange={(e) => updateSettings({ ttsVoiceA: e.target.value })}
-                    className="bg-chess-surface border border-chess-border rounded px-2 py-1 text-xs text-chess-text capitalize"
-                  >
-                    {OPENAI_TTS_VOICES.map((v) => (
-                      <option key={v} value={v}>{v}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => previewVoice(settings.ttsVoiceA, 'A')}
-                    disabled={previewingVoice !== null}
-                    className="w-7 h-7 flex items-center justify-center rounded-full bg-chess-surface border border-chess-border/40 text-gray-400 hover:text-chess-accent hover:border-chess-accent/40 transition-all disabled:opacity-40"
-                    title="Preview voice"
-                  >
-                    {previewingVoice === settings.ttsVoiceA ? (
-                      <div className="w-3 h-3 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg>
-                    )}
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <label className="text-sm text-gray-400 w-32">Commentator voice</label>
-                  <select
-                    value={settings.ttsVoiceB}
-                    onChange={(e) => updateSettings({ ttsVoiceB: e.target.value })}
-                    className="bg-chess-surface border border-chess-border rounded px-2 py-1 text-xs text-chess-text capitalize"
-                  >
-                    {OPENAI_TTS_VOICES.map((v) => (
-                      <option key={v} value={v}>{v}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => previewVoice(settings.ttsVoiceB, 'B')}
-                    disabled={previewingVoice !== null}
-                    className="w-7 h-7 flex items-center justify-center rounded-full bg-chess-surface border border-chess-border/40 text-gray-400 hover:text-chess-accent hover:border-chess-accent/40 transition-all disabled:opacity-40"
-                    title="Preview voice"
-                  >
-                    {previewingVoice === settings.ttsVoiceB ? (
-                      <div className="w-3 h-3 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg>
-                    )}
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <label className="text-sm text-gray-400 w-32">Language</label>
-                  <select
-                    value={settings.ttsLanguage || 'English'}
-                    onChange={(e) => updateSettings({ ttsLanguage: e.target.value })}
-                    className="bg-chess-surface border border-chess-border rounded px-2 py-1 text-xs text-chess-text"
-                  >
-                    {['English', 'Spanish', 'French', 'German', 'Italian', 'Portuguese', 'Russian', 'Chinese', 'Japanese', 'Korean', 'Arabic', 'Hindi', 'Hebrew', 'Dutch', 'Polish', 'Turkish', 'Swedish', 'Norwegian', 'Danish', 'Finnish'].map((lang) => (
-                      <option key={lang} value={lang}>{lang}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </Section>
-          )}
-
-
-          <Section title="API Usage">
-            <div className="space-y-3">
-              <div className="flex justify-end mb-1">
-                <button
-                  onClick={async () => {
-                    await resetTokenUsage();
-                    const fresh = await getTokenUsage();
-                    setTokenUsage(fresh);
-                  }}
-                  className="text-[10px] text-gray-500 hover:text-chess-text transition-colors px-2 py-0.5 rounded border border-chess-border/30 hover:border-chess-border/60"
-                >
-                  Reset
-                </button>
-              </div>
-              <div className="grid grid-cols-4 gap-3">
-                <div>
-                  <div className="text-xs text-gray-400">Input Tokens</div>
-                  <div className="text-sm font-medium">
-                    {tokenUsage.totalInputTokens.toLocaleString()}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-400">Output Tokens</div>
-                  <div className="text-sm font-medium">
-                    {tokenUsage.totalOutputTokens.toLocaleString()}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-400">Requests</div>
-                  <div className="text-sm font-medium">
-                    {tokenUsage.requestCount}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-400">Est. Cost</div>
-                  <div className="text-sm font-medium text-chess-accent">
-                    ${estimatedCost}
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-[10px] text-gray-500 pt-1 border-t border-chess-border/20">
-                <div className="font-medium text-gray-400 mb-1">Approximate tokens per feature:</div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
-                  <span>Image recognition: ~500 tokens</span>
-                  <span>Audio script: ~2,000 tokens</span>
-                  <span>Exercise generation: ~800 tokens</span>
-                  <span>Lesson generation: ~1,000 tokens</span>
-                </div>
-                <span>TTS audio: ~$0.03-0.05/script</span>
-                <div className="mt-1 italic col-span-2">Token cost estimate based on ~$3/M input + ~$15/M output (Claude Sonnet). TTS uses OpenAI pricing. Actual costs vary by provider and model.</div>
-              </div>
-            </div>
-          </Section>
-
           {/* Account / Sign Out */}
           <Section title={tFunc('settings_account')}>
             <button
@@ -1168,7 +818,6 @@ export default function Settings() {
                 <ul className="text-[10px] text-gray-400 list-disc pl-4 space-y-0.5">
                   <li>All imported games &amp; analyses</li>
                   <li>Skill patterns, snapshots, and insights</li>
-                  <li>AI-generated lessons, exercises, training plans</li>
                   <li>Your saved preferences &amp; API keys</li>
                 </ul>
                 <div>
@@ -1211,9 +860,13 @@ export default function Settings() {
         </>
       )}
 
-      {/* Analytics tab (admin only) */}
-      {settingsTab === 'analytics' && isAdmin && (
+      {/* Analytics section — admin-only */}
+      {isAdmin && (
         <AdminAnalyticsPanel tokenUsage={tokenUsage} />
+      )}
+
+      {isAdmin && (
+        <DedupDiagnosticsPanel />
       )}
     </div>
   );
@@ -1287,8 +940,8 @@ function AdminAnalyticsPanel({ tokenUsage }: { tokenUsage: TokenUsage }) {
 
 function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="mb-6">
-      <h3 className="text-sm font-medium text-chess-text mb-3 border-b border-chess-border pb-2">
+    <div className="mb-4 rounded-xl bg-chess-surface/40 border border-chess-border/20 p-3">
+      <h3 className="text-[11px] font-bold uppercase tracking-wider text-chess-text-secondary mb-2.5">
         {title}
       </h3>
       {children}
@@ -1296,190 +949,44 @@ function Section({ title, children }: { title: React.ReactNode; children: React.
   );
 }
 
-interface ProviderRowProps {
-  name: string;
-  providerId: string;
-  apiKey: string | null;
-  showKey: boolean;
-  tempKey: string;
-  placeholder: string;
-  onTempKeyChange: (v: string) => void;
-  onSave: () => void;
-  onClear: () => void;
-  onToggleShow: () => void;
-  model: string;
-  onModelChange: (v: string) => void;
-  modelOptions: { value: string; label: string }[];
-}
-
-function ProviderRow({
-  name, apiKey, showKey, tempKey, placeholder,
-  onTempKeyChange, onSave, onClear, onToggleShow,
-  model, onModelChange, modelOptions,
-}: ProviderRowProps) {
+/* Sub-section heading inside a compact card. Use for Chess.com / Lichess
+ * rows so the parent "Accounts" Section can group related platforms. */
+function SubSection({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="mb-4 pb-4 border-b border-chess-border/30 last:border-0 last:pb-0 last:mb-0">
-      <div className="flex items-center gap-2 mb-2">
-        <span className={`w-2 h-2 rounded-full ${apiKey ? 'bg-chess-accent' : 'bg-gray-600'}`} />
-        <span className="text-sm font-medium text-chess-text">{name}</span>
-        {apiKey && <span className="text-[10px] text-chess-accent">Connected</span>}
+    <div className="py-2 border-t border-chess-border/15 first:border-t-0 first:pt-0 last:pb-0">
+      <div className="text-[12px] font-semibold text-chess-text mb-1.5 flex items-center gap-2">
+        {label}
       </div>
-      <div className="space-y-2 ml-4">
-        <div className="flex items-center gap-2">
-          {apiKey ? (
-            <>
-              <span className="text-xs text-gray-400 font-mono">
-                {showKey ? apiKey : `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`}
-              </span>
-              <button onClick={onToggleShow} className="text-[10px] text-gray-500 hover:text-chess-text">
-                {showKey ? 'Hide' : 'Show'}
-              </button>
-              <button onClick={onClear} className="text-[10px] text-chess-blunder hover:brightness-125">
-                Remove
-              </button>
-            </>
-          ) : (
-            <>
-              <input
-                type="password"
-                value={tempKey}
-                onChange={(e) => onTempKeyChange(e.target.value)}
-                placeholder={placeholder}
-                className="bg-chess-surface border border-chess-border rounded px-2.5 py-1 text-xs flex-1 text-chess-text"
-              />
-              <button
-                onClick={onSave}
-                disabled={!tempKey}
-                className="bg-chess-accent text-chess-bg px-3 py-1 rounded text-xs font-bold disabled:opacity-50"
-              >
-                Save
-              </button>
-            </>
-          )}
-        </div>
-        {apiKey && (
-          <div className="flex items-center gap-2">
-            <label className="text-[10px] text-gray-500">Model</label>
-            <select
-              value={model}
-              onChange={(e) => onModelChange(e.target.value)}
-              className="bg-chess-surface border border-chess-border rounded px-2 py-1 text-xs text-chess-text"
-            >
-              {modelOptions.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
+      {children}
     </div>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Audio Prompt Editor (admin only)
- * ══════════════════════════════════════════════════════════════ */
-
-const DEFAULT_GAME_SUFFIX = `Be VERY specific about the actual moves:
-- When discussing mistakes, say the exact move played vs. the best move and explain WHY it's bad
-- When discussing brilliant moves, explain the tactic or idea behind them
-- Reference the evaluation swings — explain how the position changed
-- Use the tactical motifs when available (fork, pin, skewer, discovered attack, etc.)
-- Mention the best continuation lines to show what the engine suggests
-- Name the opening and discuss whether it worked out
-- Reference exact accuracy percentages and compare phases
-Make it feel like a real in-depth chess commentary, not a surface-level summary.
-End with 1-2 concrete things the player should work on.`;
-
-function AudioPromptEditor({
-  settings,
-  updateSettings,
+/* Collapsible section — used for PGN import + Analyze Position so the
+ * power-user features don't crowd the main flow. */
+function CollapsibleSection({
+  title,
+  defaultOpen = false,
+  children,
 }: {
-  settings: import('@shared/types/storage').UserSettings;
-  updateSettings: (patch: Partial<import('@shared/types/storage').UserSettings>) => Promise<void>;
+  title: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
 }) {
-  const [saved, setSaved] = useState<string | null>(null);
-  const saveTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  const handleChange = (field: 'audioSystemPrompt' | 'audioGamePromptSuffix', value: string) => {
-    updateSettings({ [field]: value || null });
-    setSaved(field);
-    clearTimeout(saveTimeout.current);
-    saveTimeout.current = setTimeout(() => setSaved(null), 2000);
-  };
-
-  const systemValue = settings.audioSystemPrompt ?? AUDIO_SYSTEM_PROMPT_DEFAULT;
-  const suffixValue = settings.audioGamePromptSuffix ?? DEFAULT_GAME_SUFFIX;
-  const isCustomSystem = settings.audioSystemPrompt != null;
-  const isCustomSuffix = settings.audioGamePromptSuffix != null;
-
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <Section title="Audio Prompt Editor">
-      <p className="text-[10px] text-gray-500 mb-3">
-        Edit the prompts that generate game audio recaps. Changes auto-save and apply to all users.
-      </p>
-
-      <div className="space-y-4">
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs font-medium text-gray-400">System Prompt</label>
-            <div className="flex items-center gap-2">
-              {isCustomSystem && (
-                <button
-                  onClick={() => { updateSettings({ audioSystemPrompt: null }); setSaved('audioSystemPrompt'); setTimeout(() => setSaved(null), 2000); }}
-                  className="text-[9px] text-gray-500 hover:text-chess-blunder"
-                >
-                  Reset
-                </button>
-              )}
-              {saved === 'audioSystemPrompt' && (
-                <span className="text-[9px] text-chess-accent animate-pulse">Saved {'\u2713'}</span>
-              )}
-            </div>
-          </div>
-          <textarea
-            value={systemValue}
-            onChange={(e) => handleChange('audioSystemPrompt', e.target.value)}
-            rows={6}
-            className={`w-full bg-chess-bg border rounded-lg px-3 py-2 text-xs text-chess-text focus:border-chess-accent/50 focus:outline-none resize-y font-mono leading-relaxed ${
-              isCustomSystem ? 'border-chess-accent/30' : 'border-chess-border/30'
-            }`}
-          />
-          <p className="text-[9px] text-gray-600 mt-1">
-            {isCustomSystem ? 'Custom prompt active' : 'Using default prompt'} — sets the AI persona for audio generation.
-          </p>
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs font-medium text-gray-400">Game Analysis Instructions</label>
-            <div className="flex items-center gap-2">
-              {isCustomSuffix && (
-                <button
-                  onClick={() => { updateSettings({ audioGamePromptSuffix: null }); setSaved('audioGamePromptSuffix'); setTimeout(() => setSaved(null), 2000); }}
-                  className="text-[9px] text-gray-500 hover:text-chess-blunder"
-                >
-                  Reset
-                </button>
-              )}
-              {saved === 'audioGamePromptSuffix' && (
-                <span className="text-[9px] text-chess-accent animate-pulse">Saved {'\u2713'}</span>
-              )}
-            </div>
-          </div>
-          <textarea
-            value={suffixValue}
-            onChange={(e) => handleChange('audioGamePromptSuffix', e.target.value)}
-            rows={10}
-            className={`w-full bg-chess-bg border rounded-lg px-3 py-2 text-xs text-chess-text focus:border-chess-accent/50 focus:outline-none resize-y font-mono leading-relaxed ${
-              isCustomSuffix ? 'border-chess-accent/30' : 'border-chess-border/30'
-            }`}
-          />
-          <p className="text-[9px] text-gray-600 mt-1">
-            {isCustomSuffix ? 'Custom instructions active' : 'Using default instructions'} — appended to every game audio prompt after the game data.
-          </p>
-        </div>
-      </div>
-    </Section>
+    <div className="mb-4 rounded-xl bg-chess-surface/40 border border-chess-border/20 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-white/[0.02] transition-colors"
+      >
+        <span className="text-[11px] font-bold uppercase tracking-wider text-chess-text-secondary">
+          {title}
+        </span>
+        <span className="text-[10px] text-gray-500">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && <div className="px-3 pb-3">{children}</div>}
+    </div>
   );
 }
+

@@ -63,6 +63,12 @@ export const TM_GOOD_THRESHOLD = 70;
 export const PATTERN_MIN_GAMES = 3;
 export const DEFAULT_WINDOW_SIZE = 50;
 
+// Cap on locally persisted pattern snapshots. iOS Safari enforces a ~5MB
+// localStorage quota per origin; without this cap, snapshots accumulate
+// forever and writes start throwing QuotaExceededError after a few dozen
+// analyzed games — the most common cause of the iPhone white-screen crash.
+export const MAX_PATTERN_SNAPSHOTS = 200;
+
 // Phase detection material weights (Fruit-style)
 export const PHASE_WEIGHTS = {
   p: 0,
@@ -138,8 +144,10 @@ export const TTS_NARRATOR_INSTRUCTIONS =
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 export const GEMINI_MAX_TOKENS = 2048;
 
-// Auto-sync polling interval (3 minutes)
-export const SYNC_INTERVAL_MS = 180_000;
+// Auto-sync polling interval (5 minutes). Combined with the playedAt watermark
+// and tab-visibility gating, a sync that finds no new games does ~0 Base44
+// calls — only chess.com/lichess (free, external) get hit.
+export const SYNC_INTERVAL_MS = 300_000;
 
 // Admin emails allowed to access /skill and /affiliate
 export const ADMIN_EMAILS = ['yuval.inc@gmail.com'];

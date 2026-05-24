@@ -21,7 +21,9 @@
 
 var IS_ASYNCIFY = true;
 
-var CDN_BASE = 'https://unpkg.com/stockfish@17.1.0/src';
-var SF_JS = CDN_BASE + '/stockfish-17.1-lite-single-03e3232.js';
+// Self-hosted: avoids the unpkg.com CDN, which can be slow/blocked on some
+// networks (corporate proxies, regional filters) and leaves the worker hung
+// with no user-visible error. The 7.3MB WASM ships with the app.
+var SF_JS = '/stockfish/stockfish-17.1-lite-single-03e3232.js';
 
 importScripts(SF_JS);

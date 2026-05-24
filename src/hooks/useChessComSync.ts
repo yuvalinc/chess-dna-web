@@ -18,6 +18,8 @@ interface UseChessComSyncOptions {
   onSyncComplete?: (lastSyncAt: number) => void;
   /** Initial lastSyncAt from Base44 */
   initialLastSyncAt?: number | null;
+  /** When true, write imported games to localStorage instead of Base44. */
+  guest?: boolean;
 }
 
 export function useChessComSync({
@@ -27,6 +29,7 @@ export function useChessComSync({
   onNewGames,
   onSyncComplete,
   initialLastSyncAt,
+  guest = false,
 }: UseChessComSyncOptions) {
   const [syncState, setSyncState] = useState<SyncState>({
     isSyncing: false,
@@ -50,6 +53,11 @@ export function useChessComSync({
   onNewGamesRef.current = onNewGames;
   onSyncCompleteRef.current = onSyncComplete;
 
+  // Track lastSyncAt in a ref so doSync can read the freshest value
+  // without becoming a dependency that re-triggers the polling effect.
+  const lastSyncAtRef = useRef(syncState.lastSyncAt);
+  lastSyncAtRef.current = syncState.lastSyncAt;
+
   const doSync = useCallback(async () => {
     if (!username || syncingRef.current) return;
 
@@ -57,9 +65,13 @@ export function useChessComSync({
     setSyncState((prev) => ({ ...prev, isSyncing: true, error: null }));
 
     try {
+      // sinceMs watermark — most polls find no games newer than this and
+      // short-circuit inside importChessComGames before doing any Base44 call.
       const newGameIds = await importChessComGames(username, {
         maxGames: 30,
         timeClass: 'all',
+        guest,
+        sinceMs: lastSyncAtRef.current ?? undefined,
       });
 
       const now = Date.now();
@@ -86,39 +98,62 @@ export function useChessComSync({
     } finally {
       syncingRef.current = false;
     }
-  }, [username]);
+  }, [username, guest]);
 
-  // Track lastSyncAt in a ref for the visibility handler (avoids effect re-registration)
-  const lastSyncAtRef = useRef(syncState.lastSyncAt);
-  lastSyncAtRef.current = syncState.lastSyncAt;
-
-  // Start polling interval
+  // Polling — paused when the tab is hidden so background tabs don't burn
+  // chess.com calls (and don't risk Base44 calls if new games arrive while
+  // the user isn't looking). We resume on visibilitychange below.
   useEffect(() => {
     if (!username || !enabled) return;
 
-    // Initial sync on mount
-    doSync();
+    let intervalId: number | null = null;
 
-    const id = setInterval(doSync, intervalMs);
-    return () => clearInterval(id);
-  }, [username, enabled, intervalMs, doSync]);
+    const start = () => {
+      if (intervalId != null) return;
+      intervalId = window.setInterval(doSync, intervalMs);
+    };
 
-  // Sync when tab becomes visible again (after 30s+ away)
-  useEffect(() => {
-    if (!username || !enabled) return;
-
-    const handler = () => {
-      if (document.visibilityState === 'visible') {
-        const last = lastSyncAtRef.current ?? 0;
-        if (Date.now() - last > 30_000) {
-          doSync();
-        }
+    const stop = () => {
+      if (intervalId != null) {
+        clearInterval(intervalId);
+        intervalId = null;
       }
     };
 
-    document.addEventListener('visibilitychange', handler);
-    return () => document.removeEventListener('visibilitychange', handler);
-  }, [username, enabled, doSync]);
+    // Initial sync on mount (only if tab is visible AND we haven't synced
+    // recently). Without the recency check, every page reload fires a full
+    // sync — which hits the chess.com API + 30 Base44 dedup filter calls
+    // (one per recent game). For heavy users this means 100+ requests per
+    // load, many of which Base44 then 429s. The recency check matches the
+    // onVisibility handler below — both honor the same interval window.
+    if (!document.hidden) {
+      const last = lastSyncAtRef.current ?? 0;
+      if (Date.now() - last > intervalMs) {
+        doSync();
+      }
+      start();
+    }
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        // Coming back to the tab: if it's been at least one interval since
+        // the last sync, fire one immediately, then resume the timer.
+        const last = lastSyncAtRef.current ?? 0;
+        if (Date.now() - last > intervalMs) {
+          doSync();
+        }
+        start();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [username, enabled, intervalMs, doSync]);
 
   const syncNow = useCallback(() => {
     doSync();

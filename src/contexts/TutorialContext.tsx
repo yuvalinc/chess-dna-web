@@ -173,7 +173,7 @@ export const TUTORIAL_STEPS: TutorialStepDef[] = [
       {
         id: 'games-action-practice',
         title: 'Practice',
-        body: "Send this game's mistakes to Time Machine. You'll get the same positions back as puzzles until you find the right move.",
+        body: "Send this game's mistakes to Replays. You'll get the same positions back as puzzles until you find the right move.",
         primary: 'Try it',
         action: 'practice-first-game',
       },
@@ -246,7 +246,7 @@ export const TUTORIAL_STEPS: TutorialStepDef[] = [
       {
         id: 'compare-diff',
         title: 'Spot the gap, target the gap',
-        body: 'Per-skill diffs make the asymmetry obvious. Open Time Machine on any red row to start closing it.',
+        body: 'Per-skill diffs make the asymmetry obvious. Open Replays on any red row to start closing it.',
         primary: 'Start exploring',
         tooltipPos: 'top',
       },

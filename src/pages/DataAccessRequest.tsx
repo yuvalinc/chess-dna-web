@@ -14,7 +14,7 @@
  */
 import { useMemo, useState } from 'react';
 
-const SUPPORT_EMAIL = 'yuval.inc@gmail.com';
+const SUPPORT_EMAIL = 'yuval@chessdna.app';
 
 type RequestType = 'access' | 'deletion' | 'correction' | 'portability';
 

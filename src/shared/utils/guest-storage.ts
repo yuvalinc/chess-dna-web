@@ -8,6 +8,21 @@
 
 const GUEST_PREFIX = 'chess-dna-guest-';
 
+/**
+ * Write to localStorage with quota protection. iOS Safari enforces a ~5MB
+ * cap per origin and throws QuotaExceededError on overflow — uncaught,
+ * this bubbles up to whatever code triggered the write (game import,
+ * pattern update) and crashes the app. Best-effort: log and continue;
+ * the in-memory caller already has the data.
+ */
+function safeSetItem(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    console.warn(`[guest-storage] localStorage quota hit for ${key} — write skipped`, err);
+  }
+}
+
 /** Check if any guest ENTITY data exists (Game, Analysis, etc.).
  *  Only returns true if there are actual entity records — not just empty arrays.
  *  This prevents false migrations for authenticated users. */
@@ -44,7 +59,7 @@ export function createGuestEntity<T extends Record<string, unknown>>(entityName:
   const items = getGuestEntities<T>(entityName);
   const withId = { ...item, id: item.id ?? `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
   items.push(withId as T);
-  localStorage.setItem(GUEST_PREFIX + entityName, JSON.stringify(items));
+  safeSetItem(GUEST_PREFIX + entityName, JSON.stringify(items));
   return withId as T;
 }
 
@@ -54,7 +69,7 @@ export function updateGuestEntity<T extends Record<string, unknown>>(entityName:
   const idx = items.findIndex((item) => (item as Record<string, unknown>).id === id);
   if (idx >= 0) {
     items[idx] = { ...items[idx], ...patch } as T;
-    localStorage.setItem(GUEST_PREFIX + entityName, JSON.stringify(items));
+    safeSetItem(GUEST_PREFIX + entityName, JSON.stringify(items));
   }
 }
 
@@ -62,7 +77,7 @@ export function updateGuestEntity<T extends Record<string, unknown>>(entityName:
 export function deleteGuestEntity(entityName: string, id: string): void {
   const items = getGuestEntities<Record<string, unknown>>(entityName);
   const filtered = items.filter((item) => item.id !== id);
-  localStorage.setItem(GUEST_PREFIX + entityName, JSON.stringify(filtered));
+  safeSetItem(GUEST_PREFIX + entityName, JSON.stringify(filtered));
 }
 
 /** Get a singleton entity (like UserPreferences) */
@@ -78,7 +93,7 @@ export function getGuestSingleton<T>(entityName: string): T | null {
 
 /** Set a singleton entity */
 export function setGuestSingleton<T>(entityName: string, data: T): void {
-  localStorage.setItem(GUEST_PREFIX + entityName + '-singleton', JSON.stringify(data));
+  safeSetItem(GUEST_PREFIX + entityName + '-singleton', JSON.stringify(data));
 }
 
 /** Update a singleton entity (merge) */

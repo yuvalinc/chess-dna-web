@@ -1,5 +1,6 @@
 {
   "name": "Analysis",
+  "description": "Move-by-move engine analysis for a Game: each move's quality classification and tactical themes. Stored as JSON-stringified MoveAnalysis arrays.",
   "type": "object",
   "properties": {
     "gameId": { "type": "string" },

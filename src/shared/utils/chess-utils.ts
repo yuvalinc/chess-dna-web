@@ -102,7 +102,12 @@ function classifyTimeControl(timeControl: string, event: string): TimeClass {
 
   if (estimatedTime < 180) return 'bullet';
   if (estimatedTime < 600) return 'blitz';
-  if (estimatedTime < 1800) return 'rapid';
+  // ≤ 1800s (30 min) is rapid. The previous `< 1800` boundary misclassified
+  // 30-minute games (TimeControl="1800", increment=0) as "daily" — chess.com
+  // and Lichess both call those rapid. Bug surfaced by Dvir (2026-05-13):
+  // 24 of his games were stamped "daily" so his rapid filter showed his
+  // last game as May 8 even though he'd been playing 30-min rapid daily.
+  if (estimatedTime <= 1800) return 'rapid';
   return 'daily';
 }
 
@@ -139,6 +144,59 @@ function parseDate(
   }
 
   return Date.now();
+}
+
+export type TerminationReason =
+  | 'checkmate'
+  | 'stalemate'
+  | 'time'
+  | 'resignation'
+  | 'agreement'
+  | 'repetition'
+  | 'insufficient'
+  | '50-move'
+  | 'abandoned'
+  | 'rules';
+
+/**
+ * Extract the short termination reason from a PGN string.
+ * Returns a normalized token or null when the reason cannot be determined.
+ * Cheap string/regex parse — safe to call on every render.
+ */
+export function getTerminationReason(pgn: string): TerminationReason | null {
+  if (!pgn) return null;
+
+  const termMatch = pgn.match(/\[Termination\s+"([^"]*)"\]/i);
+  const term = termMatch?.[1]?.toLowerCase() ?? '';
+  if (term) {
+    // Chess.com strings are verbose ("X won by checkmate", "Game drawn by agreement", ...).
+    // Lichess uses "Normal" / "Time forfeit" / "Abandoned" / "Rules infraction".
+    if (term.includes('checkmate')) return 'checkmate';
+    if (term.includes('stalemate')) return 'stalemate';
+    if (term.includes('time')) return 'time';
+    if (term.includes('resign')) return 'resignation';
+    if (term.includes('agreement')) return 'agreement';
+    if (term.includes('repetition')) return 'repetition';
+    if (term.includes('insufficient')) return 'insufficient';
+    if (term.includes('50') || term.includes('fifty')) return '50-move';
+    if (term.includes('abandon')) return 'abandoned';
+    if (term.includes('rules')) return 'rules';
+    // "Normal" or anything unknown falls through to inference.
+  }
+
+  // Move body sits after the header block (separated by a blank line).
+  const blankIdx = pgn.indexOf('\n\n');
+  const moveBody = blankIdx >= 0 ? pgn.slice(blankIdx) : pgn;
+  // Drop {...} and ;... comments so a stray '#' inside one can't fool us.
+  const movesOnly = moveBody.replace(/\{[^}]*\}/g, '').replace(/;[^\n]*/g, '');
+  if (movesOnly.includes('#')) return 'checkmate';
+
+  const resultMatch = pgn.match(/\[Result\s+"([^"]*)"\]/);
+  const result = resultMatch?.[1] ?? '*';
+  // Decisive game without a '#' suffix — overwhelmingly a resignation on both platforms.
+  if (result === '1-0' || result === '0-1') return 'resignation';
+
+  return null;
 }
 
 /**

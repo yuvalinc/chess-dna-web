@@ -77,7 +77,7 @@ export default function FeedbackButton() {
       const integrations = base44.integrations as any;
       if (integrations?.Core?.SendEmail) {
         await integrations.Core.SendEmail({
-          to: 'yuval.inc@gmail.com',
+          to: 'yuval@chessdna.app',
           subject,
           body,
         });

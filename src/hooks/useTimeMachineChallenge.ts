@@ -16,6 +16,7 @@ import { computeMoveScore } from '@/engine/eval-classifier';
 import { uciToSan } from '@shared/utils/chess-utils';
 import { sendWithFallback } from '@/ai/ai-router';
 import { buildMoveExplanationPrompt } from '@/ai/prompt-builder';
+import { playChessSound, type SoundType } from '@shared/utils/chess-sounds';
 import { SUPPORTED_LANGUAGES } from '@/i18n/index';
 import { TM_ANALYSIS_DEPTH } from '@shared/constants';
 import type { MoveAnalysis } from '@shared/types/analysis';
@@ -56,6 +57,13 @@ export interface ChallengeConfig {
   bestMoveSan: string;
   originalMoveUci: string;
   originalMoveSan: string;
+  /** How the bot plays during the continuation phase:
+   *   - 'opponent' (default): if the user follows the original game's moves,
+   *     replay the actual opponent's move; otherwise Stockfish throttled to
+   *     opponent rating.
+   *   - 'engine': full-strength Stockfish for every reply.
+   */
+  botMode?: 'opponent' | 'engine';
 }
 
 export interface ChallengeState {
@@ -92,6 +100,9 @@ export interface ChallengeState {
   /** When a tap-to-move would require a pawn promotion, we record from/to
    *  here and wait for the user to pick Q/R/B/N from a custom picker. */
   pendingPromotion: { from: Square; to: Square } | null;
+  /** AI-generated hint for the current player turn (no answer reveal). */
+  hint: string | null;
+  hintLoading: boolean;
 }
 
 const CONTINUATION_MOVES = 3;
@@ -140,6 +151,8 @@ function makeInitialState(config: ChallengeConfig | null): ChallengeState {
     continuationRankings: [],
     rankingLoading: false,
     pendingPromotion: null,
+    hint: null,
+    hintLoading: false,
   };
 }
 
@@ -260,6 +273,238 @@ function computePositionFacts(
 }
 
 /**
+ * Build a single verified sentence describing the best move — "Queen captures
+ * rook on [a1]" / "Knight to [c3]+" / etc. Sourced from chess.js, never from
+ * the AI, so it can be used to override hallucinated piece/square mentions in
+ * the AI's "Best move:" line.
+ */
+function describeMoveVerified(fen: string, uci: string, language?: string): string | null {
+  if (!uci || uci.length < 4) return null;
+  try {
+    const chess = new Chess(fen);
+    const from = uci.slice(0, 2) as Square;
+    const to = uci.slice(2, 4) as Square;
+    const promo = uci.length > 4 ? uci[4] as 'q' | 'r' | 'b' | 'n' : undefined;
+    const movingPiece = chess.get(from);
+    if (!movingPiece) return null;
+    const capturedPiece = chess.get(to);
+    const names = getPieceNames(language);
+    const movingName = names[movingPiece.type] ?? movingPiece.type;
+    // Capitalize for English/Spanish sentence start; Hebrew has no case.
+    const cap = (s: string) => language === 'Hebrew' ? s : s.charAt(0).toUpperCase() + s.slice(1);
+    const movingCap = cap(movingName);
+
+    let sentence: string;
+    if (capturedPiece) {
+      const capturedName = names[capturedPiece.type] ?? capturedPiece.type;
+      if (language === 'Hebrew') {
+        sentence = `${movingCap} לוכד ${capturedName} ב-[${to}]`;
+      } else if (language === 'Spanish') {
+        sentence = `${movingCap} captura ${capturedName} en [${to}]`;
+      } else {
+        sentence = `${movingCap} captures ${capturedName} on [${to}]`;
+      }
+    } else {
+      if (language === 'Hebrew') {
+        sentence = `${movingCap} ל-[${to}]`;
+      } else if (language === 'Spanish') {
+        sentence = `${movingCap} a [${to}]`;
+      } else {
+        sentence = `${movingCap} to [${to}]`;
+      }
+    }
+
+    // Tack on check / mate marker so the verified sentence carries the
+    // same urgency the AI would (often correctly) reach for.
+    try {
+      const after = new Chess(fen);
+      after.move({ from, to, promotion: promo });
+      if (after.isCheckmate()) {
+        sentence += language === 'Hebrew' ? ' (מט)' : language === 'Spanish' ? ' (mate)' : ' (mate)';
+      } else if (after.isCheck()) {
+        sentence += '+';
+      }
+    } catch { /* ignore */ }
+
+    return sentence + '.';
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pre-compute verified facts about a position for HINT generation.
+ * Lists the actual pieces on the board, hanging pieces (loose targets and
+ * pieces under attack), and check status — WITHOUT directly revealing the
+ * engine best move. Injected into the hint prompt so the AI can't hallucinate
+ * "knight on h4" when no knight exists, or invent a defended-bishop scenario
+ * when the queen is the actually hanging piece.
+ * Piece names are output in the target language so the AI copies them verbatim.
+ */
+function computeHintFacts(fen: string, language?: string): string {
+  const facts: string[] = [];
+  const names = getPieceNames(language);
+
+  try {
+    const chess = new Chess(fen);
+    const turn = chess.turn();
+    const opponentColor = turn === 'w' ? 'b' : 'w';
+
+    // 1. Inventory: list every piece by side so the AI cannot invent pieces.
+    const board = chess.board();
+    const myPieces: string[] = [];
+    const oppPieces: string[] = [];
+    for (let rank = 0; rank < 8; rank++) {
+      for (let file = 0; file < 8; file++) {
+        const sq = board[rank][file];
+        if (!sq) continue;
+        const square = String.fromCharCode(97 + file) + (8 - rank);
+        const name = names[sq.type] ?? sq.type;
+        const desc = `${name} on [${square}]`;
+        if (sq.color === turn) myPieces.push(desc);
+        else oppPieces.push(desc);
+      }
+    }
+    facts.push(`YOUR pieces (side to move): ${myPieces.join(', ') || 'none'}.`);
+    facts.push(`OPPONENT pieces: ${oppPieces.join(', ') || 'none'}.`);
+
+    // 2. Check status — must be addressed first if true.
+    if (chess.inCheck()) {
+      facts.push(`YOU are in CHECK — the hint MUST be about getting out of check.`);
+    }
+
+    // 3. Hanging opponent pieces — undefended targets you can capture for free.
+    //    Most common tactical hint, and the user can verify it themselves.
+    const myMoves = chess.moves({ verbose: true });
+    const captures = myMoves.filter(m => m.captured);
+    const hangingOpp = new Map<string, string>();
+    for (const cap of captures) {
+      if (hangingOpp.has(cap.to)) continue;
+      try {
+        const capName = names[cap.captured!] ?? cap.captured!;
+        const tempChess = new Chess(fen);
+        tempChess.move(cap);
+        const defended = tempChess.moves({ verbose: true }).some(m => m.to === cap.to);
+        if (!defended) hangingOpp.set(cap.to, `${capName} on [${cap.to}]`);
+      } catch { /* ignore */ }
+    }
+    if (hangingOpp.size > 0) {
+      facts.push(`OPPONENT loose/hanging pieces (free captures available): ${[...hangingOpp.values()].join(', ')}.`);
+    } else {
+      facts.push(`OPPONENT has NO undefended pieces — no free captures available.`);
+    }
+
+    // 3b. WINNING EXCHANGES — captures where the captured piece is worth more
+    //     than the attacker, so even after recapture you net material. This is
+    //     the "pawn takes queen" pattern: even if the queen is defended by a
+    //     pawn, exf4 wins because P(1) trades for Q(9). Without this signal,
+    //     the AI fell back to inventing nonsense ("knight fork from h4") in
+    //     positions where the engine's best move is a defended-piece capture.
+    const PIECE_VALUES: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
+    const winningExchanges: string[] = [];
+    const seenExchangeSquares = new Set<string>();
+    for (const cap of captures) {
+      if (seenExchangeSquares.has(cap.to)) continue;
+      if (hangingOpp.has(cap.to)) continue; // already covered above as free capture
+      seenExchangeSquares.add(cap.to);
+      try {
+        const capturedType = cap.captured ?? 'p';
+        const movingType = cap.piece;
+        const capturedVal = PIECE_VALUES[capturedType] ?? 0;
+        const movingVal = PIECE_VALUES[movingType] ?? 0;
+        if (capturedVal > movingVal) {
+          const capName = names[capturedType] ?? capturedType;
+          const movingName = names[movingType] ?? movingType;
+          winningExchanges.push(`${movingName} captures ${capName} on [${cap.to}] (gains ${capturedVal - movingVal} points)`);
+        }
+      } catch { /* ignore */ }
+    }
+    if (winningExchanges.length > 0) {
+      facts.push(`WINNING EXCHANGES (capture wins material even after recapture — these are tactical sacrifices, NOT free captures): ${winningExchanges.join('; ')}.`);
+    }
+
+    // 4. Your hanging pieces — what's at risk so the AI doesn't suggest you
+    //    "defend the bishop" when the queen is the actually hanging piece.
+    try {
+      const fenParts = fen.split(' ');
+      fenParts[1] = opponentColor;
+      fenParts[3] = '-';
+      const flipped = new Chess(fenParts.join(' '));
+      const oppCaptures = flipped.moves({ verbose: true }).filter(m => m.captured);
+      const myHanging = new Map<string, string>();
+      for (const threat of oppCaptures) {
+        if (myHanging.has(threat.to)) continue;
+        const threatenedName = names[threat.captured!] ?? threat.captured!;
+        const myDefenders = chess.moves({ verbose: true }).filter(m => m.to === threat.to);
+        if (myDefenders.length === 0) {
+          myHanging.set(threat.to, `${threatenedName} on [${threat.to}]`);
+        }
+      }
+      if (myHanging.size > 0) {
+        facts.push(`YOUR pieces under attack with NO defender (highest priority to address): ${[...myHanging.values()].join(', ')}.`);
+      }
+    } catch { /* ignore */ }
+  } catch { /* facts are optional */ }
+
+  return facts.join('\n');
+}
+
+/**
+ * Overwrite the AI's "Best move:" sentence with a chess.js-verified
+ * description while keeping any "why" reasoning the AI added. The AI is
+ * unreliable about which piece moved and where — it often hallucinates an
+ * impossible source square or wrong piece type. We trust chess.js for the
+ * move identity and let the AI keep its tactical commentary (forks, threats,
+ * piece coordination, etc.).
+ *
+ * Strategy:
+ *   1. Locate the "Best move:" label (any of EN/HE/ES).
+ *   2. Find the end of the first sentence in that section — that sentence
+ *      is where the AI named the move and is the most likely to be wrong.
+ *   3. Replace just that first sentence with `verified`; keep everything else.
+ *
+ * If no "Best move:" label is found, append a verified one.
+ * If we can't find a sentence boundary, prepend `verified` and leave the AI
+ * text alone (worst case: duplicated description, never wrong primary info).
+ */
+function applyVerifiedBestMove(aiText: string, verified: string | null): string {
+  if (!verified) return aiText;
+  const labelRe = /(best move|המהלך הטוב|la mejor jugada|mejor jugada)\s*[:：]\s*/i;
+  const m = aiText.match(labelRe);
+  if (!m) {
+    return aiText.trimEnd() + (aiText ? '\n\n' : '') + 'Best move: ' + verified;
+  }
+  const labelEnd = m.index! + m[0].length;
+  // Section ends at the next labeled section ("Your move:" / etc.) or EOF.
+  const nextLabelRe = /\n\s*(?:your move|המהלך שלך|tu jugada)\s*[:：]/i;
+  const restAfterLabel = aiText.slice(labelEnd);
+  const nextMatch = restAfterLabel.match(nextLabelRe);
+  const sectionEnd = nextMatch ? labelEnd + nextMatch.index! : aiText.length;
+  const section = aiText.slice(labelEnd, sectionEnd);
+
+  // Skip-if-correct: when the AI's section already opens with our verified
+  // description verbatim, the AI got it right. Leave its "why" tail intact
+  // (e.g. "...wins a clean knight while landing a check").
+  const verifiedKey = verified.replace(/[.!?]+\s*$/, '').toLowerCase();
+  if (section.trimStart().toLowerCase().startsWith(verifiedKey)) {
+    return aiText;
+  }
+
+  // Otherwise the AI invented a piece or square — replace just the first
+  // sentence (where the AI named the move) with our verified description,
+  // keeping any later sentences for tactical context.
+  const firstSentenceMatch = section.match(/^[^.!?]*[.!?]/);
+  let replaced: string;
+  if (firstSentenceMatch) {
+    const tail = section.slice(firstSentenceMatch[0].length).trimStart();
+    replaced = verified + (tail ? ' ' + tail : '');
+  } else {
+    replaced = verified + ' ' + section.trimStart();
+  }
+  return aiText.slice(0, labelEnd) + replaced + aiText.slice(sectionEnd);
+}
+
+/**
  * Convert MultiPV lines from Stockfish into scored RankedMove objects.
  * Scores are relative to rank-1 (best move = 100).
  * Evals are already from the mover's perspective (Stockfish UCI convention).
@@ -313,6 +558,22 @@ function tryMove(chess: Chess, moveSan: string, moveUci: string): ReturnType<Che
   } catch { return null; }
 }
 
+/**
+ * Pick a SoundType from a chess.js move result. Captures (regular + en
+ * passant) get the heavier capture sound; castling gets the double-tap;
+ * everything else falls back to the regular wood-click — different pitch
+ * for the user vs. the opponent so the listener can tell whose turn ticked.
+ */
+function moveResultToSoundType(
+  result: { flags?: string } | null,
+  isOpponent: boolean,
+): SoundType {
+  const flags = result?.flags ?? '';
+  if (flags.includes('k') || flags.includes('q')) return 'castle';
+  if (flags.includes('c') || flags.includes('e')) return 'capture';
+  return isOpponent ? 'move-opponent' : 'move';
+}
+
 type BuildPromptFn = (
   fen: string, playerMoveSan: string, bestMoveSan: string, cpDiff: number,
   playerRating: number, bestMovePv?: string[], tacticalMotifs?: string[],
@@ -330,6 +591,10 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
   const sfInitRef = useRef(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  // Opponent moves already played at each FEN across retries — used to
+  // diversify the computer reply on 2nd+ attempts when multiple moves are
+  // essentially equally best.
+  const opponentMoveHistoryRef = useRef<Map<string, Set<string>>>(new Map());
   const buildPromptRef = useRef(buildPromptFn ?? buildMoveExplanationPrompt);
   buildPromptRef.current = buildPromptFn ?? buildMoveExplanationPrompt;
 
@@ -353,6 +618,7 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     }
 
     chessRef.current = new Chess(startFen);
+    opponentMoveHistoryRef.current = new Map();
     setState(makeInitialState(config));
 
     if (!sfInitRef.current) {
@@ -410,6 +676,11 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
 
     const result = tryMove(chess, move.moveSan, move.moveUci);
     if (result) {
+      // Sound differs based on whose move this is in the replayed game:
+      // matches player's color → "your" wood click; otherwise → opponent's
+      // (darker) variant. Captures and castles override both.
+      const isOpponentMove = move.color !== config.playerColor;
+      playChessSound(moveResultToSoundType(result, isOpponentMove));
       setState(prev => ({
         ...prev,
         currentFen: chess.fen(),
@@ -492,6 +763,7 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
       if (result) {
         const moveUci = result.from + result.to + (result.promotion ?? '');
         const isContinuation = cur.phase === 'continuation';
+        playChessSound(moveResultToSoundType(result, false));
         setState(prev => ({
           ...prev,
           currentFen: chess.fen(),
@@ -502,6 +774,9 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
           lastMoveTo: result!.to as Square,
           playerMoveUci: moveUci,
           playerMoveSan: result!.san,
+          // Player has started a new move — drop the previous move's
+          // your-move-vs-best arrows. They'll re-appear once this move scores.
+          showAnswer: false,
           ...(isContinuation ? { continuationMoves: [...prev.continuationMoves, { fenBefore, uci: moveUci, san: result!.san }] } : {}),
         }));
         if (isContinuation) console.log(`[TM CONT MOVE] Recorded continuation move: ${result!.san} (${moveUci}) phase=${cur.phase}`);
@@ -547,6 +822,7 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
 
     const moveUci = result.from + result.to + (result.promotion ?? '');
     const isContinuation = cur.phase === 'continuation';
+    playChessSound(moveResultToSoundType(result, false));
     setState(prev => ({
       ...prev,
       currentFen: chess.fen(),
@@ -557,6 +833,8 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
       lastMoveTo: result!.to as Square,
       playerMoveUci: moveUci,
       playerMoveSan: result!.san,
+      // Drop the previous move's arrows the moment the user plays again.
+      showAnswer: false,
       ...(isContinuation ? { continuationMoves: [...prev.continuationMoves, { fenBefore, uci: moveUci, san: result!.san }] } : {}),
     }));
     if (isContinuation) console.log(`[TM CONT MOVE] Recorded continuation move (drop): ${result!.san} (${moveUci}) phase=${cur.phase}`);
@@ -584,6 +862,7 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
 
     const moveUci = result.from + result.to + (result.promotion ?? '');
     const isContinuation = cur.phase === 'continuation';
+    playChessSound(moveResultToSoundType(result, false));
     setState(prev => ({
       ...prev,
       currentFen: chess.fen(),
@@ -595,6 +874,8 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
       playerMoveUci: moveUci,
       playerMoveSan: result!.san,
       pendingPromotion: null,
+      // Drop the previous move's arrows the moment the user plays again.
+      showAnswer: false,
       ...(isContinuation ? { continuationMoves: [...prev.continuationMoves, { fenBefore, uci: moveUci, san: result!.san }] } : {}),
     }));
   }, [config]);
@@ -603,19 +884,30 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     setState(prev => prev.pendingPromotion ? { ...prev, pendingPromotion: null, selectedSquare: null, legalMoves: [] } : prev);
   }, []);
 
-  // --- Score the player's move (fires after player moves in critical phase) ---
+  // --- Score the player's move (fires after player moves in critical OR continuation phase) ---
   useEffect(() => {
     if (!config) return;
     const cur = stateRef.current;
 
-    // Only trigger when player just finished a move in critical phase
-    if (cur.phase !== 'critical') return;
+    if (cur.phase !== 'critical' && cur.phase !== 'continuation') return;
     if (cur.playerTurn || cur.evaluating) return;
     if (!cur.playerMoveUci) return;
-    // Guard: position must have changed from critical
-    if (cur.currentFen === cur.criticalFen) return;
 
-    console.log('[TM] Scoring player move:', cur.playerMoveUci, 'critFen:', cur.criticalFen?.slice(0, 40));
+    const isCritical = cur.phase === 'critical';
+    // Critical phase: scoring FEN is the original criticalFen.
+    // Continuation phase: scoring FEN is the fenBefore of the most recent continuation move.
+    const lastContMove = cur.continuationMoves[cur.continuationMoves.length - 1];
+    const scoringFen = isCritical ? cur.criticalFen : (lastContMove?.fenBefore ?? '');
+    if (!scoringFen) return;
+    // Guard: position must have changed from the scoring FEN (player has moved).
+    if (cur.currentFen === scoringFen) return;
+    // Dedup: don't re-score a move we've already scored.
+    // Critical: scored when moveScores length is 0.
+    // Continuation: scored when moveScores length < 1 + continuationMoves length.
+    const expectedScores = isCritical ? 0 : cur.continuationMoves.length;
+    if (cur.moveScores.length > expectedScores) return;
+
+    console.log(`[TM] Scoring ${cur.phase} move:`, cur.playerMoveUci, 'fen:', scoringFen.slice(0, 40));
 
     setState(prev => ({ ...prev, phase: 'evaluating', evaluating: true, error: null }));
 
@@ -624,18 +916,19 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
         const sf = StockfishClient.getInstance();
         await sf.ensureHealthy();
 
+        // Get top-5 alternatives at the scoring FEN — used for both eval and ranking.
+        const lines = await sf.analyzePositionMultiPV(scoringFen, 14, 5);
+        const ranking = multiPVToRankedMoves(lines, scoringFen, cur.playerMoveUci, isCritical ? config.bestMoveUci : undefined);
+
+        // evalBestCp: best achievable eval at scoringFen, from mover's perspective.
+        // For critical phase, prefer the cached pre-game analysis if available; otherwise use multipv.
         const critMove = config.gameMoves[config.criticalIndex];
         const isPlayerWhite = config.playerColor === 'white';
-
-        // evalBestCp: evaluation at the critical position from player's perspective
         let evalBestCp: number;
-        if (critMove?.evalBefore?.scoreType === 'cp') {
+        if (isCritical && critMove?.evalBefore?.scoreType === 'cp') {
           evalBestCp = isPlayerWhite ? critMove.evalBefore.score : -critMove.evalBefore.score;
         } else {
-          const critEval = await sf.analyzePosition(cur.criticalFen, TM_ANALYSIS_DEPTH);
-          evalBestCp = critEval.scoreType === 'mate'
-            ? (critEval.score > 0 ? 10000 : -10000)
-            : critEval.score;
+          evalBestCp = ranking.length > 0 ? ranking[0].evalCp : 0;
         }
 
         // evalAfterCp: evaluation after player's move, from player's perspective
@@ -648,12 +941,19 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
 
         let score = computeMoveScore(evalBestCp, evalAfterCp);
 
+        // For critical phase, use the preset best move; for continuation, use the live rank-1 move.
+        const dynamicBestUci = ranking[0]?.uci ?? '';
+        const bestUci = isCritical ? config.bestMoveUci : dynamicBestUci;
+        const bestSan = isCritical
+          ? (config.bestMoveSan || config.bestMoveUci)
+          : (ranking[0]?.san || ranking[0]?.uci || '');
+
         // Playing the exact engine best move always scores 100 regardless of eval variance
-        if (cur.playerMoveUci === config.bestMoveUci) {
+        if (cur.playerMoveUci === bestUci) {
           score = 100;
         }
-        // Penalise repeating the exact same mistake
-        else if (cur.playerMoveUci === config.originalMoveUci) {
+        // Penalise repeating the exact same mistake (critical phase only)
+        else if (isCritical && cur.playerMoveUci === config.originalMoveUci) {
           score = Math.min(score, 10);
         }
 
@@ -666,38 +966,63 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
           moveScore: score,
           moveScores: [...prev.moveScores, score],
           showAnswer: true,
-          fenAfterCritical: cur.currentFen, // FEN after player's critical move
-          criticalRanking: [],              // reset so ranking effect re-fires
+          fenAfterCritical: isCritical ? cur.currentFen : prev.fenAfterCritical,
+          criticalRanking: isCritical ? ranking : prev.criticalRanking,
+          continuationRankings: isCritical ? prev.continuationRankings : [...prev.continuationRankings, ranking],
           continuationRanking: [],
-          rankingLoading: true,
-          aiExplanationLoading: score < 100 && !!settingsRef.current,
+          rankingLoading: false,
+          aiExplanation: null,
+          aiExplanationLoading: !!settingsRef.current,
+          hint: null,
+          hintLoading: false,
           error: null,
         }));
 
-        // Async AI explanation for imperfect moves
-        if (score < 100 && settingsRef.current && critMove) {
+        // Always fetch AI explanation, regardless of score, so correct moves
+        // also get a "your move was great because..." sentence.
+        if (settingsRef.current) {
           const cpDiff = Math.abs(evalBestCp - evalAfterCp);
           const langCode = (settingsRef.current as unknown as Record<string, unknown>)?.language as string | undefined;
           const ttsLang = SUPPORTED_LANGUAGES.find(l => l.code === langCode)?.ttsName;
           const posFacts = computePositionFacts(
-            critMove.fenBefore ?? cur.criticalFen,
-            config.bestMoveUci,
+            scoringFen,
+            bestUci,
             cur.playerMoveUci,
             ttsLang,
           );
+          const tacticalMotifs = isCritical ? critMove?.tacticalMotifs : undefined;
+          const bestPv = isCritical ? critMove?.evalBefore?.pv : ranking[0]?.pvUci;
           const prompt = buildPromptRef.current(
-            critMove.fenBefore ?? cur.criticalFen,
+            scoringFen,
             cur.playerMoveSan ?? cur.playerMoveUci!,
-            config.bestMoveSan || config.bestMoveUci,
+            bestSan,
             cpDiff,
             config.opponentRating,
-            critMove.evalBefore?.pv,
-            critMove.tacticalMotifs,
+            bestPv,
+            tacticalMotifs,
             posFacts || undefined,
             ttsLang,
           );
-          sendWithFallback(settingsRef.current!, prompt.system, [{ role: 'user', content: prompt.user }], 200)
-            .then(text => setState(prev => prev.phase === 'scored' ? { ...prev, aiExplanation: text, aiExplanationLoading: false } : prev))
+          // Pre-compute the verified "Best move:" sentence from chess.js so we
+          // can override anything the AI hallucinates for the move identity
+          // (wrong piece, impossible source square, etc.).
+          const verifiedBest = describeMoveVerified(scoringFen, bestUci, ttsLang);
+          // 400 tokens — enough for 1 sentence on "Your move" and 2-3 on
+          // "Best move" with the THEMES: prefix line. 200 was clipping the
+          // best-move explanation to one short sentence.
+          sendWithFallback(settingsRef.current!, prompt.system, [{ role: 'user', content: prompt.user }], 400)
+            .then(text => setState(prev => {
+              // Keep the explanation as long as we're still inside the same
+              // challenge's review surface. Auto-advance moves us from
+              // 'scored' to 'continuation' before the AI responds (~3-5s),
+              // so dropping unless phase==='scored' loses every explanation
+              // for moves 1 + 2 of 3. Resetting to 'leadup' (next challenge
+              // starts) is the only state where we discard.
+              const keep = prev.phase === 'scored' || prev.phase === 'continuation' || prev.phase === 'complete';
+              if (!keep) return prev;
+              const corrected = applyVerifiedBestMove(text, verifiedBest);
+              return { ...prev, aiExplanation: corrected, aiExplanationLoading: false };
+            }))
             .catch(() => setState(prev => ({ ...prev, aiExplanationLoading: false })));
         }
       } catch (err) {
@@ -712,7 +1037,7 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase, state.playerTurn, state.playerMoveUci, state.currentFen, config]);
+  }, [state.phase, state.playerTurn, state.playerMoveUci, state.currentFen, state.continuationMoves.length, config]);
 
   // --- Opponent moves in continuation phase ---
   useEffect(() => {
@@ -721,6 +1046,15 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     if (cur.phase !== 'continuation' || cur.playerTurn || cur.opponentThinking) return;
 
     const chess = chessRef.current;
+    // If the position is already terminal (mate, stalemate, etc.) when we
+    // arrive here, there's no opponent reply to compute and no player turn
+    // to grant — finish the challenge so the row can resolve. Clear any
+    // stale hint so the user doesn't see a leftover "look for tactic"
+    // message after they've already been mated.
+    if (chess.isGameOver()) {
+      setState(prev => ({ ...prev, phase: 'complete', playerTurn: false, opponentThinking: false, currentFen: chess.fen(), hint: null, hintLoading: false }));
+      return;
+    }
     const turn = chess.turn() === 'w' ? 'white' : 'black';
     if (turn === config.playerColor) {
       setState(prev => ({ ...prev, playerTurn: true }));
@@ -730,20 +1064,86 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     setState(prev => ({ ...prev, opponentThinking: true }));
 
     (async () => {
+      // Stockfish at depth 10 can return in <100ms on simple positions, which
+      // makes the opponent reply land right on top of the player's move sound.
+      // Enforce a floor so the two sounds (and the visual move) are clearly
+      // separated and the computer feels like it's "thinking" instead of
+      // pre-empting the player.
+      const MIN_THINK_MS = 350;
+      const startTime = Date.now();
+      const botMode = config.botMode ?? 'opponent';
       try {
         const sf = StockfishClient.getInstance();
         await sf.ensureHealthy();
-        await sf.setOption('Skill Level', ratingToSkillLevel(config.opponentRating));
-        const result = await sf.analyzePosition(chess.fen(), 10);
-        if (result.bestMove && result.bestMove.length >= 4) {
-          const from = result.bestMove.slice(0, 2) as Square;
-          const to = result.bestMove.slice(2, 4) as Square;
-          const promo = result.bestMove.length > 4 ? result.bestMove[4] as 'q' | 'r' | 'b' | 'n' : undefined;
+        // In opponent mode we throttle Stockfish to roughly the opponent's
+        // rating via Skill Level (legacy option). In engine mode we play at
+        // max strength — clear the throttle.
+        if (botMode === 'opponent') {
+          await sf.setOption('Skill Level', ratingToSkillLevel(config.opponentRating));
+        } else {
+          await sf.setOption('Skill Level', 20);
+        }
+        const fen = chess.fen();
+        const isRetry = stateRef.current.attempts >= 1;
+        let chosenUci: string | null = null;
+
+        // Opponent mode: if the player's continuation is still on the
+        // original game's script, replay the actual opponent move from the
+        // PGN. Falls through to Stockfish if off-script or the SAN doesn't
+        // parse in the current position.
+        if (botMode === 'opponent' && !isRetry) {
+          const continuationIndex = config.criticalIndex + 1 + stateRef.current.continuationMoves.length;
+          const onScript = stateRef.current.continuationMoves.every(
+            (m, i) => m.san === config.gameMoves[config.criticalIndex + 1 + i]?.moveSan,
+          );
+          const next = config.gameMoves[continuationIndex];
+          if (onScript && next?.moveUci) chosenUci = next.moveUci;
+        }
+
+        if (!chosenUci && isRetry) {
+          // On the 2nd+ attempt, if multiple moves are essentially tied for
+          // best, pick one the opponent hasn't played here yet so the player
+          // sees a different reply than last time.
+          const lines = await sf.analyzePositionMultiPV(fen, 10, 3);
+          if (lines.length > 0) {
+            const top = lines[0];
+            const equallyBest = lines.filter(l => {
+              if (l.scoreType !== top.scoreType) return false;
+              if (top.scoreType === 'mate') return l.score === top.score;
+              return Math.abs(l.score - top.score) <= 25;
+            });
+            const history = opponentMoveHistoryRef.current.get(fen) ?? new Set<string>();
+            const unused = equallyBest.filter(l => !history.has(l.moveUci));
+            const pool = unused.length > 0 ? unused : equallyBest;
+            chosenUci = pool[Math.floor(Math.random() * pool.length)].moveUci;
+          }
+        }
+
+        if (!chosenUci) {
+          const result = await sf.analyzePosition(fen, 10);
+          chosenUci = result.bestMove ?? null;
+        }
+
+        if (chosenUci && chosenUci.length >= 4) {
+          let history = opponentMoveHistoryRef.current.get(fen);
+          if (!history) { history = new Set(); opponentMoveHistoryRef.current.set(fen, history); }
+          history.add(chosenUci);
+
+          const from = chosenUci.slice(0, 2) as Square;
+          const to = chosenUci.slice(2, 4) as Square;
+          const promo = chosenUci.length > 4 ? chosenUci[4] as 'q' | 'r' | 'b' | 'n' : undefined;
           const moveResult = chess.move({ from, to, promotion: promo });
           if (moveResult) {
+            const elapsed = Date.now() - startTime;
+            const remaining = MIN_THINK_MS - elapsed;
+            if (remaining > 0) await new Promise(r => setTimeout(r, remaining));
+            // Wood-knock for every opponent reply — picks the right variant
+            // (capture / castle / move-opponent) so the listener can hear
+            // what just happened without looking.
+            playChessSound(moveResultToSoundType(moveResult, true));
             const movesLeft = stateRef.current.continuationMovesLeft - 1;
             if (movesLeft <= 0 || chess.isGameOver()) {
-              setState(prev => ({ ...prev, phase: 'complete', currentFen: chess.fen(), opponentThinking: false, lastMoveFrom: from, lastMoveTo: to }));
+              setState(prev => ({ ...prev, phase: 'complete', currentFen: chess.fen(), opponentThinking: false, lastMoveFrom: from, lastMoveTo: to, hint: null, hintLoading: false }));
             } else {
               setState(prev => ({ ...prev, currentFen: chess.fen(), playerTurn: true, opponentThinking: false, continuationMovesLeft: movesLeft, lastMoveFrom: from, lastMoveTo: to }));
             }
@@ -755,71 +1155,6 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.phase, state.playerTurn, state.opponentThinking, config]);
-
-  // --- Critical position ranking (fires once when entering scored phase) ---
-  useEffect(() => {
-    if (!config) return;
-    const cur = stateRef.current;
-    if (cur.phase !== 'scored') return;
-    if (!cur.criticalFen) return;
-    if (cur.criticalRanking.length > 0) return; // already computed
-
-    (async () => {
-      try {
-        const sf = StockfishClient.getInstance();
-        await sf.ensureHealthy();
-        const lines = await sf.analyzePositionMultiPV(cur.criticalFen, 14, 5);
-        const ranking = multiPVToRankedMoves(lines, cur.criticalFen, cur.playerMoveUci, config.bestMoveUci);
-        setState(prev => prev.phase === 'scored' ? { ...prev, criticalRanking: ranking, rankingLoading: prev.continuationRanking.length === 0 ? true : false } : prev);
-      } catch (err) {
-        console.warn('[TM] Critical ranking failed:', err);
-        setState(prev => ({ ...prev, rankingLoading: false }));
-      }
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase, state.criticalFen, config]);
-
-  // --- Continuation rankings (fires once when entering complete phase) ---
-  // For each continuation move the user played, compute top-5 alternatives
-  useEffect(() => {
-    if (!config) return;
-    const cur = stateRef.current;
-    if (cur.phase !== 'complete') return;
-    if (cur.continuationRankings.length > 0) return; // already computed
-    if (cur.continuationMoves.length === 0) {
-      console.log('[TM CONT RANK] No continuation moves recorded — skipping');
-      setState(prev => ({ ...prev, rankingLoading: false }));
-      return;
-    }
-
-    console.log(`[TM CONT RANK] Computing rankings for ${cur.continuationMoves.length} continuation moves:`, cur.continuationMoves.map(m => m.san));
-
-    (async () => {
-      try {
-        const sf = StockfishClient.getInstance();
-        await sf.ensureHealthy();
-
-        const rankings: RankedMove[][] = [];
-        for (const cm of cur.continuationMoves) {
-          console.log(`[TM CONT RANK] Analyzing position for user move: ${cm.san} (${cm.uci}) from FEN: ${cm.fenBefore.slice(0, 40)}...`);
-          const lines = await sf.analyzePositionMultiPV(cm.fenBefore, 14, 5);
-          const ranking = multiPVToRankedMoves(lines, cm.fenBefore, cm.uci);
-          console.log(`[TM CONT RANK] Got ${ranking.length} alternatives for ${cm.san}:`, ranking.map(r => `${r.san}(${r.score})`).join(', '));
-          rankings.push(ranking);
-        }
-
-        setState(prev => prev.phase === 'complete' ? {
-          ...prev,
-          continuationRankings: rankings,
-          rankingLoading: false,
-        } : prev);
-      } catch (err) {
-        console.warn('[TM] Continuation ranking failed:', err);
-        setState(prev => ({ ...prev, rankingLoading: false }));
-      }
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase, state.fenAfterCritical, config]);
 
   // --- Actions ---
 
@@ -856,6 +1191,109 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     setState(prev => ({ ...makeInitialState(config), attempts: prev.attempts }));
   }, [config]);
 
+  // Step backward one move during the leadup animation. Lets the user scrub
+  // back through the rewind they just watched. Also rewinds out of critical
+  // / showMistake into leadup so the back arrow always feels reactive.
+  //
+  // Each path plays a wood-click sound for the move being un-played, picked
+  // by the moving side (so player vs opponent variants stay correct) and by
+  // the move's flags (capture / castle / normal). Without this the rewind
+  // is silent and feels disconnected from the forward animation.
+  const stepBackLeadup = useCallback(() => {
+    if (!config) return;
+    const cur = stateRef.current;
+
+    // From showMistake: undo the just-played mistake and drop back to the
+    // critical FEN (player would step in here). moveIndex stays at the
+    // critical index so a forward step replays the mistake.
+    if (cur.phase === 'showMistake') {
+      const chess = chessRef.current;
+      const undone = chess.undo();
+      if (undone) {
+        const mistakeMove = config.gameMoves[config.criticalIndex];
+        const isOpponent = mistakeMove ? mistakeMove.color !== config.playerColor : false;
+        playChessSound(moveResultToSoundType(undone, isOpponent));
+      }
+      const lastMove = chess.history({ verbose: true }).slice(-1)[0];
+      setState(prev => ({
+        ...prev,
+        phase: 'leadup',
+        currentFen: chess.fen(),
+        lastMoveFrom: (lastMove?.from as Square | undefined) ?? null,
+        lastMoveTo: (lastMove?.to as Square | undefined) ?? null,
+      }));
+      return;
+    }
+
+    // From critical: rewind one move back into the leadup. We have to
+    // rewind the chess instance to the FEN before the move that led to
+    // the critical position. Easiest: re-replay startIndex..criticalIndex-2
+    // (one fewer leadup move). If criticalIndex == startIndex (no leadup at
+    // all), this is a no-op.
+    if (cur.phase === 'critical') {
+      if (config.criticalIndex <= config.startIndex) return;
+      const startFen = config.gameMoves[config.startIndex]?.fenBefore ?? '';
+      if (!startFen) return;
+      const chess = new Chess(startFen);
+      // Replay all but the last leadup move.
+      const replayUpto = config.criticalIndex - 1;
+      let lastFrom: string | null = null;
+      let lastTo: string | null = null;
+      let lastReplayedFlags = '';
+      for (let i = config.startIndex; i < replayUpto; i++) {
+        const m = config.gameMoves[i];
+        const r = m ? tryMove(chess, m.moveSan, m.moveUci) : null;
+        if (r) { lastFrom = r.from; lastTo = r.to; lastReplayedFlags = r.flags ?? ''; }
+      }
+      chessRef.current = chess;
+      // Sound represents the move that was removed (the one at
+      // criticalIndex - 1). We pick its variant from the gameMoves entry's
+      // SAN so we don't have to re-run chess.move() to fetch flags.
+      const removed = config.gameMoves[config.criticalIndex - 1];
+      if (removed) {
+        const flags = removed.moveSan?.includes('x') ? 'c'
+          : (removed.moveSan === 'O-O' || removed.moveSan === 'O-O-O') ? 'k'
+            : lastReplayedFlags;
+        const isOpponent = removed.color !== config.playerColor;
+        playChessSound(moveResultToSoundType({ flags }, isOpponent));
+      }
+      setState(prev => ({
+        ...prev,
+        phase: 'leadup',
+        moveIndex: replayUpto,
+        currentFen: chess.fen(),
+        criticalFen: '',
+        playerTurn: false,
+        selectedSquare: null,
+        legalMoves: [],
+        lastMoveFrom: lastFrom as Square | null,
+        lastMoveTo: lastTo as Square | null,
+      }));
+      return;
+    }
+
+    // From leadup: only step back if we've actually played at least one move
+    // beyond the start. moveIndex is the *next* move to play, so the most
+    // recent move played is moveIndex - 1.
+    if (cur.phase !== 'leadup') return;
+    if (cur.moveIndex <= config.startIndex) return;
+    const chess = chessRef.current;
+    const undone = chess.undo();
+    if (undone) {
+      const undoneGameMove = config.gameMoves[cur.moveIndex - 1];
+      const isOpponent = undoneGameMove ? undoneGameMove.color !== config.playerColor : false;
+      playChessSound(moveResultToSoundType(undone, isOpponent));
+    }
+    const lastMove = chess.history({ verbose: true }).slice(-1)[0];
+    setState(prev => ({
+      ...prev,
+      moveIndex: cur.moveIndex - 1,
+      currentFen: chess.fen(),
+      lastMoveFrom: (lastMove?.from as Square | undefined) ?? null,
+      lastMoveTo: (lastMove?.to as Square | undefined) ?? null,
+    }));
+  }, [config]);
+
   const revealWithExplanation = useCallback(() => {
     if (!config) return;
     const critMove = config.gameMoves[config.criticalIndex];
@@ -875,6 +1313,11 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
       }
     } catch { /* fenAfterCritical stays empty */ }
 
+    // Highlight the best move's from/to squares as yellow tracks so the
+    // revealed answer reads visually like a played move.
+    const bestFrom = (config.bestMoveUci.slice(0, 2) || null) as Square | null;
+    const bestTo = (config.bestMoveUci.slice(2, 4) || null) as Square | null;
+
     setState(prev => ({
       ...prev,
       phase: 'scored',
@@ -888,6 +1331,8 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
       rankingLoading: true,
       aiExplanationLoading: !!settingsRef.current,
       error: null,
+      lastMoveFrom: bestFrom,
+      lastMoveTo: bestTo,
     }));
 
     if (settingsRef.current && critMove) {
@@ -912,8 +1357,12 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
         posFacts || undefined,
         ttsLang2,
       );
-      sendWithFallback(settingsRef.current!, prompt.system, [{ role: 'user', content: prompt.user }], 200)
-        .then(text => setState(prev => prev.phase === 'scored' ? { ...prev, aiExplanation: text, aiExplanationLoading: false } : prev))
+      // 400 tokens — see scoring path above for rationale.
+      sendWithFallback(settingsRef.current!, prompt.system, [{ role: 'user', content: prompt.user }], 400)
+        .then(text => setState(prev => {
+          const keep = prev.phase === 'scored' || prev.phase === 'continuation' || prev.phase === 'complete';
+          return keep ? { ...prev, aiExplanation: text, aiExplanationLoading: false } : prev;
+        }))
         .catch(() => setState(prev => ({ ...prev, aiExplanationLoading: false })));
     }
   }, [config]);
@@ -922,34 +1371,122 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     if (!config) return;
     const cur = stateRef.current;
 
-    // If we revealed the answer, the board is still at the critical FEN (before bestMove).
-    // Advance chessRef to fenAfterCritical so continuation plays from the correct position.
+    // Reveal-Answer path only: when the user clicked "Reveal answer" (no
+    // playerMoveUci was set), the board is still at the critical FEN — bump
+    // it forward to fenAfterCritical so continuation plays from there.
+    // For ANY actual played move (critical or continuation), chessRef is
+    // already at the correct post-move position; resetting to fenAfterCritical
+    // here would rewind subsequent continuation moves and break the flow.
     let continuationFen = cur.currentFen;
-    if (cur.showAnswer && cur.fenAfterCritical) {
+    if (cur.showAnswer && cur.fenAfterCritical && !cur.playerMoveUci) {
       try {
         chessRef.current = new Chess(cur.fenAfterCritical);
         continuationFen = cur.fenAfterCritical;
       } catch { /* keep existing board */ }
     }
 
+    // If the player's move ended the game (mate they delivered, stalemate,
+    // or any other terminal condition), there is nothing left to continue.
+    // Skip straight to 'complete' so the row resolves immediately rather
+    // than waiting for the opponent useEffect to time out.
+    if (chessRef.current.isGameOver()) {
+      setState(prev => ({
+        ...prev,
+        phase: 'complete',
+        currentFen: continuationFen,
+        playerTurn: false,
+        opponentThinking: false,
+        showAnswer: false,
+        hint: null,
+        hintLoading: false,
+      }));
+      return;
+    }
+
     const playerTurn = chessRef.current.turn() === (config.playerColor === 'white' ? 'w' : 'b');
 
+    // We deliberately keep moveScore, playerMoveUci/San, aiExplanation,
+    // rankings, AND showAnswer so the user keeps seeing the previous move's
+    // feedback (arrows, ranked moves, AI explanation) while the opponent
+    // responds and right up until the user touches the board to make their
+    // next move. The piece-drop / promotion / tap-to-move handlers below
+    // flip showAnswer to false the moment the user plays again.
     setState(prev => ({
       ...prev,
       phase: 'continuation',
       currentFen: continuationFen,
       playerTurn,
-      showAnswer: false,
-      playerMoveUci: null,
-      playerMoveSan: null,
-      aiExplanation: null,
-      aiExplanationLoading: false,
+      hint: null,
+      hintLoading: false,
     }));
   }, [config]);
+
+  // Ask the AI for a hint that nudges the player without revealing the answer.
+  // Builds its own prompt so we don't reveal the engine best move to the model.
+  const requestHint = useCallback(() => {
+    if (!config) return;
+    const cur = stateRef.current;
+    if (cur.phase !== 'critical' && cur.phase !== 'continuation') return;
+    if (!cur.playerTurn) return;
+    if (cur.hint || cur.hintLoading) return;
+    if (!settingsRef.current) return;
+
+    const lastContMove = cur.continuationMoves[cur.continuationMoves.length - 1];
+    const fen = cur.phase === 'critical'
+      ? (cur.criticalFen || cur.currentFen)
+      : cur.currentFen;
+    void lastContMove; // not needed — currentFen is correct in continuation phase
+
+    setState(prev => ({ ...prev, hintLoading: true, hint: null }));
+
+    const langCode = (settingsRef.current as unknown as Record<string, unknown>)?.language as string | undefined;
+    const ttsLang = SUPPORTED_LANGUAGES.find(l => l.code === langCode)?.ttsName;
+    const language = ttsLang || 'English';
+    const sideToMove = fen.split(' ')[1] === 'w' ? 'White' : 'Black';
+
+    const langStyle = language === 'Hebrew'
+      ? 'דבר כמו מאמן שחמט בעברית. שמות כלים: מלך, מלכה, צריח, רץ, פרש, חייל. אל תתרגם מאנגלית.'
+      : language === 'Spanish'
+        ? 'Habla como un entrenador de ajedrez en español, usando terminología natural (pieza colgada, clavada, horquilla, enfilada).'
+        : 'Speak like a friendly chess coach.';
+
+    const hintFacts = computeHintFacts(fen, language);
+
+    const system = `You are a chess coach giving a TINY HINT (NOT the answer).
+${langStyle}
+
+Hard rules:
+- DO NOT name any move. No "play X", no SAN, no UCI.
+- Output ONE single short sentence — 12-18 words max. NO bullet points. NO line breaks.
+- Mention ONE concrete thing to look at: a tactical motif (fork/pin/skewer/hanging/back rank), a key square, or a threat.
+- Wrap any square references in brackets: [e5], [d4]. Use piece names, not algebraic notation.
+- ANTI-HALLUCINATION: use ONLY pieces and squares from the VERIFIED FACTS below. NEVER invent a piece, color, or square that is not listed there. Copy piece names from the facts verbatim.
+- Priority order when choosing what to mention: (1) check, if present; (2) YOUR hanging piece (defense first); (3) OPPONENT hanging piece (free capture); (4) WINNING EXCHANGE if listed — point at the target square and hint at a tactical sacrifice that wins material (do NOT name the move, but DO mention the target square in brackets like [f4] and the captured piece type); (5) general motif. Do NOT pick a lower-priority topic when a higher-priority one exists.
+- If a WINNING EXCHANGE is listed, the hint MUST be about it — do NOT default to "look for activity" when concrete material is on the table.
+- If no clear tactic exists in the verified facts, give a calm strategic hint about piece activity or king safety — do NOT invent threats or hanging pieces.
+- No markdown. No move suggestions. No preamble like "here is a hint".`;
+
+    const user = `Position (FEN): ${fen}
+Side to move: ${sideToMove}
+${hintFacts ? `\nVERIFIED FACTS (only mention pieces/squares from this list — do NOT invent anything):\n${hintFacts}\n` : ''}
+Output exactly one short sentence (max 18 words) nudging the player.${language !== 'English' ? `\n\nIMPORTANT: Respond in ${language}.` : ''}`;
+
+    sendWithFallback(settingsRef.current, system, [{ role: 'user', content: user }], 80)
+      .then(text => setState(prev => {
+        if (prev.phase !== 'critical' && prev.phase !== 'continuation') return prev;
+        return { ...prev, hint: text, hintLoading: false };
+      }))
+      .catch(() => setState(prev => ({ ...prev, hintLoading: false })));
+  }, [config]);
+
+  const dismissHint = useCallback(() => {
+    setState(prev => prev.hint || prev.hintLoading ? { ...prev, hint: null, hintLoading: false } : prev);
+  }, []);
 
   return {
     state,
     advanceLeadup,
+    stepBackLeadup,
     undoMistake,
     onSquareClick,
     onPieceDrop,
@@ -959,6 +1496,8 @@ export function useTimeMachineChallenge(config: ChallengeConfig | null, settings
     replayLeadup,
     revealWithExplanation,
     continueAfterScore,
+    requestHint,
+    dismissHint,
   };
   // Note: ranking data is in state.criticalRanking / state.continuationRanking / state.rankingLoading
 }

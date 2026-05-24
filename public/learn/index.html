@@ -9,7 +9,7 @@
 
     <title>Chess Improvement Guides — Chess DNA</title>
     <meta name="description" content="Practical guides to finding your chess weaknesses, analyzing your games, and building pattern recognition from your own game history." />
-    <meta name="keywords" content="chess improvement, chess guides, chess weaknesses, chess game analysis, chess pattern recognition, learn chess" />
+    <meta name="keywords" content="chess improvement guides, chess improvement, find chess weaknesses, analyze chess games, chess pattern recognition, chess training guides, Chess DNA learn" />
     <meta name="robots" content="index, follow" />
 
     <meta property="og:type" content="website" />
@@ -39,7 +39,6 @@
       ]
     }
     </script>
-
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -47,19 +46,12 @@
       "name": "Chess Improvement Guides",
       "description": "Practical guides to finding your chess weaknesses, analyzing your games, and building pattern recognition from your own game history.",
       "url": "https://chessdna.app/learn/",
-      "isPartOf": {
-        "@type": "WebSite",
-        "name": "Chess DNA",
-        "url": "https://chessdna.app/"
-      },
-      "publisher": {
-        "@type": "Organization",
-        "name": "Chess DNA",
-        "url": "https://chessdna.app/",
-        "logo": "https://chessdna.app/favicon.png"
-      },
+      "isPartOf": { "@type": "WebSite", "name": "Chess DNA", "url": "https://chessdna.app/" },
+      "publisher": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/", "logo": "https://chessdna.app/favicon.png" },
       "mainEntity": {
         "@type": "ItemList",
+        "itemListOrder": "https://schema.org/ItemListOrderAscending",
+        "numberOfItems": 3,
         "itemListElement": [
           {
             "@type": "ListItem",
@@ -87,23 +79,25 @@
     <style>
       :root { color-scheme: dark; }
       body { margin: 0; background: #0a0f1a; color: #e8edf5; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.65; }
-      .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
+      .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px 96px; }
       header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
       header img { width: 44px; height: 44px; border-radius: 12px; }
       header .crumb { font-size: 13px; color: #94a3b8; }
       header .crumb a { color: #94a3b8; text-decoration: none; }
       header .crumb a:hover { color: #6ee7b7; }
-      h1 { font-size: 30px; margin: 0 0 14px; letter-spacing: -0.02em; line-height: 1.2; }
-      h2 { color: #6ee7b7; font-size: 21px; margin: 36px 0 10px; letter-spacing: -0.01em; }
-      p, li { color: #cbd5e1; }
+      h1 { font-size: 32px; margin: 0 0 14px; letter-spacing: -0.02em; line-height: 1.2; }
+      h2 { color: #6ee7b7; font-size: 21px; margin: 40px 0 14px; letter-spacing: -0.01em; }
+      p { color: #cbd5e1; }
       a { color: #6ee7b7; text-decoration: none; }
       a:hover { text-decoration: underline; }
-      .lede { font-size: 19px; color: #e8edf5; margin: 0 0 28px; }
-      .cards { list-style: none; padding: 0; margin: 24px 0 0; display: grid; gap: 16px; }
-      .cards li { background: #111827; border: 1px solid #1f2937; border-left: 3px solid #6ee7b7; border-radius: 8px; padding: 18px 20px; }
-      .cards a.card-title { color: #e8edf5; font-size: 18px; font-weight: 600; display: block; margin-bottom: 6px; letter-spacing: -0.01em; }
-      .cards a.card-title:hover { color: #6ee7b7; text-decoration: none; }
-      .cards p { margin: 0; font-size: 15px; color: #94a3b8; }
+      .lede { font-size: 19px; color: #e8edf5; margin: 0 0 32px; }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin: 24px 0 8px; }
+      @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } }
+      .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 20px 22px; transition: border-color .15s, transform .15s; }
+      .card:hover { border-color: #6ee7b7; transform: translateY(-1px); }
+      .card a.title { display: block; color: #e8edf5; font-size: 17px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.01em; }
+      .card a.title:hover { color: #6ee7b7; text-decoration: none; }
+      .card p { margin: 0; font-size: 14.5px; color: #94a3b8; line-height: 1.55; }
       footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid #1f2937; color: #94a3b8; font-size: 14px; }
       footer a { color: #94a3b8; margin-right: 16px; }
     </style>
@@ -118,23 +112,26 @@
       </header>
 
       <h1>Chess Improvement Guides</h1>
-      <p class="lede">The Chess DNA learn section is practical guidance drawn from real game data, not generic chess theory recycled from a textbook. Every guide here is about the same idea: the fastest way to improve is to study the patterns in your own games and drill the exact shapes you keep missing.</p>
+      <p class="lede">Practical guides built around analyzing your own games — not generic theory or random puzzle sets. Each guide walks through a specific part of the loop Chess DNA automates: finding your weaknesses, reviewing what went wrong, and turning recurring mistakes into patterns you can train against.</p>
 
-      <h2>All guides</h2>
-      <ul class="cards">
-        <li>
-          <a class="card-title" href="/learn/find-your-chess-weaknesses.html">How to Find Your Chess Weaknesses (From Your Own Games)</a>
-          <p>A 5-step process to diagnose recurring mistakes across your games and rank them by the rating they're costing you.</p>
-        </li>
-        <li>
-          <a class="card-title" href="/learn/how-to-analyze-your-chess-games.html">How to Analyze Your Chess Games: A Practical Guide</a>
-          <p>What to look for when reviewing your own games, how to read engine evaluations, and how to turn each review into a lasting improvement.</p>
-        </li>
-        <li>
-          <a class="card-title" href="/learn/chess-pattern-recognition.html">Chess Pattern Recognition: How to Train on Your Own Patterns</a>
-          <p>Why generic puzzle sets miss your real blindspots, and how to drill the exact pattern shapes you keep missing in your own games.</p>
-        </li>
-      </ul>
+      <h2>Guides</h2>
+      <div class="grid">
+        <article class="card">
+          <a class="title" href="/learn/find-your-chess-weaknesses.html">How to Find Your Chess Weaknesses (From Your Own Games)</a>
+          <p>A 5-step process to diagnose the patterns that are costing you the most rating, using your real Chess.com or Lichess games.</p>
+        </article>
+        <article class="card">
+          <a class="title" href="/learn/how-to-analyze-your-chess-games.html">How to Analyze Your Chess Games: A Practical Guide</a>
+          <p>What to look for in your own games, how to read engine evaluations, and how to turn each review into a lasting improvement.</p>
+        </article>
+        <article class="card">
+          <a class="title" href="/learn/chess-pattern-recognition.html">Chess Pattern Recognition: How to Train on Your Own Patterns</a>
+          <p>Why generic puzzle sets don't build the patterns you actually miss — and how to drill the exact motifs from your own game history instead.</p>
+        </article>
+      </div>
+
+      <h2>Try it on your own games</h2>
+      <p><a href="https://chessdna.app/">Chess DNA</a> automates the whole loop: it imports your games, classifies every mistake into named patterns, and queues replays from the exact positions where each pattern fired — so you train on what's actually been costing you rating.</p>
 
       <footer>
         <a href="https://chessdna.app/">Home</a>

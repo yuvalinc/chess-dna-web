@@ -20,9 +20,11 @@ import { cleanupDuplicates } from '@/utils/db-cleanup';
 import { importChessComGames } from '@/api/chess-com-import';
 import { CHESS_COM_API_BASE } from '@shared/constants';
 import { fetchChessCom } from '@/api/chess-com-fetch';
+import { base44 } from '@/api/base44Client';
 import type { GameRecord, TimeClass } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
-import type { CurrentPatterns, SkillProfile, SkillDimension, RankTier } from '@shared/types/patterns';
+import type { CurrentPatterns, SkillProfile, SkillDimension, RankTier, TrapStats } from '@shared/types/patterns';
+import { computeTrapStats } from '@/patterns/trap-detector';
 import type { JourneyStage } from '@/components/Onboarding';
 
 // ── Shared default for the Pattern singleton ──
@@ -69,6 +71,9 @@ interface ChessDataContextValue {
   filteredAnalyzedCount: number;
   filteredAnalyzingCount: number;
 
+  // Opening-trap stats — Used (player set) vs FellInto (opponent set)
+  trapStats: TrapStats;
+
   // Profile (computed from filtered games)
   profile: SkillProfile;
   weakest: SkillDimension[];
@@ -104,7 +109,14 @@ interface ChessDataContextValue {
   refetchAll: () => void;
 
   // Analysis queue — push game IDs here instead of calling runBatchAnalysis directly
-  queueForAnalysis: (gameIds: string[]) => void;
+  queueForAnalysis: (gameIds: string[], opts?: { priority?: 'normal' | 'high' }) => void;
+
+  // Stable accessor for stored games by player username. Uses a ref so callers
+  // can read the *current* rawGames from inside an async closure without
+  // re-render staleness — needed by the Follow flow, where the click handler
+  // captures dataSrc before settings update and can't see freshly imported
+  // top-player/friend games via the username-filtered lists.
+  getStoredGameIdsByUsername: (username: string) => string[];
 }
 
 // ── Fallback profile for default context ──
@@ -139,6 +151,7 @@ const ChessDataContext = createContext<ChessDataContextValue>({
   analyses: [],
   filteredAnalyzedCount: 0,
   filteredAnalyzingCount: 0,
+  trapStats: { used: [], fellInto: [], gamesScanned: 0 },
   profile: EMPTY_PROFILE,
   weakest: [],
   strongest: [],
@@ -162,12 +175,13 @@ const ChessDataContext = createContext<ChessDataContextValue>({
   refetchPatterns: () => {},
   refetchAll: () => {},
   queueForAnalysis: () => {},
+  getStoredGameIdsByUsername: () => [],
 });
 
 // ── Provider ──
 export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   const { settings, updateSettings } = useTheme();
-  const { userId, isGuest } = useAuth();
+  const { userId, isGuest, isAuthenticated, authResolved, isAdmin } = useAuth();
 
   // Smart hooks: use localStorage for guests, Base44 for authenticated users.
   // Auth-awareness is built into the hooks — no manual skip logic needed.
@@ -175,14 +189,184 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   // which scopes games by chess.com username. Base44 RLS should also handle this
   // server-side. A created_by_id filter was removed because legacy games don't
   // have that field set, causing them to be silently dropped.
+  // Cap at the most-recent 250 games / analyses so first paint stays fast
+  // even for users with thousands of imported games. Server-side sort by
+  // playedAt (descending) means the freshest data lands first; older games
+  // simply don't get pulled into the client.
+  // Per-user cache keys: the JWT userId is decoded synchronously in
+  // AuthContext, so on a returning user's first paint we rehydrate
+  // games/analyses from localStorage before the Base44 fetch even fires.
+  // Network refetch still runs in the background and swaps in fresh data.
+  const gamesCacheKey = userId ? `list-cache-Game-${userId}` : undefined;
+  // One-shot: drop orphaned `list-cache-Analysis-*` keys from a brief
+  // window where the Analysis fetch was cached too. Caching analyses didn't
+  // work — they exceed the localStorage quota, partial writes produced a
+  // broken UI (DNA defaults, games stuck "pending"), so caching was pulled.
+  // The keys are dead weight that can push other writes (settings,
+  // follow list) past the quota — clear them once on mount.
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const stale = Object.keys(localStorage).filter((k) => k.startsWith('list-cache-Analysis-'));
+      for (const k of stale) localStorage.removeItem(k);
+    } catch { /* noop */ }
+  }, []);
+  // Limit rationale:
+  //  • Regular users: RLS scopes the response to their own records, so a 250
+  //    limit naturally returns up to 250 of their most-recent games.
+  //  • Admin (yuval.inc): RLS is bypassed and the fetch sees every user's
+  //    rows. To avoid the admin's own games getting crowded out by other
+  //    users' recent activity, we widen the network limit — but cap it
+  //    *much lower* than before. The previous 2500 cap meant ~10s fetch
+  //    times + ~75 MB of JS memory (250 records × 50 stringified moves
+  //    each), which made admin reload feel like the app crashed. 800
+  //    still pulls plenty of admin's own recent games (admin plays
+  //    daily) while cutting the payload ~3× — and the page rehydrates
+  //    from the cached profile / radar regardless.
+  const fetchLimit = isAdmin === true ? 800 : 250;
+  // PGN strings are the heaviest field on a Game record (~5 KB each) —
+  // replacing them with a length-bearing sentinel before persisting to
+  // localStorage lets us fit all 250 most-recent games in the cache
+  // instead of getting truncated to 100 by the quota-fallback. PGN
+  // isn't used in the games list view; the game-detail page re-fetches
+  // the full record by id when opened.
+  //
+  // CRITICAL: the ghost-record filter in `allGames` rejects records
+  // whose pgn is missing or < 10 chars. The sentinel below is 24 chars
+  // so cached rehydrated records pass validation — without this, an
+  // entire cached set is treated as ghosts on the next mount,
+  // `totalGameCount` collapses to 0, and the journey stage falls back
+  // to onboarding (S0) even for fully-onboarded returning users.
+  const PGN_CACHE_SENTINEL = '[CACHED:PGN_AVAILABLE]';
+  const stripGameForCache = useCallback(
+    (g: GameRecord): GameRecord => ({ ...g, pgn: PGN_CACHE_SENTINEL }),
+    [],
+  );
   const [rawGames, gamesLoading, , refetchGames] = useSmartEntityList<GameRecord>(
     'Game',
+    undefined,
+    undefined,
+    undefined,
+    { sort: '-playedAt', limit: fetchLimit, cacheKey: gamesCacheKey, cacheStrip: stripGameForCache },
   );
-  const [rawAnalyses, analysesLoading, , refetchAnalyses] = useSmartEntityList<GameAnalysis>(
+  // Progressive fetch — a small first batch of the freshest 30 analyses
+  // lands in ~500 ms and lets the most-recent game cards show real
+  // accuracy almost immediately. The full fetch continues in the
+  // background; results merge in the `rawAnalyses` memo below once
+  // either batch lands.
+  const [firstAnalyses, firstAnalysesLoading] = useSmartEntityList<GameAnalysis>(
     'Analysis',
     undefined,
     deserializeAnalysis as (raw: unknown) => GameAnalysis,
+    undefined,
+    { sort: '-created_date', limit: 30 },
   );
+  const [fullAnalyses, fullAnalysesLoading, , refetchAnalyses] = useSmartEntityList<GameAnalysis>(
+    'Analysis',
+    undefined,
+    deserializeAnalysis as (raw: unknown) => GameAnalysis,
+    undefined,
+    { sort: '-created_date', limit: fetchLimit },
+  );
+  // Prefer full once it lands; fall back to the first batch until then.
+  // Dedup by id so a record present in both batches doesn't appear twice.
+  const rawAnalyses = useMemo<GameAnalysis[]>(() => {
+    if (fullAnalyses.length === 0) return firstAnalyses;
+    if (firstAnalyses.length === 0) return fullAnalyses;
+    const seen = new Set(fullAnalyses.map((a) => a.gameId));
+    const extra = firstAnalyses.filter((a) => !seen.has(a.gameId));
+    return extra.length === 0 ? fullAnalyses : [...fullAnalyses, ...extra];
+  }, [firstAnalyses, fullAnalyses]);
+  // Loading is "true" only until *at least the first batch* lands —
+  // we stop blocking renders the moment any analyses are available.
+  const analysesLoading = firstAnalysesLoading && fullAnalysesLoading;
+
+  // ── Missing-analysis backfill ──
+  // The `Analysis` list is sorted by -created_date and capped at 250 so first
+  // paint stays fast. For users whose own analyses are spread across time
+  // (e.g. a returning user with friend/top-player imports that crowded out
+  // older personal analyses), some of their games end up marked 'complete'
+  // on the Game record but have no matching Analysis row in the 250-window.
+  // The game cards then show "Pending" even though the data exists server-
+  // side. This effect detects that mismatch and fetches the missing analyses
+  // one-by-one (small parallel requests) so the cards repaint with accuracy.
+  const [backfillAnalyses, setBackfillAnalyses] = useState<GameAnalysis[]>([]);
+  const backfillAttemptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (gamesLoading || analysesLoading) return;
+    if (rawGames.length === 0) return;
+    const lower = (settings.chesscomUsername ?? '').toLowerCase();
+    if (!lower) return;
+    // `known` covers BOTH entity-id and chess.com-id matches — mirrors the
+    // expanded `allAnalyses` join above. Without this, games whose analysis
+    // matches only by chessGameId still appear "missing" and get backfilled
+    // unnecessarily.
+    const known = new Set<string>();
+    const knownChessIds = new Set<string>();
+    for (const a of [...rawAnalyses, ...backfillAnalyses]) {
+      known.add(a.gameId);
+      const c = (a as unknown as Record<string, unknown>).chessGameId as string | undefined;
+      if (c) knownChessIds.add(c);
+    }
+    const missing = rawGames.filter((g) => {
+      if (g.analysisStatus !== 'complete') return false;
+      if ((g.player?.username ?? '').toLowerCase() !== lower) return false;
+      if (known.has(g.id)) return false;
+      const chessId = (g as unknown as Record<string, unknown>).gameId as string | undefined;
+      if (chessId && knownChessIds.has(chessId)) return false;
+      if (backfillAttemptedRef.current.has(g.id)) return false;
+      return true;
+    });
+    if (missing.length === 0) return;
+    for (const g of missing) backfillAttemptedRef.current.add(g.id);
+    // Hard cap — admin users can have 500+ analyses living outside the
+    // 250-window. Backfilling all of them every load streams network
+    // activity for 8+ seconds, which feels janky even though the UI
+    // is technically interactive. 20 covers the most-recent missing
+    // analyses (which is what the user looks at first) and keeps the
+    // background fetch short and silent.
+    const BACKFILL_CAP = 20;
+    const toFetch = missing.slice(0, BACKFILL_CAP);
+    console.log(`[Chess DNA] Backfilling ${toFetch.length}${missing.length > toFetch.length ? `/${missing.length}` : ''} missing analyses (outside the 250-window)`);
+    // Defer until the browser is idle — the first paint, the main
+    // entity fetches, and the analysis events should all settle first.
+    // Without this, backfill XHRs compete with the user's initial
+    // render and slow the perceived load.
+    const ric = (cb: () => void) => {
+      const w = window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number };
+      if (typeof w.requestIdleCallback === 'function') w.requestIdleCallback(cb, { timeout: 4000 });
+      else setTimeout(cb, 2500);
+    };
+    ric(() => {
+      (async () => {
+        const CONCURRENCY = 3;
+        const fetched: GameAnalysis[] = [];
+        for (let i = 0; i < toFetch.length; i += CONCURRENCY) {
+          const batch = toFetch.slice(i, i + CONCURRENCY);
+          const results = await Promise.allSettled(
+            batch.map(async (g) => {
+              const list = await (base44.entities as Record<string, any>).Analysis.filter({ gameId: g.id });
+              const first = Array.isArray(list) ? list[0] : null;
+              return first ? deserializeAnalysis(first) : null;
+            }),
+          );
+          for (const r of results) {
+            if (r.status === 'fulfilled' && r.value) fetched.push(r.value);
+          }
+        }
+        if (fetched.length > 0) {
+          console.log(`[Chess DNA] Backfill found ${fetched.length}/${missing.length} analyses`);
+          setBackfillAnalyses((prev) => {
+            const seen = new Set(prev.map((a) => a.gameId));
+            const merged = [...prev];
+            for (const a of fetched) if (!seen.has(a.gameId)) merged.push(a);
+            return merged;
+          });
+        }
+      })();
+    });
+  }, [rawGames, rawAnalyses, gamesLoading, analysesLoading, settings.chesscomUsername, backfillAnalyses]);
+
   const [patterns, , patternsLoading, refetchPatterns] = useSmartSingletonEntity<CurrentPatterns & Record<string, unknown>>(
     'Pattern',
     DEFAULT_PATTERNS,
@@ -192,6 +376,43 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const dataLoading = gamesLoading || analysesLoading || patternsLoading;
+
+  // ── Reset stuck analyses on app boot ──
+  // Games that crashed mid-analysis stay marked `analysisStatus: 'analyzing'`
+  // forever and never get re-picked-up. On boot, find any record stuck for
+  // >30 min based on Base44's auto-updated `updated_date` and flip it back
+  // to 'pending' so the regular analysis queue can retry it.
+  const stuckResetRanRef = useRef(false);
+  useEffect(() => {
+    if (stuckResetRanRef.current || gamesLoading || rawGames.length === 0) return;
+    stuckResetRanRef.current = true;
+
+    const THIRTY_MIN = 30 * 60 * 1000;
+    const now = Date.now();
+    const stuck: GameRecord[] = [];
+    for (const g of rawGames) {
+      if (g.analysisStatus !== 'analyzing') continue;
+      const updatedRaw = (g as unknown as Record<string, unknown>).updated_date;
+      const updatedMs = typeof updatedRaw === 'string' ? Date.parse(updatedRaw) : NaN;
+      // If the timestamp is missing or older than 30 min, treat as stuck.
+      if (!Number.isFinite(updatedMs) || now - updatedMs > THIRTY_MIN) {
+        stuck.push(g);
+      }
+    }
+    if (stuck.length === 0) return;
+
+    console.log(`[Chess DNA] Resetting ${stuck.length} stuck-analyzing games to pending`);
+    (async () => {
+      for (const g of stuck) {
+        try {
+          await (base44.entities as Record<string, any>).Game.update(g.id, { analysisStatus: 'pending' });
+        } catch (err) {
+          console.warn('[Chess DNA] Failed to reset stuck game:', g.id, err);
+        }
+      }
+      refetchGamesRef.current();
+    })();
+  }, [gamesLoading, rawGames]);
 
   // ── Auto-cleanup: delete duplicate Game/Analysis records ──
   // Runs whenever rawGames loads and contains any duplicates or ghost
@@ -262,22 +483,52 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   const analysisQueueRef = useRef<string[]>([]);
   const processingAnalysisRef = useRef(false);
 
+  // Keep the latest onboarding game IDs in a ref so processAnalysisQueue
+  // (a long-running async closure) can read the current set without becoming
+  // a churn-y dependency.
+  const onboardingIdsRef = useRef<Set<string>>(new Set(settings.onboardingGameIds ?? []));
+  onboardingIdsRef.current = new Set(settings.onboardingGameIds ?? []);
+  const radarRevealedRef = useRef<boolean>(!!settings.radarRevealedAt);
+  radarRevealedRef.current = !!settings.radarRevealedAt;
+
   const processAnalysisQueue = useCallback(async () => {
     if (processingAnalysisRef.current || analysisQueueRef.current.length === 0) return;
     processingAnalysisRef.current = true;
     try {
       const batch = [...analysisQueueRef.current];
       analysisQueueRef.current = [];
-      // Sort newest first: look up playedAt from rawGames ref for each queued ID
+      // Sort: onboarding games FIRST (so the user's decoding screen finishes
+      // ASAP regardless of how many other games race into the queue), then
+      // newest-first by playedAt for everything else.
       const gamesMap = new Map(rawGamesRef.current.map(g => [g.id, g]));
+      const obSet = onboardingIdsRef.current;
       batch.sort((a, b) => {
+        const aIsOb = obSet.has(a) ? 0 : 1;
+        const bIsOb = obSet.has(b) ? 0 : 1;
+        if (aIsOb !== bIsOb) return aIsOb - bIsOb;
         const ga = gamesMap.get(a);
         const gb = gamesMap.get(b);
         return (gb?.playedAt ?? 0) - (ga?.playedAt ?? 0);
       });
-      setBatchMode(true);
-      console.log('[Chess DNA] Processing analysis queue:', batch.length, 'games (newest first)');
-      await runBatchAnalysis(batch, settings.analysisDepth);
+      // Only suppress per-game refetches on big batches (the 30-game
+      // chess.com sync). Small queues — e.g. the 3-game Follow import —
+      // skip batch mode so each finished analysis triggers a refetch and
+      // challenges appear gradually instead of all-at-once.
+      //
+      // While onboarding is still in progress (radar not yet revealed and
+      // we have onboarding game IDs), keep batch mode OFF — the Decoding
+      // screen depends on per-game refetches to update s1AnalyzedCount and
+      // unlock the next stage.
+      const onboardingActive = !radarRevealedRef.current && obSet.size > 0;
+      setBatchMode(!onboardingActive && batch.length > 5);
+      // During onboarding, cap depth at 10 so the Decoding screen finishes in ~30s
+      // even on slow devices (Android emulator, low-end mobile). Depth 10 is plenty
+      // for seeding the initial profile; later batch syncs use the user's full setting.
+      const depth = onboardingActive
+        ? Math.min(settings.analysisDepth, 10)
+        : settings.analysisDepth;
+      console.log('[Chess DNA] Processing analysis queue:', batch.length, 'games at depth', depth, onboardingActive ? '[onboarding]' : '');
+      await runBatchAnalysis(batch, depth);
     } catch (err) {
       console.error('[Chess DNA Sync] Batch analysis failed:', err);
     } finally {
@@ -295,14 +546,31 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.analysisDepth]);
 
+  // Look up game IDs by player username via the rawGames ref. Bypasses the
+  // username-filtered memos, which are stale inside async click handlers
+  // that captured dataSrc before settings updated.
+  const getStoredGameIdsByUsername = useCallback((username: string): string[] => {
+    const lower = username.toLowerCase();
+    return rawGamesRef.current
+      .filter((g) => (g.player?.username ?? '').toLowerCase() === lower)
+      .map((g) => g.id);
+  }, []);
+
   // Exposed queue function — deduplicates and processes through the single pipeline
-  const queueForAnalysis = useCallback((gameIds: string[]) => {
+  const queueForAnalysis = useCallback((gameIds: string[], opts?: { priority?: 'normal' | 'high' }) => {
     if (gameIds.length === 0) return;
     // Deduplicate: only add IDs not already in the queue
     const existing = new Set(analysisQueueRef.current);
     const newIds = gameIds.filter(id => !existing.has(id));
     if (newIds.length === 0) return;
-    analysisQueueRef.current.push(...newIds);
+    if (opts?.priority === 'high') {
+      // Front-of-queue insert so high-priority games (e.g. just-followed
+      // top players) get analyzed first — challenges appear in seconds
+      // instead of waiting behind the user's whole sync queue.
+      analysisQueueRef.current.unshift(...newIds);
+    } else {
+      analysisQueueRef.current.push(...newIds);
+    }
     processAnalysisQueue();
   }, [processAnalysisQueue]);
 
@@ -313,7 +581,24 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     syncNow,
   } = useChessComSync({
     username: settings.chesscomUsername,
-    enabled: !!settings.chesscomUsername,
+    // Gate on real auth state, not just username presence. Without this,
+    // the sync fires before the SDK has loaded its auth header and every
+    // Game.create lands as `created_by_id: "anonymous"` — see the CSV
+    // export, which had ~1000 anonymous orphan rows from this race.
+    //
+    // Also gate on the radar having been revealed (i.e. onboarding complete).
+    // Otherwise the initial doSync fires the moment a fresh user sets a
+    // chess.com username — fetching another 30 games and pushing them into
+    // the same analysis queue as the 5 onboarding games. That triggers
+    // batch-mode (queue > 5) and the user's progress counter spirals to
+    // values like "11 / 5 games" while their own onboarding games are
+    // starved behind the sync games.
+    enabled:
+      !!settings.chesscomUsername &&
+      authResolved &&
+      (isAuthenticated || isGuest) &&
+      (!!settings.radarRevealedAt || (settings.onboardingGameIds?.length ?? 0) === 0),
+    guest: isGuest,
     initialLastSyncAt: settings.lastSyncAt,
     onNewGames: (gameIds) => {
       if (gameIds.length === 0) return;
@@ -353,9 +638,19 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   // IMPORTANT: When multiple copies of the same chess.com game exist (duplicate imports),
   // we prefer keeping the copy that has a matching Analysis record. This ensures that
   // the join in calculateSkillProfile (analysis.gameId → game.id) succeeds.
+  // Merge backfilled analyses (fetched on-demand for user's games whose
+  // Analysis row fell outside the 250 most-recent window) into the working
+  // set, deduping by gameId so the game-card join sees them.
+  const mergedAnalyses = useMemo(() => {
+    if (backfillAnalyses.length === 0) return rawAnalyses;
+    const seen = new Set(rawAnalyses.map((a) => a.gameId));
+    const extra = backfillAnalyses.filter((a) => !seen.has(a.gameId));
+    return extra.length === 0 ? rawAnalyses : [...rawAnalyses, ...extra];
+  }, [rawAnalyses, backfillAnalyses]);
+
   const allGames = useMemo(() => {
     // Build set of Base44 entity IDs that are referenced by Analysis records
-    const analyzedEntityIds = new Set(rawAnalyses.map(a => a.gameId));
+    const analyzedEntityIds = new Set(mergedAnalyses.map(a => a.gameId));
 
     // Filter to configured username AND drop ghost records — entries that
     // somehow persisted in Base44 with missing core fields. Without this
@@ -398,10 +693,40 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    return [...bestByChessId.values(), ...noChessId];
-  }, [rawGames, rawAnalyses, configuredUsername]);
+    const deduped = [...bestByChessId.values(), ...noChessId];
+    // Hard cap at the 250 most-recent so heavy users (1.5k+ games) don't
+    // melt the patterns / profile / chart memos that iterate every game.
+    // The fetch already pulls in more than 250 for the admin case so that
+    // their own data isn't crowded out — this is the final on-app cap.
+    deduped.sort((a, b) => (b.playedAt ?? 0) - (a.playedAt ?? 0));
+    return deduped.slice(0, 250);
+  }, [rawGames, mergedAnalyses, configuredUsername]);
 
-  const allAnalyses = rawAnalyses;
+  // Scope analyses to just the 250-capped games so heavy memos (skill
+  // profile, pattern engine, chart aggregations) don't iterate thousands
+  // of analyses they'd ultimately throw away.
+  //
+  // Match by EITHER Base44 entity id OR chess.com gameId — duplicate Game
+  // records (and the dedup that picks one winner per chess.com gameId)
+  // mean an Analysis row's `gameId` often points to a losing duplicate
+  // that's no longer in `allGames`. Entity-only matching drops those
+  // analyses; the chess.com gameId fallback recovers them. Without this,
+  // `allAnalyses` collapses to ~0 for users with duplicate records,
+  // calculateSkillProfile sees an empty moves list, every dimension
+  // returns the "no data" 50 default, and the DNA renders as a flat 50.
+  const allAnalyses = useMemo(() => {
+    const keepEntityIds = new Set(allGames.map((g) => g.id));
+    const keepChessIds = new Set(
+      allGames
+        .map((g) => (g as unknown as Record<string, unknown>).gameId as string | undefined)
+        .filter((v): v is string => !!v),
+    );
+    return mergedAnalyses.filter((a) => {
+      if (keepEntityIds.has(a.gameId)) return true;
+      const chessId = (a as unknown as Record<string, unknown>).chessGameId as string | undefined;
+      return chessId ? keepChessIds.has(chessId) : false;
+    });
+  }, [mergedAnalyses, allGames]);
 
   // ── Friend & top-player games — non-self games imported into Base44
   // for the Time Machine "Friends" / "Top Players" tabs. Same ghost-record
@@ -584,8 +909,26 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     [games],
   );
 
-  // Fetch real rating from chess.com stats API (ground truth)
-  const [chessComRatings, setChessComRatings] = useState<Record<string, number>>({});
+  const trapStats = useMemo(() => computeTrapStats(games), [games]);
+
+  // Fetch real rating from chess.com stats API (ground truth).
+  // Rehydrate synchronously from a 12-hour localStorage cache so the user's
+  // shown rating doesn't flicker through "no data" → "1200 fallback" → real
+  // value while the API round-trip lands.
+  const CHESS_COM_RATINGS_TTL_MS = 12 * 60 * 60 * 1000;
+  const chessComCacheKey = configuredUsername
+    ? `chesscom-ratings-${configuredUsername.toLowerCase()}`
+    : null;
+  const [chessComRatings, setChessComRatings] = useState<Record<string, number>>(() => {
+    if (!chessComCacheKey || typeof localStorage === 'undefined') return {};
+    try {
+      const raw = localStorage.getItem(chessComCacheKey);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as { ratings: Record<string, number>; ts: number };
+      if (!parsed?.ratings || Date.now() - parsed.ts > CHESS_COM_RATINGS_TTL_MS) return {};
+      return parsed.ratings;
+    } catch { return {}; }
+  });
   const chessComFetchedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!configuredUsername) return;
@@ -603,6 +946,11 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
         if (data.chess_daily?.last?.rating) ratings.daily = data.chess_daily.last.rating;
         console.log('[Chess DNA] chess.com ratings fetched:', ratings);
         setChessComRatings(ratings);
+        if (chessComCacheKey) {
+          try {
+            localStorage.setItem(chessComCacheKey, JSON.stringify({ ratings, ts: Date.now() }));
+          } catch { /* quota — best-effort */ }
+        }
       })
       .catch((err) => { console.error('[Chess DNA] chess.com stats fetch failed:', err); });
   });
@@ -621,10 +969,41 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   }, [chessComRatings, timeClassFilter, allGames]);
 
   // ── Profile (from filtered games, opponent-adjusted) ──
-  const profile = useMemo(
+  // Persist the computed profile per (user, timeClass) so a returning user
+  // sees their real DNA scores in the first paint instead of waiting on
+  // the Analysis fetch + deserialize + memo chain (5–10s for heavy users).
+  // The profile object is small (~2 KB / 8 dimensions + overall) so it
+  // fits comfortably in localStorage even when the analyses cache won't.
+  const profileCacheKey = userId
+    ? `chess-dna-profile-${userId}-${timeClassFilter ?? 'all'}`
+    : null;
+  const [cachedInitialProfile] = useState<SkillProfile | null>(() => {
+    if (!profileCacheKey || typeof localStorage === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem(profileCacheKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as SkillProfile;
+      return parsed && parsed.gamesUsed > 0 ? parsed : null;
+    } catch { return null; }
+  });
+  const computedProfile = useMemo(
     () => calculateSkillProfile(patterns, games, analyses),
     [patterns, games, analyses],
   );
+  // Prefer the freshly-computed profile once it has data; fall back to the
+  // cached one while analyses are still loading. Never downgrade from a
+  // real computed profile back to the cached one (avoids flicker if a
+  // refetch transiently empties analyses).
+  const profile = computedProfile.gamesUsed > 0
+    ? computedProfile
+    : (cachedInitialProfile ?? computedProfile);
+  // Persist after each compute that has real data.
+  useEffect(() => {
+    if (!profileCacheKey || computedProfile.gamesUsed === 0) return;
+    if (typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(profileCacheKey, JSON.stringify(computedProfile)); }
+    catch { /* quota — best-effort */ }
+  }, [computedProfile, profileCacheKey]);
 
   const weakest = useMemo(() => getWeakestDimensions(profile, 3), [profile]);
   const strongest = useMemo(() => getStrongestDimensions(profile, 2), [profile]);
@@ -667,14 +1046,33 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   //    fully onboarded. During onboarding we only fetch the picked time class
   //    (5 games) so the user lands on their DNA fast — this effect waits until
   //    they reach the main view, then backfills any time classes that don't
-  //    yet have at least 20 games. Runs once per session; idempotent because
-  //    importChessComGames de-dupes against existing records. ──
+  //    yet have at least 20 games. Idempotent because importChessComGames
+  //    de-dupes against existing records.
+  //
+  //    Persisted across reloads — without this, every page load re-fires the
+  //    backfill (firing ~40+ Base44 dedup filter calls per under-stocked
+  //    class), which then triggers rate-limit 429s and slows the whole page.
+  //    Once the backfill has run successfully for a user, we don't repeat
+  //    it for 24h. ──
   const backfillTriggeredRef = useRef(false);
+  const BACKFILL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  const backfillStorageKey = userId ? `chess-dna-tc-backfill-${userId}` : null;
   useEffect(() => {
     if (backfillTriggeredRef.current) return;
     if (journeyStage < 5) return;
     if (!settings.chesscomUsername) return;
     if (rawGames.length === 0) return;
+
+    // Cooldown check — skip if a recent backfill already ran for this user.
+    if (backfillStorageKey && typeof localStorage !== 'undefined') {
+      try {
+        const last = parseInt(localStorage.getItem(backfillStorageKey) ?? '0', 10) || 0;
+        if (Date.now() - last < BACKFILL_COOLDOWN_MS) {
+          backfillTriggeredRef.current = true;
+          return;
+        }
+      } catch { /* noop */ }
+    }
 
     const tcCounts = new Map<TimeClass, number>();
     for (const g of rawGames) {
@@ -682,7 +1080,16 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     }
     const allTcs: TimeClass[] = ['rapid', 'blitz', 'bullet', 'daily'];
     const understocked = allTcs.filter((tc) => (tcCounts.get(tc) ?? 0) < 20);
-    if (understocked.length === 0) return;
+    if (understocked.length === 0) {
+      // Even when nothing's under-stocked, mark the cooldown so we don't
+      // re-check every reload.
+      if (backfillStorageKey && typeof localStorage !== 'undefined') {
+        try { localStorage.setItem(backfillStorageKey, String(Date.now())); }
+        catch { /* noop */ }
+      }
+      backfillTriggeredRef.current = true;
+      return;
+    }
 
     backfillTriggeredRef.current = true;
     const username = settings.chesscomUsername;
@@ -691,17 +1098,35 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       const newIds: string[] = [];
+      // Hard cap so we never let the user's stored Game count balloon past
+      // ~500. Each time class gets a slice of the remaining headroom so
+      // imports stay incremental — newest games always come first thanks to
+      // chess-com-import iterating archives in reverse.
+      const MAX_TOTAL = 250;
+      let remaining = Math.max(0, MAX_TOTAL - rawGames.length);
+      const PER_TC_TARGET = 20;
       for (const tc of understocked) {
+        if (remaining <= 0) break;
+        const take = Math.min(PER_TC_TARGET, remaining);
         try {
           const ids = await importChessComGames(username, {
             timeClass: tc,
-            maxGames: 30,
+            maxGames: take,
             guest: guestMode,
           });
           newIds.push(...ids);
+          remaining -= ids.length;
         } catch (err) {
           console.warn('[Chess DNA] Backfill failed for', tc, err);
         }
+      }
+      // Persist the run-time so we don't re-attempt within the cooldown
+      // window. Stamped regardless of whether imports succeeded — that
+      // way a flaky chess.com response or rate-limit storm doesn't make
+      // every subsequent reload retry the same imports.
+      if (backfillStorageKey && typeof localStorage !== 'undefined') {
+        try { localStorage.setItem(backfillStorageKey, String(Date.now())); }
+        catch { /* noop */ }
       }
       if (newIds.length > 0) {
         console.log('[Chess DNA] Backfill imported', newIds.length, 'games — queueing for analysis');
@@ -723,8 +1148,13 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     const unsub = analysisEvents.on((event) => {
       if (event.type === 'complete') {
         batchCompleteCountRef.current++;
-        if (!isBatchMode()) {
-          // Single-game analysis: refetch immediately
+        // Onboarding games always trigger an immediate refetch so the
+        // Decoding screen's s1AnalyzedCount updates in lockstep with the
+        // games getting analyzed. Without this, batch-mode would suppress
+        // refetches and the user would stay stuck at "Decoding" even after
+        // all 5 onboarding games are done.
+        const isOnboardingGame = onboardingIdsRef.current.has(event.gameId);
+        if (isOnboardingGame || !isBatchMode()) {
           refetchGamesRef.current();
           refetchAnalysesRef.current();
         } else if (batchCompleteCountRef.current % 5 === 0) {
@@ -774,6 +1204,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       analyses,
       filteredAnalyzedCount,
       filteredAnalyzingCount,
+      trapStats,
       profile,
       weakest,
       strongest,
@@ -797,6 +1228,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       refetchPatterns,
       refetchAll,
       queueForAnalysis,
+      getStoredGameIdsByUsername,
     }),
     [
       enrichedAllGames, allAnalyses, patterns,
@@ -804,13 +1236,14 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       totalGameCount, analyzedCount, analyzingCount, pendingCount,
       gamesMap, availableTimeClasses,
       friendGames, friendAnalyses, topPlayerGames, topPlayerAnalyses,
-      games, analyses, filteredAnalyzedCount, filteredAnalyzingCount,
+      games, analyses, filteredAnalyzedCount, filteredAnalyzingCount, trapStats,
       profile, weakest, strongest, playerElo,
       tier, tierProgress, nextTier,
       benchmark, leadersBenchmark, overallPercentile,
       journeyStage, hasPatterns, hasAI, patternsUnlocked,
       isSyncing, lastSyncAt, syncError, syncNow,
       refetchGames, refetchAnalyses, refetchPatterns, refetchAll, queueForAnalysis,
+      getStoredGameIdsByUsername,
     ],
   );
 

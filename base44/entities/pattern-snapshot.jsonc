@@ -1,5 +1,6 @@
 {
   "name": "PatternSnapshot",
+  "description": "Per-game contribution to the user's overall Pattern, derived from one analyzed Game.",
   "type": "object",
   "properties": {
     "gameId": { "type": "string" },

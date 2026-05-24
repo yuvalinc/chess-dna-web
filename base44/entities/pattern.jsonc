@@ -1,5 +1,6 @@
 {
   "name": "Pattern",
+  "description": "The user's detected chess patterns and weaknesses across the main areas of the game. One singleton record per user; rebuilt as new games are analyzed.",
   "type": "object",
   "properties": {
     "patterns": { "type": "array" },

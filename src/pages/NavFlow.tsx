@@ -92,7 +92,7 @@ const GROUPS: Group[] = [
     entries: [
       {
         path: '/timemachine',
-        title: 'Time Machine',
+        title: 'Replays',
         description: 'Replay critical moments from past games.',
         subs: [
           { label: 'Unchecked list' },
@@ -105,22 +105,6 @@ const GROUPS: Group[] = [
           { label: 'Challenge · complete' },
         ],
       },
-      {
-        path: '/training',
-        title: 'Getting Better',
-        description: 'Themed pattern sessions with lessons + puzzles.',
-        subs: [
-          { label: 'Pattern list' },
-          { label: 'Pattern detail' },
-          { label: 'Lessons tab' },
-          { label: 'Puzzles tab' },
-          { label: 'Lesson viewer' },
-          { label: 'Puzzle player' },
-          { label: 'Training session' },
-        ],
-      },
-      { path: '/lessons', title: 'Lessons', description: 'Standalone lessons index.' },
-      { path: '/exercises', title: 'Exercises', description: 'Standalone exercises index.' },
     ],
   },
   {
@@ -165,7 +149,7 @@ const GROUPS: Group[] = [
   },
   {
     heading: 'Admin',
-    subheading: 'Restricted to yuval.inc@gmail.com.',
+    subheading: 'Admin only.',
     icon: '\u{1F6E1}\uFE0F',
     tint: 'rose',
     entries: [

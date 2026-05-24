@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SkillProfile, RankTier } from '@shared/types/patterns';
 import type { GameRecord, TimeClass } from '@shared/types/game';
 import { useChessData } from '@/contexts/ChessDataContext';
-import { captureCardAsBlob, shareImage, downloadImage, copyImageToClipboard } from '@/utils/share-image';
+import { captureCardAsBlob, shareImage } from '@/utils/share-image';
 import { fetchChessCom } from '@/api/chess-com-fetch';
 import { CHESS_COM_API_BASE } from '@shared/constants';
 
@@ -57,7 +57,13 @@ export default function PlayerCardShare({
   onClose,
 }: Props) {
   const [mode, setMode] = useState<'stats' | 'hero'>('stats');
-  const [photo, setPhoto] = useState<string | null>(null);
+  // Persist the uploaded photo per username so it survives reloads and
+  // re-opens of the share composer. Stored as a base64 data URL in
+  // localStorage — small avatars fit comfortably under typical quotas.
+  const photoKey = `chess-dna-player-card-photo-${(username ?? 'guest').toLowerCase()}`;
+  const [photo, setPhoto] = useState<string | null>(() => {
+    try { return localStorage.getItem(photoKey); } catch { return null; }
+  });
   const [busy, setBusy] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -102,15 +108,8 @@ export default function PlayerCardShare({
     if (!cardRef.current || busy) return;
     setBusy(true);
     try {
-      const blob = await captureCardAsBlob(cardRef.current);
-      const filename = `chess-dna-player-card-${username}.png`;
-      const file = new File([blob], filename, { type: 'image/png' });
-      if (navigator.canShare?.({ files: [file] })) {
-        await shareImage(blob, filename);
-      } else {
-        const ok = await copyImageToClipboard(blob);
-        if (!ok) downloadImage(blob, filename);
-      }
+      const blob = await captureCardAsBlob(cardRef.current, { storyFormat: true });
+      await shareImage(blob, `chess-dna-player-card-${username}.png`);
     } catch (err) {
       console.error('[player-card-share]', err);
     } finally {
@@ -120,7 +119,14 @@ export default function PlayerCardShare({
 
   const onPickPhoto = (file: File) => {
     const reader = new FileReader();
-    reader.onload = () => setPhoto(typeof reader.result === 'string' ? reader.result : null);
+    reader.onload = () => {
+      const url = typeof reader.result === 'string' ? reader.result : null;
+      setPhoto(url);
+      try {
+        if (url) localStorage.setItem(photoKey, url);
+        else localStorage.removeItem(photoKey);
+      } catch { /* quota exceeded — fall back to in-memory only */ }
+    };
     reader.readAsDataURL(file);
   };
 

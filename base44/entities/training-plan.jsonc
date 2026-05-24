@@ -1,5 +1,6 @@
 {
   "name": "TrainingPlan",
+  "description": "A personalized practice schedule built from the user's Pattern: what to focus on, recommended lessons and exercises, and weekly targets.",
   "type": "object",
   "properties": {
     "options": { "type": "array" },

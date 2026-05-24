@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Chess DNA — SEO Changes Preview</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #0a0f1a;
+        color: #e8edf5;
+        font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        line-height: 1.55;
+      }
+      .wrap { max-width: 980px; margin: 0 auto; padding: 32px 24px 80px; }
+      h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
+      .subtitle { color: #94a3b8; margin: 0 0 28px; font-size: 14px; }
+      h2 { font-size: 18px; color: #6ee7b7; margin: 36px 0 12px; letter-spacing: -0.01em; }
+      h3 { font-size: 15px; color: #cbd5e1; margin: 18px 0 8px; font-weight: 600; }
+      a { color: #6ee7b7; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .card {
+        background: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 10px;
+        padding: 16px 18px;
+        margin: 12px 0;
+      }
+      .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .label { color: #94a3b8; font-size: 13px; }
+      .value { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; color: #e8edf5; }
+      .links { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+      .links a { padding: 6px 10px; background: #1f2937; border-radius: 6px; }
+      .links a:hover { background: #2a3447; text-decoration: none; }
+      .stat { display: inline-block; background: #1f2937; padding: 3px 9px; border-radius: 6px; margin: 0 6px 4px 0; font-size: 12px; color: #cbd5e1; }
+      .stat.green { background: #064e3b; color: #6ee7b7; }
+      .stat.red { background: #7f1d1d; color: #fca5a5; }
+      .stat.amber { background: #78350f; color: #fcd34d; }
+      pre {
+        background: #050a13;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        font-size: 12px;
+        color: #cbd5e1;
+        margin: 8px 0;
+      }
+      code { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; color: #e8edf5; }
+      iframe {
+        width: 100%;
+        height: 460px;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        background: #fff;
+      }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1f2937; vertical-align: top; }
+      th { color: #94a3b8; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+      .muted { color: #94a3b8; font-size: 13px; }
+      .check { color: #6ee7b7; }
+      .warn  { color: #fcd34d; }
+      .miss  { color: #fca5a5; }
+      details { background: #111827; border: 1px solid #1f2937; border-radius: 8px; padding: 0; margin: 8px 0; }
+      details summary { cursor: pointer; padding: 12px 16px; font-weight: 600; font-size: 14px; }
+      details[open] summary { border-bottom: 1px solid #1f2937; }
+      details > div { padding: 12px 16px; }
+      .toc { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 12px 18px; margin: 0 0 24px; }
+      .toc ol { margin: 6px 0; padding-left: 20px; }
+      .toc li { margin: 4px 0; }
+      .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; }
+      .pill.done { background: #064e3b; color: #6ee7b7; }
+      .pill.partial { background: #78350f; color: #fcd34d; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Chess DNA — SEO Changes Preview</h1>
+      <p class="subtitle">Everything I changed for SEO/GEO, with live links to inspect each artifact. Open this on the dev preview (<code>localhost:5173/seo-preview.html</code>) or production (<code>chessdna.app/seo-preview.html</code>).</p>
+
+      <div class="toc">
+        <strong>Contents</strong>
+        <ol>
+          <li><a href="#summary">Score &amp; summary</a></li>
+          <li><a href="#index">index.html — meta tags, OG, Twitter, JSON-LD, noscript</a></li>
+          <li><a href="#robots">public/robots.txt</a></li>
+          <li><a href="#sitemap">public/sitemap.xml</a></li>
+          <li><a href="#about">public/about.html (live preview)</a></li>
+          <li><a href="#features">public/features.html (live preview)</a></li>
+          <li><a href="#faq">public/faq.html (live preview)</a></li>
+          <li><a href="#learn">public/learn/* SEO guides (live preview)</a></li>
+          <li><a href="#contact">public/contact.html (live preview)</a></li>
+          <li><a href="#base44">Base44 dashboard toggles flipped</a></li>
+          <li><a href="#remaining">Why the score is still 60% — what's outside localhost</a></li>
+        </ol>
+      </div>
+
+      <h2 id="summary">Score &amp; summary</h2>
+      <div class="card">
+        <div class="row">
+          <div>
+            <span class="stat">Score: 60% <span class="muted">(unchanged — Base44 reads internal fields, not HTML)</span></span>
+          </div>
+        </div>
+        <div style="margin-top:8px;">
+          <span class="stat green">Done 22 <span class="muted">(was 18)</span></span>
+          <span class="stat amber">Recommended 7 <span class="muted">(was 10)</span></span>
+          <span class="stat red">Urgent 2 <span class="muted">(unchanged)</span></span>
+        </div>
+        <p class="muted" style="margin: 12px 0 0;">3 Recommended items moved to Done via dashboard. Real-world SEO is fully wired (Google, GPTBot, ClaudeBot, Perplexity). The 2 Urgent items + 4 of the remaining 7 require Base44-dashboard changes (renaming app, registering Base44 Pages) that aren't local-code changes.</p>
+      </div>
+
+      <h2 id="index">index.html — meta tags, OG, Twitter, JSON-LD, noscript</h2>
+      <div class="card">
+        <div class="links">
+          <a href="/" target="_blank">View live in browser</a>
+          <a href="https://chessdna.app/" target="_blank">View on production</a>
+          <a href="view-source:https://chessdna.app/" target="_blank">View source on production</a>
+        </div>
+        <h3>Title <span class="pill done">58 chars</span></h3>
+        <pre>&lt;title&gt;Chess DNA — AI Insights That Turn Every Game Into Progress&lt;/title&gt;</pre>
+        <h3>Description <span class="pill done">25 words / 167 chars</span></h3>
+        <pre>&lt;meta name="description" content="Chess DNA turns every chess game into progress. AI-powered insights from your Chess.com or Lichess games: find your patterns, fix your weaknesses, replay your mistakes."&gt;</pre>
+        <details>
+          <summary>All OG + Twitter tags (8 + 4)</summary>
+          <div>
+<pre>&lt;meta property="og:type" content="website"&gt;
+&lt;meta property="og:site_name" content="Chess DNA"&gt;
+&lt;meta property="og:title" content="Chess DNA — Personalized Chess Training Built From Your Games"&gt;
+&lt;meta property="og:description" content="Import your Chess.com or Lichess games. Chess DNA spots your patterns, surfaces your weaknesses, and builds a training plan tuned to how you actually play."&gt;
+&lt;meta property="og:url" content="https://chessdna.app/"&gt;
+&lt;meta property="og:image" content="https://chessdna.app/favicon.png"&gt;
+&lt;meta property="og:image:width" content="512"&gt;
+&lt;meta property="og:image:height" content="512"&gt;
+&lt;meta property="og:locale" content="en_US"&gt;
+
+&lt;meta name="twitter:card" content="summary_large_image"&gt;
+&lt;meta name="twitter:title" content="Chess DNA — Personalized Chess Training Built From Your Games"&gt;
+&lt;meta name="twitter:description" content="Import your Chess.com or Lichess games. Chess DNA maps your patterns and builds training around your weaknesses."&gt;
+&lt;meta name="twitter:image" content="https://chessdna.app/favicon.png"&gt;</pre>
+          </div>
+        </details>
+        <details>
+          <summary>4× JSON-LD structured-data blocks</summary>
+          <div>
+            <p class="muted">These let Google show rich results and let AI tools (GPTBot, ClaudeBot, Perplexity) cite Chess DNA accurately.</p>
+            <ol>
+              <li><strong>WebSite</strong> — site name + URL + description</li>
+              <li><strong>Organization</strong> — brand, logo, contact email</li>
+              <li><strong>SoftwareApplication</strong> — chess training app, 6 features, free offer</li>
+              <li><strong>FAQPage</strong> — 4 Q&amp;As: what Chess DNA is, sites it imports from, what it shows, pricing</li>
+            </ol>
+            <p class="muted">Inspect them all by viewing source on production.</p>
+          </div>
+        </details>
+        <details>
+          <summary>&lt;noscript&gt; fallback content (visible to non-JS crawlers)</summary>
+          <div>
+<pre>&lt;article&gt;
+  &lt;h1&gt;Chess DNA — Personalized Chess Training Built From Your Games&lt;/h1&gt;
+  &lt;p&gt;Chess DNA turns your Chess.com and Lichess games into a
+  personalized training plan. See your patterns, your weaknesses,
+  and what to work on next — built from how you actually play.&lt;/p&gt;
+  &lt;h2&gt;What Chess DNA does&lt;/h2&gt;
+  &lt;ul&gt;
+    &lt;li&gt;Imports your games from Chess.com and Lichess&lt;/li&gt;
+    &lt;li&gt;Maps your strengths and weaknesses&lt;/li&gt;
+    &lt;li&gt;Shows you what to focus on next&lt;/li&gt;
+    &lt;li&gt;Replays any moment from your chess history&lt;/li&gt;
+    &lt;li&gt;Compare your DNA with friends&lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/article&gt;</pre>
+          </div>
+        </details>
+      </div>
+
+      <h2 id="robots">public/robots.txt</h2>
+      <div class="card">
+        <div class="links">
+          <a href="/robots.txt" target="_blank">View locally</a>
+          <a href="https://chessdna.app/robots.txt" target="_blank">View on production</a>
+        </div>
+        <p class="muted">Explicit allow rules for AI crawlers (GPTBot / ClaudeBot / PerplexityBot / Google-Extended / CCBot) — uncommon but valuable for being citable in AI answers.</p>
+<pre>User-agent: *
+Allow: /
+Disallow: /games/
+Disallow: /patterns
+Disallow: /lessons
+... (auth-gated app routes)
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+Sitemap: https://chessdna.app/sitemap.xml</pre>
+      </div>
+
+      <h2 id="sitemap">public/sitemap.xml</h2>
+      <div class="card">
+        <div class="links">
+          <a href="/sitemap.xml" target="_blank">View locally</a>
+          <a href="https://chessdna.app/sitemap.xml" target="_blank">View on production</a>
+        </div>
+        <table>
+          <thead><tr><th>URL</th><th>Priority</th><th>Change freq</th></tr></thead>
+          <tbody>
+            <tr><td><a href="https://chessdna.app/" target="_blank">/</a></td><td>1.0</td><td>weekly</td></tr>
+            <tr><td><a href="https://chessdna.app/about.html" target="_blank">/about.html</a></td><td>0.9</td><td>monthly</td></tr>
+            <tr><td><a href="https://chessdna.app/contact.html" target="_blank">/contact.html</a></td><td>0.7</td><td>monthly</td></tr>
+            <tr><td><a href="https://chessdna.app/support" target="_blank">/support</a></td><td>0.6</td><td>monthly</td></tr>
+            <tr><td><a href="https://chessdna.app/privacy" target="_blank">/privacy</a></td><td>0.5</td><td>yearly</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="about">public/about.html <span class="pill done">live preview below</span></h2>
+      <div class="card">
+        <div class="links">
+          <a href="/about.html" target="_blank">Open locally</a>
+          <a href="https://chessdna.app/about.html" target="_blank">Open on production</a>
+        </div>
+        <p class="muted">High-level About page: what Chess DNA does, how it works at a glance, privacy stance, and beta status. JSON-LD AboutPage included.</p>
+        <iframe src="/about.html" title="About page preview"></iframe>
+      </div>
+
+      <h2 id="features">public/features.html <span class="pill done">live preview below</span></h2>
+      <div class="card">
+        <div class="links">
+          <a href="/features.html" target="_blank">Open locally</a>
+          <a href="https://chessdna.app/features.html" target="_blank">Open on production</a>
+        </div>
+        <p class="muted">Dedicated features page — one section per marketing-slide concept. JSON-LD ItemList included so AI tools can enumerate Chess DNA's features.</p>
+        <iframe src="/features.html" title="Features page preview"></iframe>
+      </div>
+
+      <h2 id="faq">public/faq.html <span class="pill done">live preview below</span></h2>
+      <div class="card">
+        <div class="links">
+          <a href="/faq.html" target="_blank">Open locally</a>
+          <a href="https://chessdna.app/faq.html" target="_blank">Open on production</a>
+        </div>
+        <p class="muted">12-question FAQ with accordion UI + JSON-LD FAQPage. Long-tail SEO play (how does AI find chess patterns, what is a skill radar, how to improve at chess, etc.).</p>
+        <iframe src="/faq.html" title="FAQ page preview"></iframe>
+      </div>
+
+      <h2 id="learn">public/learn/* SEO guides <span class="pill done">2 articles · live preview below</span></h2>
+      <div class="card">
+        <p class="muted">Long-form articles targeting high-intent chess-improvement queries. Each one has a JSON-LD Article schema, internal links into Features/FAQ, and pattern-name keywords that match what the app actually detects.</p>
+        <div class="links" style="margin-bottom:10px;">
+          <a href="/learn/find-your-chess-weaknesses.html" target="_blank">Find your chess weaknesses (locally)</a>
+          <a href="https://chessdna.app/learn/find-your-chess-weaknesses.html" target="_blank">→ production</a>
+        </div>
+        <iframe src="/learn/find-your-chess-weaknesses.html" title="Find your chess weaknesses"></iframe>
+        <div class="links" style="margin: 14px 0 10px;">
+          <a href="/learn/how-to-analyze-your-chess-games.html" target="_blank">How to analyze your chess games (locally)</a>
+          <a href="https://chessdna.app/learn/how-to-analyze-your-chess-games.html" target="_blank">→ production</a>
+        </div>
+        <iframe src="/learn/how-to-analyze-your-chess-games.html" title="How to analyze your chess games"></iframe>
+      </div>
+
+      <h2 id="contact">public/contact.html <span class="pill done">live preview below</span></h2>
+      <div class="card">
+        <div class="links">
+          <a href="/contact.html" target="_blank">Open locally</a>
+          <a href="https://chessdna.app/contact.html" target="_blank">Open on production</a>
+        </div>
+        <p class="muted">Contact page — support, beta access, press, data/privacy. JSON-LD ContactPage included.</p>
+        <iframe src="/contact.html" title="Contact page preview"></iframe>
+      </div>
+
+      <h2 id="base44">Base44 dashboard toggles flipped (4 of them)</h2>
+      <div class="card">
+        <p class="muted">Beyond local code, I flipped these toggles in the Base44 SEO dashboard so my shipped files take effect:</p>
+        <table>
+          <thead><tr><th>Toggle</th><th>Before</th><th>After</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>Auto-generate robots.txt</td><td>ON</td><td>OFF</td><td>So Base44 serves my <code>public/robots.txt</code> with AI bot rules</td></tr>
+            <tr><td>Auto-generate sitemap.xml</td><td>ON</td><td>OFF</td><td>So Base44 serves my <code>public/sitemap.xml</code> with 5 URLs</td></tr>
+            <tr><td>Platform meta tag injection</td><td>ON</td><td>OFF</td><td>Was overriding my <code>&lt;title&gt;</code> &amp; description with Base44's defaults</td></tr>
+            <tr><td>Platform structured data injection</td><td>ON</td><td>OFF</td><td>Was injecting its own JSON-LD on top of mine</td></tr>
+            <tr><td>"Auto-generate Website label" button</td><td>—</td><td>clicked</td><td>Cleared "Website label is missing" + "No search-engine labels yet" — moved to Done</td></tr>
+            <tr><td>"Auto-generate brand info" button</td><td>—</td><td>clicked</td><td>Cleared "Brand info is missing" — moved to Done</td></tr>
+          </tbody>
+        </table>
+        <p class="muted" style="margin-top:12px;"><a href="https://app.base44.com/apps/69a04516fd2be6e9fdd5fbde/editor/workspace/seo" target="_blank">Open Base44 SEO dashboard</a></p>
+      </div>
+
+      <h2 id="remaining">Why score is still 60% — what's outside localhost</h2>
+      <div class="card">
+        <p>Base44's SEO scanner reads from its own internal fields, not from my served HTML:</p>
+        <table>
+          <thead><tr><th>Checklist item</th><th>What scanner reads</th><th>How to fix</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="warn">App name is too short (8 chars)</td>
+              <td>Base44 app-name setting (<code>ChessDNA</code>)</td>
+              <td>Rename to 10+ chars in Base44 Settings</td>
+            </tr>
+            <tr>
+              <td class="warn">Description is too vague (16 words)</td>
+              <td>Base44 app-description setting</td>
+              <td>Edit app description in Base44 Settings, ≥20 words / ≥80 chars</td>
+            </tr>
+            <tr>
+              <td class="miss">App has no content for AI <span class="pill partial">Urgent</span></td>
+              <td>Base44 Page-entity registry</td>
+              <td>Use Base44 "Fix with AI" or create Pages in their dashboard</td>
+            </tr>
+            <tr>
+              <td class="miss">App has no pages <span class="pill partial">Urgent</span></td>
+              <td>Same</td>
+              <td>Same</td>
+            </tr>
+            <tr>
+              <td class="warn">No pages to list in the sitemap</td>
+              <td>Same Page registry — ignores my shipped sitemap.xml</td>
+              <td>Same</td>
+            </tr>
+            <tr>
+              <td class="warn">App is missing trust pages</td>
+              <td>Same — only Base44 Pages count, not my <code>about.html</code></td>
+              <td>Same</td>
+            </tr>
+            <tr>
+              <td class="warn">3 of 14 data types lack text fields</td>
+              <td>Looks like it expects a specific field name; my <code>description</code> may be dropped</td>
+              <td>TBD — would need Base44 docs on the exact field name</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="muted" style="margin-top:14px;">Two of these are user-visible (renaming the app, adding public pages). Tell me which you want me to do next.</p>
+      </div>
+
+      <h2>Files changed in this session</h2>
+      <div class="card">
+<pre>M  index.html                                  (full SEO meta + OG + Twitter + 4× JSON-LD + noscript)
+A  public/robots.txt                           (with AI bot allow rules)
+A  public/sitemap.xml                          (5 URLs)
+A  public/about.html                           (high-level About page)
+A  public/contact.html                         (Contact page)
+A  public/seo-preview.html                     (this preview)
+M  base44/entities/*.jsonc                     (14 entities, + high-level description on each)</pre>
+      </div>
+    </div>
+  </body>
+</html>

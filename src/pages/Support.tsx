@@ -9,7 +9,7 @@
  */
 import { useMemo, useState } from 'react';
 
-const SUPPORT_EMAIL = 'yuval.inc@gmail.com';
+const SUPPORT_EMAIL = 'yuval@chessdna.app';
 const APP_NAME = 'Chess DNA';
 
 /* Style constants are declared up-top because the FAQ array (below) uses

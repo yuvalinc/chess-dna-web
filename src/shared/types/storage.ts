@@ -1,6 +1,5 @@
 import type { AIProviderType } from '../../ai/ai-types';
 import type { TimeClass } from './game';
-import type { PodcastLength } from './podcast';
 
 export interface UserSettings {
   // Claude
@@ -47,25 +46,11 @@ export interface UserSettings {
   tutorialStepsSeen: number[];
   // Sync
   lastSyncAt: number | null;
-  // Language (controls UI + AI + TTS)
+  // Language (controls UI + AI)
   language: 'en' | 'he' | 'es';
   // Appearance
   theme: 'dark' | 'light';
   boardTheme: string;
-  // TTS (OpenAI)
-  ttsVoiceA: string;
-  ttsVoiceB: string;
-  ttsModel: string;
-  ttsLanguage: string;
-  // Custom audio prompts (admin editable — applied globally)
-  audioSystemPrompt: string | null;
-  audioGamePromptSuffix: string | null;
-  // Google Cloud Podcast API
-  gcpProjectId: string | null;
-  gcpOAuthClientId: string | null;
-  gcpConnected: boolean;
-  podcastLength: PodcastLength;
-  audioProvider: 'auto' | 'podcast' | 'tts';
 }
 
 export const DEFAULT_SETTINGS: UserSettings = {
@@ -98,18 +83,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   lastSyncAt: null,
   language: 'en',
   theme: 'dark',
-  boardTheme: 'classic',
-  ttsVoiceA: 'nova',
-  ttsVoiceB: 'alloy',
-  ttsModel: 'gpt-4o-mini-tts',
-  ttsLanguage: 'English',
-  audioSystemPrompt: null,
-  audioGamePromptSuffix: null,
-  gcpProjectId: null,
-  gcpOAuthClientId: null,
-  gcpConnected: false,
-  podcastLength: 'STANDARD',
-  audioProvider: 'auto',
+  boardTheme: 'green',
 };
 
 export interface TokenUsage {

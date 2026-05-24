@@ -1,5 +1,6 @@
 {
   "name": "Insight",
+  "description": "A short-form takeaway about the user's chess: a notable trend, a recent breakthrough, or a recurring weakness.",
   "type": "object",
   "properties": {
     "text": { "type": "string" },

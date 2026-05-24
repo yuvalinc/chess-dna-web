@@ -2,15 +2,12 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ThemedChessboard from '@/components/ThemedChessboard';
 import { useChessData } from '@/contexts/ChessDataContext';
-import { useTheme } from '@/components/ThemeContext';
 import type { WeaknessPattern, PatternExample } from '@shared/types/patterns';
 import type { GameRecord } from '@shared/types/game';
 import { getThemeLabel, getThemeDescription, getThemeActionItems } from '@/patterns/pattern-engine';
-import { hasAnyProvider } from '@/ai/ai-router';
 
 export default function Patterns() {
   const navigate = useNavigate();
-  const { settings } = useTheme();
   const {
     patterns,
     games,
@@ -47,11 +44,6 @@ export default function Patterns() {
               <span className="text-sm text-chess-text-secondary">{analyzedCount} / {games.length}</span>
             </div>
           </div>
-        )}
-        {!hasAnyProvider(settings) && analyzedCount > 0 && (
-          <p className="text-gray-500 text-xs mt-4">
-            Tip: Add an AI provider API key in Settings to unlock AI-powered lessons and exercises.
-          </p>
         )}
       </div>
     );
@@ -92,13 +84,6 @@ export default function Patterns() {
         ))}
       </div>
 
-      {!hasAnyProvider(settings) && (
-        <div className="mt-6 bg-chess-surface rounded-lg p-4 text-center">
-          <p className="text-sm text-gray-400">
-            Add an AI provider API key in Settings to get AI-generated lessons and exercises targeting each pattern.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

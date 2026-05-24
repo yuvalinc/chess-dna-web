@@ -1,3 +1,5 @@
+import { memo } from 'react';
+
 interface EvalBarProps {
   /** Centipawn score from white's perspective */
   score: number;
@@ -11,7 +13,7 @@ interface EvalBarProps {
  * Vertical evaluation bar, similar to Lichess.
  * White portion grows from the top when white is winning.
  */
-export default function EvalBar({ score, scoreType, height = 400 }: EvalBarProps) {
+function EvalBar({ score, scoreType, height = 400 }: EvalBarProps) {
   // Convert score to a percentage (0 = black winning, 100 = white winning)
   let whitePercent: number;
   let displayScore: string;
@@ -70,3 +72,5 @@ export default function EvalBar({ score, scoreType, height = 400 }: EvalBarProps
     </div>
   );
 }
+
+export default memo(EvalBar);

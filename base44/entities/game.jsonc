@@ -1,5 +1,6 @@
 {
   "name": "Game",
+  "description": "A single chess game imported from Chess.com or Lichess. Stores the PGN, time control, opening, players, and current analysis status. One Game record per imported game; analysis details live in the related Analysis entity.",
   "type": "object",
   "properties": {
     "gameId": { "type": "string" },

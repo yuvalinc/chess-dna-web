@@ -17,5 +17,7 @@ export const BOARD_THEMES: BoardTheme[] = [
 ];
 
 export function getBoardTheme(id: string): BoardTheme {
-  return BOARD_THEMES.find((t) => t.id === id) ?? BOARD_THEMES[0];
+  // Fallback to green when an unknown theme id is requested — green is
+  // the new default per design.
+  return BOARD_THEMES.find((t) => t.id === id) ?? BOARD_THEMES.find((t) => t.id === 'green') ?? BOARD_THEMES[0];
 }

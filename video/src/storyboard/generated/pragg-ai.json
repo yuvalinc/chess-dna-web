@@ -1,0 +1,99 @@
+{
+  "title": "Pragg Defends, Sindarov Snaps",
+  "shots": [
+    {
+      "type": "hook",
+      "fen": "r3r1k1/ppp2pp1/3p2bp/2qn1N2/6P1/5P2/PPBQ4/1K4RR w - - 0 22",
+      "highlightSquare": "h6",
+      "sticker": "!?",
+      "stickerKind": "interesting",
+      "theme": "pinkBerry",
+      "durationSec": 1.2
+    },
+    {
+      "type": "vsTitle",
+      "eventName": "ROMANIA 2026 · R2",
+      "subtitle": "♛  53-GAME UNBEATEN  ♛",
+      "fen": "r3r1k1/ppp2pp1/3p2bp/2qn1N2/6P1/5P2/PPBQ4/1K4RR w - - 0 22",
+      "whitePlayer": {
+        "name": "SINDAROV",
+        "rating": 2776,
+        "title": "GM",
+        "photoUrl": "photos/sindarov.jpg",
+        "color": "white"
+      },
+      "blackPlayer": {
+        "name": "PRAGG",
+        "rating": 2733,
+        "title": "GM",
+        "photoUrl": "photos/pragg.jpg",
+        "color": "black"
+      },
+      "theme": "monoSlate",
+      "durationSec": 2.6
+    },
+    {
+      "type": "streak",
+      "from": 0,
+      "to": 53,
+      "crashTo": 0,
+      "topLabel": "SINDAROV",
+      "counterLabel": "GAMES UNBEATEN",
+      "dateRange": "SEP 2025  →  MAY 2026",
+      "milestone": "3 × 14-GAME\nTOURNAMENTS\nSWEPT",
+      "crashText": "STREAK BROKEN",
+      "crashSubText": "BY PRAGG",
+      "crashPhotoUrl": "photos/pragg.jpg",
+      "durationSec": 5.0
+    },
+    {
+      "type": "moveSequence",
+      "startFen": "r3r1k1/ppp2pp1/3p2bp/2qn1N2/6P1/5P2/PPBQ4/1K4RR w - - 0 22",
+      "moves": ["Nxh6+", "gxh6", "Bxg6", "fxg6"],
+      "brilliantMoveIndex": 0,
+      "caption": "THE TRAP THAT DIDN'T WORK",
+      "theme": "classicGreen",
+      "whitePlayer": { "name": "SINDAROV", "photoUrl": "photos/sindarov.jpg" },
+      "blackPlayer": { "name": "PRAGG", "photoUrl": "photos/pragg.jpg" },
+      "startMoveNumber": 22,
+      "showGuns": true,
+      "squareMemes": [
+        { "square": "h6", "kind": "explosion", "scale": 0.9 },
+        { "square": "g8", "kind": "alarm", "scale": 0.75 },
+        { "square": "b1", "kind": "skull", "scale": 0.8, "replacePiece": true }
+      ],
+      "durationSec": 2.8
+    },
+    {
+      "type": "videoClip",
+      "src": "clips/few-moments-later.mp4",
+      "muted": true,
+      "fit": "contain",
+      "background": "#0a0a0a",
+      "durationSec": 2.2
+    },
+    {
+      "type": "punchline",
+      "fen": "3kr3/2p2q2/pr1p4/Qp1n4/6P1/3R1P2/PP6/K1R5 w - - 6 43",
+      "zoomSquares": ["a1", "f7"],
+      "sticker": "RESIGNS",
+      "stickerKind": "resign",
+      "stickerSquare": "a1",
+      "theme": "classicGreen",
+      "layingPiece": "a1",
+      "layingPieceColor": "#dc2626",
+      "resignedPlayer": { "name": "Sindarov", "photoUrl": "photos/sindarov.jpg" },
+      "durationSec": 2.0
+    },
+    {
+      "type": "outro",
+      "iconUrl": "brand/chess-dna-icon.png",
+      "brandName": "Chess DNA",
+      "cta": "follow for more",
+      "creditName": "Reegan Palmer",
+      "creditPrefix": "made by",
+      "creditPhotoUrl": "photos/reegan.jpg",
+      "durationSec": 1.6
+    }
+  ]
+}

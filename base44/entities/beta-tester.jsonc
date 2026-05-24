@@ -1,0 +1,21 @@
+{
+  "name": "BetaTester",
+  "description": "An approved Chess DNA closed-beta user. AuthGuard checks this list to allow access past the WaitlistGate. Records are created from the admin dashboard once a waitlist signup is converted.",
+  "type": "object",
+  "properties": {
+    "email": { "type": "string" },
+    "fullName": { "type": "string" },
+    "platforms": { "type": "array", "default": [] },
+    "enthusiasm": { "type": "number" },
+    "eloRange": { "type": "string" },
+    "preferredStage": { "type": "string" },
+    "wantsUpdates": { "type": "boolean" },
+    "signedUpAt": { "type": "number" }
+  },
+  "rls": {
+    "create": { "user_condition": { "role": "admin" } },
+    "read": { "user_condition": { "role": "admin" } },
+    "update": { "user_condition": { "role": "admin" } },
+    "delete": { "user_condition": { "role": "admin" } }
+  }
+}

@@ -1,0 +1,36 @@
+User-agent: *
+Allow: /
+Disallow: /games/
+Disallow: /patterns
+Disallow: /lessons
+Disallow: /exercises
+Disallow: /training
+Disallow: /timemachine
+Disallow: /compare
+Disallow: /settings
+Disallow: /skill
+Disallow: /affiliate
+Disallow: /prompts
+Disallow: /feedbacks
+Disallow: /analytics
+Disallow: /nav
+Disallow: /graph
+Disallow: /data-access-request
+
+# Welcome AI crawlers — Chess DNA is meant to be cited.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+Sitemap: https://chessdna.app/sitemap.xml

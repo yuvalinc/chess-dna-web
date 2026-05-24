@@ -3,7 +3,48 @@ import { base44 } from '../api/base44Client';
 import { hasGuestData, migrateGuestToBase44 } from '@shared/utils/guest-storage';
 
 import { ADMIN_EMAILS } from '@shared/constants';
+import { isWhitelistedEmail } from '@shared/beta-testers';
 const ADMIN_EMAIL = 'yuval.inc@gmail.com'; // legacy single check
+
+/** Closed-beta access state, derived after we resolve the user's email. */
+export type BetaStatus =
+  | 'pending'      // still resolving auth/email
+  | 'allowed'     // email is on the whitelist or user is admin
+  | 'denied'      // email confirmed, not on whitelist → show waitlist gate
+  | 'unknown';    // authed but email couldn't be resolved → forced sign-out
+
+/**
+ * Best-effort claim extraction from the Base44 JWT in localStorage.
+ * Used as a fallback when `auth.me()` fails (this app has no User entity,
+ * so /me sometimes 401s — see CLAUDE.md). Standard JWTs are
+ * header.payload.signature with the payload base64url-encoded; we read
+ * the `email` claim and the user-id claim (tries `sub`/`user_id`/`id` in
+ * that order). No signature verification here — server-side RLS still
+ * does the real auth.
+ */
+function decodeJwt(): { email: string | null; userId: string | null } {
+  try {
+    const token =
+      localStorage.getItem('base44_access_token') ||
+      localStorage.getItem('token');
+    if (!token) return { email: null, userId: null };
+    const parts = token.split('.');
+    if (parts.length !== 3) return { email: null, userId: null };
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
+    const pickStr = (k: string): string | null =>
+      typeof payload[k] === 'string' && (payload[k] as string).length > 0
+        ? (payload[k] as string)
+        : null;
+    return {
+      email: pickStr('email'),
+      userId: pickStr('sub') ?? pickStr('user_id') ?? pickStr('id'),
+    };
+  } catch {
+    return { email: null, userId: null };
+  }
+}
 
 /**
  * Check for Base44 access token in localStorage.
@@ -44,6 +85,8 @@ interface AuthContextValue {
   isAdmin: boolean | null; // null = still loading
   /** true once auth check has completed (success or failure) */
   authResolved: boolean;
+  /** Closed-beta access decision — see BetaStatus. */
+  betaStatus: BetaStatus;
 }
 
 // Module-level cache for imperative (non-React) code
@@ -61,6 +104,7 @@ const AuthContext = createContext<AuthContextValue>({
   userEmail: null,
   isAdmin: null,
   authResolved: false,
+  betaStatus: 'pending',
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -75,10 +119,95 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const token = getBase44Token();
   const [isAuthenticated] = useState(() => useDevShortcut || !!token);
 
-  const [userId, setUserId] = useState<string | null>(null);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(useDevShortcut ? true : null);
+  // Decode the JWT once up-front. The token in localStorage is stable across
+  // reloads, so this is a deterministic signal we can trust without waiting
+  // on auth.me() — which intermittently returns the user object without an
+  // `email` field and was leaving whitelisted users stuck at the gate.
+  const initialJwt = useDevShortcut ? { email: null, userId: null } : decodeJwt();
+  const jwtEmail = initialJwt.email;
+
+  // Synchronous admin/whitelist check from JWT claims. If the email is on a
+  // hardcoded list (admin, BETA_TESTERS, or legacy users), allow immediately —
+  // no roundtrip, no gate flicker. resolveBetaStatus still runs after
+  // auth.me() to cover the dynamic legacy-by-data check.
+  const initialAllowed = !!jwtEmail && (
+    jwtEmail === ADMIN_EMAIL ||
+    ADMIN_EMAILS.includes(jwtEmail) ||
+    isWhitelistedEmail(jwtEmail)
+  );
+
+  // Seed userId from the JWT synchronously so downstream caches (list-cache,
+  // singleton-cache) can build their per-user keys on first paint. auth.me()
+  // overrides this with the same value asynchronously — they match for a
+  // valid token.
+  const [userId, setUserId] = useState<string | null>(initialJwt.userId);
+  const [userEmail, setUserEmail] = useState<string | null>(jwtEmail);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(
+    useDevShortcut ? true :
+    jwtEmail ? (jwtEmail === ADMIN_EMAIL || ADMIN_EMAILS.includes(jwtEmail)) :
+    null
+  );
   const [authResolved, setAuthResolved] = useState(false);
+  // Dev shortcut bypasses the closed-beta gate so local development isn't blocked.
+  const [betaStatus, setBetaStatus] = useState<BetaStatus>(
+    useDevShortcut || initialAllowed ? 'allowed' : 'pending'
+  );
+
+  /**
+   * Resolve the closed-beta decision.
+   *
+   * Order of checks:
+   *  1. Email is unknown → 'unknown' (forced sign-out via WaitlistGate)
+   *  2. Admin email → 'allowed'
+   *  3. Email on the whitelist → 'allowed'
+   *  4. Legacy-user grandfather: if the user already has a UserPreferences
+   *     row in Base44 (or a Game record), they signed up BEFORE the gate
+   *     was activated — grandfather them in. Auto-detects every existing
+   *     user without needing a static list.
+   *  5. Otherwise → 'denied' (waitlist form).
+   */
+  const resolveBetaStatus = async (email: string | null, uid: string | null) => {
+    if (!email) {
+      setBetaStatus('unknown');
+      return;
+    }
+    const isAdminEmail = email === ADMIN_EMAIL || ADMIN_EMAILS.includes(email);
+    if (isAdminEmail || isWhitelistedEmail(email)) {
+      setBetaStatus('allowed');
+      return;
+    }
+    // Legacy check — needs a user ID to query Base44. Without one we can't
+    // tell legacy from brand-new, so default-deny.
+    if (!uid) {
+      setBetaStatus('denied');
+      return;
+    }
+    try {
+      const entities = base44.entities as Record<string, any>;
+      const prefs = await entities.UserPreferences.filter({ created_by_id: uid });
+      if (Array.isArray(prefs) && prefs.length > 0) {
+        console.log('[Chess DNA Auth] Legacy user — grandfathered past the beta gate');
+        setBetaStatus('allowed');
+        return;
+      }
+      // Fallback: user might have Games but no UserPreferences row yet.
+      const games = await entities.Game.filter({ created_by_id: uid });
+      if (Array.isArray(games) && games.length > 0) {
+        console.log('[Chess DNA Auth] Legacy user (by Game records) — grandfathered');
+        setBetaStatus('allowed');
+        return;
+      }
+    } catch (err) {
+      // If the legacy-data lookup fails, we'd rather let the user in than
+      // wrongly block someone with a transient Base44 hiccup. They're
+      // already authenticated; the worst case is a non-whitelisted new
+      // user slipping past during an outage — admin can clean up later.
+      console.warn('[Chess DNA Auth] Legacy check failed, allowing through:', err);
+      setBetaStatus('allowed');
+      return;
+    }
+    setBetaStatus('denied');
+  };
 
   useEffect(() => {
     console.log('[Chess DNA Auth] Init — token:', !!token, 'isDev:', isDev, 'realMode:', realMode);
@@ -93,41 +222,68 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log('[Chess DNA Auth] No token found → unauthenticated');
       setIsAdmin(false);
       setAuthResolved(true);
+      // Beta status irrelevant when not authed — AuthGuard shows the entry gate first.
+      setBetaStatus('pending');
       return;
     }
 
     console.log('[Chess DNA Auth] Token found → authenticated, trying auth.me() for user details...');
 
-    // Token exists → user is authenticated.
-    // Try auth.me() to get user details (userId, email) for admin check.
-    // This may 401 if the app has no User entity — that's fine, we're
-    // still authenticated and entity CRUD will work via the token.
+    // Token exists → user is authenticated. We previously blocked
+    // `authResolved` on auth.me() finishing, which gated every entity
+    // fetch on a 200-500ms round-trip we don't actually need for first
+    // paint. Now we fast-path: resolve auth synchronously (so entity
+    // fetches kick off in parallel) and enrich userId/email/admin in
+    // the background.
+    //
+    // Exception: if guest data is pending migration, keep the old
+    // behavior — we MUST migrate before letting entity hooks fire,
+    // otherwise the user would see an empty Base44 collection while
+    // their localStorage data is still being copied over.
+    const hasGuest = hasGuestData();
+    if (!hasGuest) {
+      setAuthResolved(true);
+    }
+
     base44.auth
       .me()
       .then((user: Record<string, unknown>) => {
         const id = (user?.id as string) ?? null;
-        const email = (user?.email as string) ?? null;
+        // auth.me() occasionally returns the user object without an email
+        // field — fall back to the JWT email so we don't gate a verified user.
+        const email = ((user?.email as string) ?? null) || decodeJwt().email;
         _cachedUserId = id;
         setUserId(id);
         setUserEmail(email);
         setIsAdmin(email === ADMIN_EMAIL || ADMIN_EMAILS.includes(email ?? ''));
+        void resolveBetaStatus(email, id);
         console.log('[Chess DNA Auth] auth.me() succeeded — userId:', id, 'email:', email);
       })
       .catch((err: unknown) => {
-        // auth.me() failed but token exists → still authenticated
-        // Just can't determine admin status or userId
-        console.log('[Chess DNA Auth] auth.me() failed (expected if no User entity):', err);
-        setIsAdmin(false);
+        // auth.me() failed but token exists → still authenticated.
+        // Fall back to decoding the JWT for email + user id so we can still
+        // make the closed-beta whitelist decision (and the legacy-user check).
+        console.log('[Chess DNA Auth] auth.me() failed — using JWT fallback:', err);
+        const jwt = decodeJwt();
+        if (jwt.email) {
+          setUserEmail(jwt.email);
+          setIsAdmin(jwt.email === ADMIN_EMAIL || ADMIN_EMAILS.includes(jwt.email));
+        } else {
+          setIsAdmin(false);
+        }
+        if (jwt.userId) {
+          _cachedUserId = jwt.userId;
+          setUserId(jwt.userId);
+        }
+        void resolveBetaStatus(jwt.email, jwt.userId);
       })
       .finally(() => {
-        // Migrate guest data to Base44 if user just logged in after guest session
-        if (hasGuestData()) {
+        if (hasGuest) {
           console.log('[Chess DNA Auth] Guest data detected — migrating to Base44...');
           const b44entities = base44.entities as Record<string, any>;
           migrateGuestToBase44(b44entities)
             .then((stats) => {
               console.log('[Chess DNA Auth] Guest data migrated:', stats);
-              // Force reload to refresh all entity hooks with Base44 data
               window.location.reload();
             })
             .catch((err) => {
@@ -136,15 +292,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .finally(() => {
               setAuthResolved(true);
             });
-        } else {
-          setAuthResolved(true);
         }
-        console.log('[Chess DNA Auth] authResolved=true, isAuthenticated=true');
       });
   }, [useDevShortcut, isDev, realMode, token]);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isGuest: !isAuthenticated, userId, userEmail, isAdmin, authResolved }}>
+    <AuthContext.Provider value={{ isAuthenticated, isGuest: !isAuthenticated, userId, userEmail, isAdmin, authResolved, betaStatus }}>
       {children}
     </AuthContext.Provider>
   );

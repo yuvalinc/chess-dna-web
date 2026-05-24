@@ -1,0 +1,23 @@
+{
+  "name": "BetaWaitlist",
+  "description": "A request to join the Chess DNA closed beta: email, full name, ELO rating, and platform (iPhone or Android). Created by WaitlistGate when a not-yet-approved user signs in.",
+  "type": "object",
+  "properties": {
+    "email": { "type": "string" },
+    "fullName": { "type": "string" },
+    "elo": { "type": "number" },
+    "platform": { "type": "string" },
+    "status": { "type": "string", "default": "waiting" }
+  },
+  "rls": {
+    "create": true,
+    "read": {
+      "$or": [
+        { "created_by": "{{user.email}}" },
+        { "user_condition": { "role": "admin" } }
+      ]
+    },
+    "update": { "user_condition": { "role": "admin" } },
+    "delete": { "user_condition": { "role": "admin" } }
+  }
+}

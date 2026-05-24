@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0f1a" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="canonical" href="https://chessdna.app/features.html" />
+
+    <title>Chess DNA Features — Patterns, Replays, Skill Radar</title>
+    <meta name="description" content="Chess DNA features: AI pattern detection, replays of every mistake, instant game analysis, an 8-dimension skill radar, and shareable Chess DNA cards." />
+    <meta name="keywords" content="Chess DNA features, AI chess pattern detection, chess mistake replays, chess game analysis explained, skill radar, missed pin training, missed fork training, missed mate training, endgame technique, hanging piece, back rank weakness, time pressure blunder" />
+    <meta name="robots" content="index, follow" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Chess DNA" />
+    <meta property="og:title" content="Chess DNA Features — Patterns, Replays, Skill Radar" />
+    <meta property="og:description" content="AI pattern detection, replays, instant game analysis, 8-dimension Skill Radar, and shareable DNA cards. Everything Chess DNA does." />
+    <meta property="og:url" content="https://chessdna.app/features.html" />
+    <meta property="og:image" content="https://chessdna.app/favicon.png" />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "ItemList",
+      "name": "Chess DNA Features",
+      "url": "https://chessdna.app/features.html",
+      "description": "The features inside Chess DNA: AI Patterns, Replays, Instant Game Analysis, the 8-Dimension Skill Radar, and shareable Chess DNA cards.",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "AI Pattern Detection", "description": "Finds your recurring mistakes — Missed Tactic, Missed Pin, Endgame Technique, Opening Inaccuracy, Positional Error — and ranks them by rating cost." },
+        { "@type": "ListItem", "position": 2, "name": "Replays", "description": "Replay every position where you went wrong, step-by-step, until you fix the pattern." },
+        { "@type": "ListItem", "position": 3, "name": "Instant Game Analysis", "description": "Clear plain-English explanations, key moments, and pattern tags for every game." },
+        { "@type": "ListItem", "position": 4, "name": "8-Dimension Skill Radar", "description": "Your complete chess profile: Openings, Tactics, Defense, Positional, Endgame, Calculation, Time Management, Resilience." },
+        { "@type": "ListItem", "position": 5, "name": "Chess DNA Card", "description": "Shareable card with your skill profile, ELO percentile, and rank tier." }
+      ]
+    }
+    </script>
+
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        background: #0a0f1a;
+        color: #e8edf5;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.6;
+      }
+      .wrap { max-width: 800px; margin: 0 auto; padding: 48px 24px 96px; }
+      header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+      header img { width: 56px; height: 56px; border-radius: 14px; }
+      header h1 { font-size: 28px; margin: 0; letter-spacing: -0.01em; }
+      .lede { font-size: 18px; margin: 0 0 36px; color: #e8edf5; }
+      .feature { background: #111827; border: 1px solid #1f2937; border-radius: 14px; padding: 22px 24px; margin: 18px 0; }
+      .feature h2 { color: #6ee7b7; font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+      .feature .sub { color: #94a3b8; font-size: 14px; margin: 0 0 14px; }
+      .feature p, .feature li { color: #cbd5e1; }
+      .feature ul { padding-left: 22px; margin: 8px 0 0; }
+      .tag { display: inline-block; background: #064e3b; color: #6ee7b7; padding: 2px 9px; border-radius: 6px; font-size: 12px; margin-right: 6px; }
+      a { color: #6ee7b7; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid #1f2937; color: #94a3b8; font-size: 14px; }
+      footer a { color: #94a3b8; margin-right: 16px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <img src="/favicon.png" alt="Chess DNA logo" />
+        <h1>Chess DNA Features</h1>
+      </header>
+
+      <p class="lede">Five features. One goal: turn every chess game into progress.</p>
+
+      <section class="feature">
+        <h2>1. AI Pattern Detection</h2>
+        <p class="sub">Find Patterns. Fix Weaknesses.</p>
+        <p>Chess DNA reads every move in every game you import and groups your recurring mistakes into named patterns. The AI tells you which pattern is costing you the most rating, so you always know what to fix first.</p>
+        <p>Some of the patterns Chess DNA surfaces:</p>
+        <ul>
+          <li><span class="tag">TACTICS</span> Missed Tactic — the tactical shot you didn't see.</li>
+          <li><span class="tag">TACTICS</span> Missed Pin — pins that were on the board but you missed.</li>
+          <li><span class="tag">TACTICS</span> Missed Fork — forks you walked past or set yourself up for.</li>
+          <li><span class="tag">TACTICS</span> Missed Skewer — linear attacks that decide middlegames and endgames.</li>
+          <li><span class="tag">TACTICS</span> Missed Mate — Mate-in-1 through Mate-in-5 you didn't play.</li>
+          <li><span class="tag">TACTICS</span> Trapped Piece — pieces (yours or theirs) caught with no escape squares.</li>
+          <li><span class="tag">TACTICS</span> Discovered Attack — moves that uncover a second attacker.</li>
+          <li><span class="tag">TACTICS</span> Hanging Pieces — leaving material undefended.</li>
+          <li><span class="tag">TACTICS</span> Back Rank Weakness — the king with no luft.</li>
+          <li><span class="tag">DEFENSE</span> King Safety — exposed king, weakened shelter, attack pressure.</li>
+          <li><span class="tag">ENDGAME</span> Endgame Technique — winning positions you didn't convert.</li>
+          <li><span class="tag">ENDGAME</span> Endgame Pawn Play — passed pawns, opposition, breakthroughs.</li>
+          <li><span class="tag">OPENING</span> Opening Inaccuracy — early-game mistakes that cost tempo or structure.</li>
+          <li><span class="tag">POSITIONAL</span> Positional Error — long-term planning slips.</li>
+          <li><span class="tag">POSITIONAL</span> Piece Activity — passive pieces, lost coordination.</li>
+          <li><span class="tag">POSITIONAL</span> Pawn Structure — doubled, isolated, backward, weak chains.</li>
+          <li><span class="tag">POSITIONAL</span> Space Control — central squares, outposts, cramped positions.</li>
+          <li><span class="tag">TIME</span> Time Pressure Blunder — mistakes driven by the clock.</li>
+        </ul>
+        <p>Chess DNA also tags positive patterns when you play them — Brilliant Sacrifices, Promotions, Critical Defensive Resources — so your strengths show up too, not just your mistakes.</p>
+      </section>
+
+      <section class="feature">
+        <h2>2. Replays</h2>
+        <p class="sub">Replay. Learn. Get Better.</p>
+        <p>Every position where you went wrong is queued up for replay. You see the position, choose your move, and Chess DNA tells you whether it works. Hints, skips, and the engine's recommendation are all one tap away.</p>
+        <p>Replays are grouped by pattern, so you can tackle your worst weakness first, see your accuracy climb, and stop making the same mistake in new games.</p>
+      </section>
+
+      <section class="feature">
+        <h2>3. Instant Game Analysis</h2>
+        <p class="sub">Clear explanations, key moments, patterns you can act on.</p>
+        <p>Every game gets an analysis you can actually read. Chess DNA explains what your move did, why the engine prefers something else, and which pattern this mistake fits into.</p>
+        <p>Stats, Key Moments, and Pattern tags are all in one view. A 5-minute review actually teaches you something — not just centipawn numbers.</p>
+      </section>
+
+      <section class="feature">
+        <h2>4. 8-Dimension Skill Radar</h2>
+        <p class="sub">Track every part of your game and build a complete profile.</p>
+        <p>Chess DNA scores you across eight skill dimensions that cover every part of the game:</p>
+        <ul>
+          <li><strong>Openings</strong> · <strong>Tactics</strong> · <strong>Defense</strong> · <strong>Positional</strong></li>
+          <li><strong>Endgame</strong> · <strong>Calculation</strong> · <strong>Time Management</strong> · <strong>Resilience</strong></li>
+        </ul>
+        <p>Each dimension scores 0–99 and maps to a rank tier — Pawn, Knight, Bishop, Rook, Queen, or King. Your overall score becomes an ELO and a percentile across the Chess DNA player base.</p>
+      </section>
+
+      <section class="feature">
+        <h2>5. Your Chess DNA Card</h2>
+        <p class="sub">Share what makes your chess yours.</p>
+        <p>Your Skill Radar, ELO, percentile, rank tier, and worst patterns all live on a single shareable card. Post it, send it to friends, or use it to track your progress over months.</p>
+      </section>
+
+      <p style="margin-top:32px;"><a href="https://chessdna.app/">→ Open Chess DNA</a></p>
+
+      <footer>
+        <a href="https://chessdna.app/">Home</a>
+        <a href="/about.html">About</a>
+        <a href="/faq.html">FAQ</a>
+        <a href="/contact.html">Contact</a>
+        <a href="/privacy.html">Privacy</a>
+        <a href="/support.html">Support</a>
+      </footer>
+    </main>
+  </body>
+</html>

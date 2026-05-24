@@ -8,7 +8,7 @@
  *  All screens preserve the existing import + analysis logic from
  *  Overview.tsx's Stage0Connect/Stage1Analysis/Stage2RadarReveal.
  * ──────────────────────────────────────────────────────────────────────── */
-import { useState, useEffect, useMemo, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { CHESS_COM_API_BASE } from '@shared/constants';
 import { fetchChessCom } from '@/api/chess-com-fetch';
 import { countryToFlag, extractCountryCode } from '@/api/chess-com-leaderboard';
@@ -25,6 +25,7 @@ import type { GameAnalysis } from '@shared/types/analysis';
 import type { UserSettings } from '@shared/types/storage';
 import type { CurrentPatterns } from '@shared/types/patterns';
 import { calculateSkillProfile } from '@/patterns/skill-calculator';
+import { trackAnalysis } from '@/analytics/client';
 
 type ImportSource = 'chesscom' | 'lichess' | 'pgn';
 
@@ -369,6 +370,11 @@ export function ConnectScreen({
         }
 
         setFetchState({ phase: 'fetching', fetched: 0, total: 5 });
+        trackAnalysis('chesscom_import_started', {
+          username: trimmed,
+          timeClass: startTimeClass,
+          source: 'onboarding',
+        });
         // Try the user-picked time class first, then fall back to others
         const tried = new Set<TimeClass | 'all'>();
         const order: Array<TimeClass | 'all'> = [
@@ -380,17 +386,25 @@ export function ConnectScreen({
         for (const tc of order) {
           if (tried.has(tc)) continue;
           tried.add(tc);
-          onboardingIds = await importChessComGames(trimmed, {
-            timeClass: tc, maxGames: 5, guest: isGuest,
-            onProgress: (progress) => {
-              setFetchState({
-                phase: progress.done ? 'done' : 'fetching',
-                fetched: progress.fetched,
-                total: progress.total || 5,
-                error: progress.error,
-              });
-            },
-          });
+          // Per-iteration try/catch: a transient chess.com failure for one
+          // time class now throws (instead of silently returning []), but
+          // we still want to fall through to the next time class.
+          try {
+            onboardingIds = await importChessComGames(trimmed, {
+              timeClass: tc, maxGames: 5, guest: isGuest,
+              onProgress: (progress) => {
+                setFetchState({
+                  phase: progress.done ? 'done' : 'fetching',
+                  fetched: progress.fetched,
+                  total: progress.total || 5,
+                  error: progress.error,
+                });
+              },
+            });
+          } catch (err) {
+            console.warn('[Chess DNA Onboarding] import failed for', tc, err);
+            onboardingIds = [];
+          }
           if (onboardingIds.length > 0) { usedTimeClass = String(tc); break; }
         }
 
@@ -400,23 +414,25 @@ export function ConnectScreen({
           onboardingTimeClass: usedTimeClass,
           selectedTimeClass: (usedTimeClass === 'all' ? null : usedTimeClass) as TimeClass | null,
         });
+        trackAnalysis('chesscom_import_complete', {
+          username: trimmed,
+          timeClass: usedTimeClass,
+          source: 'onboarding',
+          gamesImported: onboardingIds.length,
+        });
         onImportComplete();
-
-        // Background import (other time classes) — fire and forget
-        (async () => {
-          try {
-            for (const tc of ['rapid', 'blitz', 'bullet', 'daily'] as TimeClass[]) {
-              if (tc === startTimeClass) continue;
-              await importChessComGames(trimmed, { timeClass: tc, maxGames: 30, guest: isGuest });
-            }
-          } catch { /* ignore */ } finally {
-            onSettingsChange({ bulkImportDone: true });
-          }
-        })();
+        // The cross-time-class bulk import is deferred until after the radar
+        // is revealed (handled in Overview.tsx) so it doesn't compete with
+        // the 5 onboarding games for the analysis queue.
       }
-    } catch {
+    } catch (err) {
       setError('Could not connect. Check your internet.');
       setFetchState({ phase: 'idle', fetched: 0, total: 0 });
+      trackAnalysis('chesscom_import_error', {
+        username: trimmed,
+        source: 'onboarding',
+        error: String(err).slice(0, 200),
+      });
     } finally {
       setLoading(false);
     }
@@ -591,6 +607,9 @@ export function ConnectScreen({
                 </p>
               )}
               {error && <p className="text-chess-blunder text-xs mt-2">{error}</p>}
+
+              {/* Lean help hint — collapsed by default, expands inline. */}
+              <UsernameHelpHint source={source} />
             </div>
           ) : (
             <div>
@@ -688,13 +707,18 @@ export function ConnectScreen({
             }
             if (items.length === 0) return null;
             return (
-              <div className="flex items-center justify-center gap-3 text-[11px] text-chess-text-secondary px-2 -mb-1">
-                {items.map((it, i) => (
-                  <span key={it.key} className="flex items-center gap-3">
-                    {it.node}
-                    {i < items.length - 1 && <span className="text-chess-border">·</span>}
-                  </span>
-                ))}
+              <div className="-mb-1">
+                <div className="text-[9px] text-chess-text-tertiary tracking-[1.8px] font-bold uppercase mb-1.5 px-1">
+                  Is it yours?
+                </div>
+                <div className="flex items-center justify-center gap-3 text-[11px] text-chess-text-secondary px-2">
+                  {items.map((it, i) => (
+                    <span key={it.key} className="flex items-center gap-3">
+                      {it.node}
+                      {i < items.length - 1 && <span className="text-chess-border">·</span>}
+                    </span>
+                  ))}
+                </div>
               </div>
             );
           })()}
@@ -745,7 +769,6 @@ export function ConnectScreen({
               'Your full Chess DNA — 8 skills, scored',
               'AI breakdowns of every game you play',
               'The patterns quietly costing you rating',
-              'Targeted practice on your weakest moves',
             ].map((line) => (
               <li key={line} className="flex items-start gap-2.5 text-[12.5px] text-chess-text leading-snug">
                 <svg
@@ -1006,6 +1029,79 @@ function PgnImportModal({ onClose, onImportComplete }: PgnImportModalProps) {
   );
 }
 
+/* ── Where-do-I-find-my-username inline hint ──
+ *  Collapsed by default; opens to a tight 3-step manual + a deep-link to the
+ *  platform so the user can grab their handle without leaving and coming
+ *  back. Kept text-only and short — the user explicitly asked for "super
+ *  lean and easy". */
+function UsernameHelpHint({ source }: { source: ImportSource }) {
+  const [open, setOpen] = useState(false);
+  if (source !== 'chesscom' && source !== 'lichess') return null;
+
+  const isChesscom = source === 'chesscom';
+  const platformName = isChesscom ? 'Chess.com' : 'Lichess';
+  const homeUrl = isChesscom ? 'https://www.chess.com/home' : 'https://lichess.org';
+  const settingsUrl = isChesscom ? 'https://www.chess.com/settings' : 'https://lichess.org/account';
+  const steps = isChesscom
+    ? [
+        'Open Chess.com (you\'ll be logged in if you have an account).',
+        'Look at the top-right corner — your avatar appears with your username next to it.',
+        'On mobile, tap the menu icon ☰ first to reveal it.',
+      ]
+    : [
+        'Open Lichess.org (you\'ll be logged in if you have an account).',
+        'Top-right corner shows your username — that\'s the handle to paste here.',
+        'On mobile, tap the menu icon ☰ first to reveal it.',
+      ];
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-[11px] font-bold text-chess-accent/80 hover:text-chess-accent inline-flex items-center gap-1 underline-offset-2 hover:underline"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${open ? 'rotate-90' : ''}`}>
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        Don't know your username?
+      </button>
+      {open && (
+        <div className="mt-2 rounded-lg bg-chess-surface/40 border border-chess-border/30 px-3 py-2.5">
+          <ol className="list-decimal ms-4 space-y-1 text-[11px] text-chess-text-secondary leading-snug">
+            {steps.map((step, i) => (
+              <li key={i}>{step}</li>
+            ))}
+          </ol>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+            <a
+              href={homeUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex items-center gap-1 text-chess-accent hover:underline font-bold"
+            >
+              Open {platformName}
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M7 17L17 7" />
+                <path d="M8 7h9v9" />
+              </svg>
+            </a>
+            <span className="text-chess-text-tertiary/60">·</span>
+            <a
+              href={settingsUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-chess-text-tertiary hover:text-chess-text"
+            >
+              Account settings
+            </a>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SourceGlyph({ kind, active }: { kind: ImportSource; active: boolean }) {
   if (kind === 'chesscom') {
     return (
@@ -1069,26 +1165,58 @@ export function DecodingScreen({
 }: DecodingScreenProps) {
   void _onUpdateSettings;
   const totalGames = games.length;
-  const [moveProgress, setMoveProgress] = useState<{ moveIndex: number; totalMoves: number } | null>(null);
+  const progressTarget = Math.min(Math.max(totalGames, 1), MIN_GAMES_FOR_UNLOCK);
+  const [moveProgress, setMoveProgress] = useState<{ moveIndex: number; totalMoves: number; gameId: string } | null>(null);
   const [localAnalyzed, setLocalAnalyzed] = useState(0);
+
+  // Track only completion events for games in this onboarding batch — global
+  // 'complete' events (background imports / sync) must not advance the counter.
+  const onboardingIdsRef = useRef<Set<string>>(new Set(games.map((g) => g.id)));
+  onboardingIdsRef.current = new Set(games.map((g) => g.id));
+
+  // Watchdog: if no analysis activity reaches the UI within 75s of mounting,
+  // surface a recovery option. Covers the case where the Stockfish worker
+  // fails to load silently (CDN blocked, WASM stuck) — without this the user
+  // sees a frozen 0% screen with no way out.
+  const [showStuckHelp, setShowStuckHelp] = useState(false);
+  const sawActivityRef = useRef(false);
 
   useEffect(() => {
     return analysisEvents.on((event) => {
       if (event.type === 'progress') {
-        setMoveProgress({ moveIndex: event.moveIndex, totalMoves: event.totalMoves });
+        if (!onboardingIdsRef.current.has(event.gameId)) return;
+        sawActivityRef.current = true;
+        setMoveProgress({ moveIndex: event.moveIndex, totalMoves: event.totalMoves, gameId: event.gameId });
       } else if (event.type === 'complete') {
-        setLocalAnalyzed((prev) => prev + 1);
-        setMoveProgress(null);
+        if (!onboardingIdsRef.current.has(event.gameId)) return;
+        sawActivityRef.current = true;
+        setLocalAnalyzed((prev) => Math.min(prev + 1, onboardingIdsRef.current.size));
+        setMoveProgress((prev) => (prev?.gameId === event.gameId ? null : prev));
       } else if (event.type === 'all_complete') {
-        setLocalAnalyzed(totalGames);
         setMoveProgress(null);
+      } else if (event.type === 'error') {
+        if (onboardingIdsRef.current.has(event.gameId)) setShowStuckHelp(true);
       }
     });
-  }, [totalGames]);
+  }, []);
 
-  const effectiveAnalyzed = Math.max(analyzedCount, localAnalyzed);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (!sawActivityRef.current) setShowStuckHelp(true);
+    }, 75_000);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Hide the bottom nav + top filter while decoding so the user focuses on
+  // the loader. Reuses the same body attribute that GameDetail toggles for
+  // its focus mode.
+  useEffect(() => {
+    document.body.setAttribute('data-focus-mode', 'true');
+    return () => { document.body.removeAttribute('data-focus-mode'); };
+  }, []);
+
+  const effectiveAnalyzed = Math.min(Math.max(analyzedCount, localAnalyzed), progressTarget);
   const currentGameFraction = moveProgress ? moveProgress.moveIndex / moveProgress.totalMoves : 0;
-  const progressTarget = totalGames > MIN_GAMES_FOR_UNLOCK ? MIN_GAMES_FOR_UNLOCK : Math.max(totalGames, 1);
   const progressPct = Math.min(((effectiveAnalyzed + currentGameFraction) / progressTarget) * 100, 100);
 
   /* Build sneak-peek list — show up to 4 games with status */
@@ -1100,7 +1228,7 @@ export function DecodingScreen({
       if (aOrder !== bOrder) return aOrder - bOrder;
       return (b.playedAt ?? 0) - (a.playedAt ?? 0);
     });
-    return sorted.slice(0, 4);
+    return sorted.slice(0, MIN_GAMES_FOR_UNLOCK);
   }, [games]);
 
   return (
@@ -1199,10 +1327,24 @@ export function DecodingScreen({
         </div>
       )}
 
-      {analyzingCount > 0 && (
+      {analyzingCount > 0 && !showStuckHelp && (
         <p className="text-[10px] text-chess-text-tertiary text-center mt-3">
           Hang tight — usually takes a few minutes
         </p>
+      )}
+
+      {showStuckHelp && (
+        <div className="mt-4 px-3 py-3 rounded-[10px] border border-chess-border/40 bg-chess-surface/60 text-center">
+          <p className="text-[11px] text-chess-text-secondary leading-snug">
+            Taking longer than usual. The chess engine may have failed to load on this browser.
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-2 inline-flex items-center justify-center px-3 py-1.5 rounded-md text-[11px] font-semibold bg-chess-accent text-chess-bg hover:opacity-90 transition-opacity"
+          >
+            Reload and retry
+          </button>
+        </div>
       )}
     </div>
   );

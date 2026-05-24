@@ -6,10 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$TOOL_INPUT\" in *--no-verify*|*--force*|*push\\ --force*|*reset\\ --hard*|*rm\\ -rf*) echo '🚫 Blocked destructive command' >&2; exit 2;; esac; exit 0"
+            "command": "cmd=$(jq -r '.tool_input.command // empty'); case \"$cmd\" in *--no-verify*|*--force*|*'push --force'*|*'reset --hard'*|*'rm -rf'*) echo '🚫 Blocked destructive command' >&2; exit 2;; esac; exit 0"
           }
-        ],
-        "description": "Block destructive bash commands (force push, rm -rf, no-verify)"
+        ]
       }
     ]
   }

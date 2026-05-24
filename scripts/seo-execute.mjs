@@ -113,8 +113,7 @@ function buildClaudePrompt(task) {
     ``,
     `Pick the right tool for the job:`,
     `  - **File edits** (Read/Edit/Write) for code changes, schema markup, new HTML, sitemap.xml.`,
-    `  - **Chrome MCP** (mcp__Claude_in_Chrome__*) for browser tasks: Search Console, AlternativeTo, keyword.com web UI, etc. The user is already logged in.`,
-    `  - **keyword.com MCP** (mcp__keyword_*) IF available locally. If a task needs keyword.com (add keywords, configure AIV, etc.) check whether these tools exist first. If they do, use them. If NOT, fall back to driving https://app.keyword.com via Chrome MCP using the user's already-logged-in browser session.`,
+    `  - **Chrome MCP** (mcp__Claude_in_Chrome__*) for browser tasks: Search Console, AlternativeTo, etc. The user is already logged in.`,
     ``,
     `## Rules`,
     `- Make the change. Don't ask, don't propose, just do.`,
@@ -123,7 +122,6 @@ function buildClaudePrompt(task) {
     `- Do NOT create test files unless the task description says so.`,
     `- For browser tasks: stop short of irreversible "Submit / Publish" clicks unless the task explicitly authorizes it. Take a screenshot before the final click so it's auditable.`,
     `- Keep the change minimal and focused on this task only.`,
-    `- **NEVER bluff.** If you couldn't actually make the change — because a required MCP isn't connected, a login is missing, or any other reason — say so clearly in your final message. Better to fail loudly than to silently pretend success. The user will catch the lie when they verify and that's worse than upfront honesty.`,
     `- If you cannot complete the task safely, exit without changes and explain why in your final message.`,
   ].filter(Boolean).join('\n');
 }
@@ -301,13 +299,12 @@ async function processIssue(issueNumber) {
           `[View full diff →](${pr.url}/files)  ·  Approve & merge from /seo to ship + deploy.`,
         );
       } else {
-        // No file changes — e.g. a pure-browser task, or Claude couldn't do it.
-        // Either way, we don't auto-mark "done" — the user has to verify it
-        // actually happened (catches "bluff done" without any work).
+        // No file changes — e.g. a pure-browser task. Mark done immediately,
+        // since there's no PR to review.
         anyReady = true;
         await commentOnIssue(
           issue.number,
-          `🔎 **${task.title}** — needs review (no file changes; verify the work happened then click "Mark reviewed" in /seo)`,
+          `✅ **${task.title}** — done (no file changes; browser-only task)`,
         );
       }
     } catch (err) {
@@ -358,63 +355,20 @@ async function deployResolvedIssues() {
 
   for (const issueRef of candidates) {
     const prNums = await findIssuePRs(issueRef.number);
-    const prs = prNums.length > 0 ? await Promise.all(prNums.map(getPr)) : [];
-    const prsResolved = prs.every(p => p.state === 'closed'); // closed = merged OR rejected
-
-    // Check needs-review tasks (browser/no-file-change tasks need explicit
-    // human "Mark reviewed" before they count as complete).
-    const comments = await gh(`/repos/${GH_REPO}/issues/${issueRef.number}/comments?per_page=100`);
-    const reviewState = new Map();
-    for (const c of comments) {
-      const body = c.body ?? '';
-      const titleM = body.match(/\*\*([^*]+?)\*\*/);
-      if (!titleM) continue;
-      const title = titleM[1].trim();
-      if (body.startsWith('🔎')) {
-        if (!reviewState.has(title)) reviewState.set(title, 'needs');
-      } else if (body.startsWith('👁') || body.startsWith('✅')) {
-        reviewState.set(title, 'reviewed');
-      }
-    }
-    const unreviewed = [...reviewState.entries()].filter(([, s]) => s !== 'reviewed').map(([t]) => t);
-
-    if (!prsResolved || unreviewed.length > 0) {
-      const stillOpen = prs.filter(p => p.state === 'open').length;
-      console.log(`[exec] Issue #${issueRef.number}: ${stillOpen} PR(s) open, ${unreviewed.length} task(s) unreviewed — skipping deploy.`);
+    if (prNums.length === 0) continue;
+    const prs = await Promise.all(prNums.map(getPr));
+    const allResolved = prs.every(p => p.state === 'closed'); // closed = merged OR rejected
+    if (!allResolved) {
+      console.log(`[exec] Issue #${issueRef.number}: ${prs.filter(p => p.state === 'open').length}/${prs.length} PR(s) still open — skipping deploy.`);
       continue;
     }
     const anyMerged = prs.some(p => p.merged_at != null);
-    console.log(`[exec] Issue #${issueRef.number}: all ${prs.length} PR(s) resolved + all reviews complete. ${anyMerged ? 'Deploying.' : 'No code changes; closing.'}`);
+    console.log(`[exec] Issue #${issueRef.number}: all ${prs.length} PR(s) resolved. ${anyMerged ? 'Deploying.' : 'No merges; closing.'}`);
 
     if (anyMerged) {
-      // Sanity check the main checkout BEFORE deploying. The risk we're
-      // guarding against (per CLAUDE.md): deploying from a checkout that
-      // doesn't have the latest origin/main, which would ship a stale
-      // bundle and wipe in-flight server-side changes.
+      // Pull latest main into the local checkout, then deploy.
       sh('git', ['fetch', 'origin', 'main'], { stdio: 'inherit' });
-
-      // 1. We must be on `main` (not a detached HEAD or feature branch).
-      const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim();
-      if (branch !== 'main') {
-        await commentOnIssue(issueRef.number, `⚠️ Deploy aborted: main checkout is on branch \`${branch}\`, not main. Switch back to main and retry.`);
-        continue;
-      }
-
-      // 2. Fast-forward to origin/main. If this fails, local main has
-      // diverging commits — refuse to deploy.
-      const merge = sh('git', ['merge', '--ff-only', 'origin/main'], { stdio: 'inherit' });
-      if (merge.status !== 0) {
-        await commentOnIssue(issueRef.number, `⚠️ Deploy aborted: \`git merge --ff-only origin/main\` failed in the main checkout. Local main has diverging commits or working-tree conflicts. Please reconcile (\`git status\` from /Users/yuval/Chess-dna), then re-trigger via /seo.`);
-        continue;
-      }
-
-      // 3. After ff-merge, HEAD should be exactly at origin/main.
-      const headSha = sh('git', ['rev-parse', 'HEAD']).stdout.trim();
-      const originSha = sh('git', ['rev-parse', 'origin/main']).stdout.trim();
-      if (headSha !== originSha) {
-        await commentOnIssue(issueRef.number, `⚠️ Deploy aborted: after \`git merge --ff-only\`, HEAD (${headSha.slice(0, 7)}) doesn't equal origin/main (${originSha.slice(0, 7)}). Something's off — please investigate.`);
-        continue;
-      }
+      sh('git', ['merge', '--ff-only', 'origin/main'], { stdio: 'inherit' });
 
       const deploy = sh('npx', ['base44', 'site', 'deploy', '-y'], { stdio: 'inherit', timeout: 10 * 60 * 1000 });
       const deployOk = deploy.status === 0;

@@ -1,0 +1,69 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chess DNA Public Information",
+    "description": "Read-only public information about the Chess DNA app. Chess DNA's user data is gated by authentication and not exposed via this manifest.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Chess DNA",
+      "email": "yuval@chessdna.app",
+      "url": "https://chessdna.app/"
+    }
+  },
+  "servers": [
+    { "url": "https://chessdna.app", "description": "Production" }
+  ],
+  "paths": {
+    "/sitemap.xml": {
+      "get": {
+        "summary": "Sitemap of public pages",
+        "responses": {
+          "200": {
+            "description": "Sitemap XML",
+            "content": { "application/xml": {} }
+          }
+        }
+      }
+    },
+    "/about.html": {
+      "get": {
+        "summary": "About Chess DNA — what the product does and how it works",
+        "responses": {
+          "200": { "description": "About page HTML", "content": { "text/html": {} } }
+        }
+      }
+    },
+    "/features.html": {
+      "get": {
+        "summary": "Chess DNA features list with named patterns",
+        "responses": {
+          "200": { "description": "Features page HTML", "content": { "text/html": {} } }
+        }
+      }
+    },
+    "/faq.html": {
+      "get": {
+        "summary": "Frequently asked questions about Chess DNA",
+        "responses": {
+          "200": { "description": "FAQ page HTML with JSON-LD FAQPage", "content": { "text/html": {} } }
+        }
+      }
+    },
+    "/learn/find-your-chess-weaknesses.html": {
+      "get": {
+        "summary": "Guide: how to find your chess weaknesses from your own games",
+        "responses": {
+          "200": { "description": "Article HTML", "content": { "text/html": {} } }
+        }
+      }
+    },
+    "/learn/how-to-analyze-your-chess-games.html": {
+      "get": {
+        "summary": "Guide: how to analyze your chess games practically",
+        "responses": {
+          "200": { "description": "Article HTML", "content": { "text/html": {} } }
+        }
+      }
+    }
+  }
+}

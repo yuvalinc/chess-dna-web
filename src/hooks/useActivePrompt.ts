@@ -4,7 +4,8 @@
  */
 import { useCallback } from 'react';
 import { useEntityList } from '@/hooks/useEntity';
-import { buildMoveExplanationPrompt } from '@/ai/prompt-builder';
+import { buildMoveExplanationPrompt, buildThemeVocabBlock } from '@/ai/prompt-builder';
+import type { GamePhase } from '@shared/types/analysis';
 
 interface AIPromptEntity {
   id: string;
@@ -70,6 +71,12 @@ export function useActivePrompt() {
     tacticalMotifs?: string[],
     positionFacts?: string,
     language?: string,
+    /** Color the user is playing as in this game (white or black). Anchors
+     *  the AI to the right perspective so "Your move" never flips to the
+     *  opponent's side. */
+    playerColor?: 'white' | 'black',
+    /** Game phase for theme-vocabulary scoping. Defaults to middlegame. */
+    phase?: GamePhase,
   ): { system: string; user: string } => {
     const lang = language || 'English';
     const langCode = lang === 'Hebrew' ? 'he' : lang === 'Spanish' ? 'es' : 'en';
@@ -83,10 +90,11 @@ export function useActivePrompt() {
 
     if (!matchingPrompt) {
       // Fallback to hardcoded
-      return buildMoveExplanationPrompt(fen, playerMoveSan, bestMoveSan, cpDiff, playerRating, bestMovePv, tacticalMotifs, positionFacts, lang);
+      return buildMoveExplanationPrompt(fen, playerMoveSan, bestMoveSan, cpDiff, playerRating, bestMovePv, tacticalMotifs, positionFacts, lang, playerColor, phase);
     }
 
     const sideToMove = fen.split(' ')[1] === 'w' ? 'White' : 'Black';
+    const userSide = playerColor ? (playerColor === 'white' ? 'White' : 'Black') : sideToMove;
     const systemVars: Record<string, string> = {
       level: getLevel(playerRating),
       elo: String(playerRating),
@@ -97,6 +105,8 @@ export function useActivePrompt() {
     const userVars: Record<string, string> = {
       fen,
       sideToMove,
+      userSide,
+      playerColor: userSide,
       playerMoveSan,
       bestMoveSan,
       cpDiffPawns: (cpDiff / 100).toFixed(1),
@@ -109,6 +119,13 @@ export function useActivePrompt() {
     let systemPrompt = interpolate(matchingPrompt.systemTemplate, systemVars);
     let userPrompt = interpolate(matchingPrompt.userTemplate, userVars);
 
+    // Always anchor perspective to the user's color, even if the DB template
+    // forgot to include {{userSide}}. This prevents the AI from flipping
+    // "Your move" onto the opponent's side.
+    if (!userPrompt.includes(`coaching is playing as: ${userSide}`)) {
+      userPrompt += `\n\nThe player you are coaching is playing as: ${userSide}. "Your move" must refer to ${userSide}'s move (${playerMoveSan}); never describe the opponent's pieces as if they were the player's.`;
+    }
+
     if (lang !== 'English') {
       // Replace any English label instructions with localized ones
       systemPrompt = systemPrompt
@@ -119,6 +136,24 @@ export function useActivePrompt() {
       if (!userPrompt.includes('Generate ALL text in')) {
         userPrompt += `\n\nIMPORTANT: Generate ALL text in ${lang}. Chess notation stays standard.`;
       }
+    }
+
+    // Always append the controlled-vocabulary block + THEMES: instruction so
+    // the AI returns structured themes even when a DB-stored prompt template
+    // doesn't include them. Idempotent in practice — the block has a unique
+    // "THEMES:" marker and is only added if not already present.
+    if (!systemPrompt.includes('THEMES:')) {
+      systemPrompt += buildThemeVocabBlock(phase, tacticalMotifs);
+    }
+
+    // Always require ≥2 sentences for "Best move", even if the DB-stored
+    // template forgot. applyVerifiedBestMove rewrites the AI's first
+    // "Best move:" sentence with a chess.js-verified description, so a
+    // 1-sentence reply leaves nothing but the bare move name (e.g.
+    // "Knight to [d3]+."). We need ≥2 sentences so the "why" tail
+    // survives the verification step.
+    if (!/AT LEAST\s+(?:TWO|2)/i.test(systemPrompt)) {
+      systemPrompt += `\n\nCRITICAL: "Best move" MUST be AT LEAST TWO complete sentences. Sentence 1: name the move and what it does. Sentence 2: explain WHY it works (the tactical or strategic idea) OR the concrete threat / follow-up. NEVER deliver "Best move" as a single sentence — even if the move looks simple, explain the idea behind it.`;
     }
 
     return { system: systemPrompt, user: userPrompt };

@@ -1,0 +1,29 @@
+{
+  "name": "chess-dna-video",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Auto-generated chess Reels (Remotion-based)",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts BrilliantReel out/brilliant.mp4",
+    "render:demo": "remotion render src/index.ts BrilliantReel out/demo.mp4 --props=src/storyboard/demo.json",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.97.1",
+    "@remotion/bundler": "^4.0.402",
+    "@remotion/cli": "^4.0.402",
+    "@remotion/renderer": "^4.0.402",
+    "@remotion/transitions": "^4.0.402",
+    "chess.js": "^1.4.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "remotion": "^4.0.402"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3"
+  }
+}

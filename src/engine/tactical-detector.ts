@@ -1,5 +1,5 @@
 import { Chess, type Square, type PieceSymbol, type Color } from 'chess.js';
-import type { TacticalMotif } from '@shared/types/engine';
+import type { TacticalMotif, PositionEval } from '@shared/types/engine';
 
 const PIECE_VALUES: Record<PieceSymbol, number> = {
   p: 1,
@@ -418,6 +418,274 @@ function detectHangingPieces(chess: Chess, color: Color): boolean {
   }
 
   return false;
+}
+
+/**
+ * Cheap motif derivation from MoveAnalysis-level data — no extra engine work.
+ * Adds: promotion, under_promotion, en_passant, castling_move, mate_in_N,
+ *       back_rank_mate, smothered_mate, mate_threat, exposed_king, double_check.
+ *
+ * Called from game-analyzer.ts after the main tactical-detector run.
+ * Merged with existing motifs and deduped.
+ */
+export function deriveAdditionalMotifs(args: {
+  fenBefore: string;
+  fenAfter: string;
+  moveSan: string;
+  moveUci: string;
+  isCheck: boolean;
+  isCastling: boolean;
+  evalBefore: PositionEval;
+  evalAfter: PositionEval;
+}): TacticalMotif[] {
+  const motifs: TacticalMotif[] = [];
+  const { fenBefore, fenAfter, moveSan, moveUci, isCheck, isCastling, evalAfter } = args;
+
+  // ── Castling ──
+  if (isCastling) motifs.push('castling_move');
+
+  // ── Promotion / under-promotion ──
+  // UCI promotion suffix: 5th char is one of q/r/b/n
+  if (moveUci.length === 5) {
+    const promoPiece = moveUci[4].toLowerCase();
+    if (promoPiece === 'q') {
+      motifs.push('promotion');
+    } else if (promoPiece === 'r' || promoPiece === 'b' || promoPiece === 'n') {
+      motifs.push('under_promotion');
+    }
+  }
+
+  // ── En passant: pawn capture but the destination square was empty before ──
+  try {
+    if (moveSan.includes('x') && moveUci.length >= 4) {
+      const chessBefore = new Chess(fenBefore);
+      const from = moveUci.slice(0, 2) as Square;
+      const to = moveUci.slice(2, 4) as Square;
+      const movingPiece = chessBefore.get(from);
+      const targetSquarePiece = chessBefore.get(to);
+      if (movingPiece?.type === 'p' && !targetSquarePiece) {
+        motifs.push('en_passant');
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // ── Mate-in-N for the side that just moved ──
+  // After the move, evalAfter is from the perspective of the OPPONENT to move.
+  // A negative mate score means the side that just moved is delivering mate.
+  if (evalAfter.scoreType === 'mate') {
+    const n = Math.abs(evalAfter.score);
+    // Only flag mate-in-N if the side that just moved is the mating side
+    // (negative score means the side to move — the opponent — is being mated).
+    if (evalAfter.score < 0 && n >= 1 && n <= 5) {
+      const tag = `mate_in_${n}` as TacticalMotif;
+      motifs.push(tag);
+    } else if (evalAfter.score > 0 && n <= 5) {
+      // Opponent is the one delivering mate against us — that's a mate threat.
+      motifs.push('mate_threat');
+    }
+  }
+
+  // ── Board-state derived motifs (back-rank mate, smothered mate, exposed king, double check) ──
+  try {
+    const chessAfter = new Chess(fenAfter);
+    if (chessAfter.isCheckmate()) {
+      // Determine mate type
+      const mateKind = classifyMate(chessAfter);
+      if (mateKind === 'back_rank') motifs.push('back_rank_mate');
+      else if (mateKind === 'smothered') motifs.push('smothered_mate');
+    }
+
+    // Exposed king: king on a file or diagonal that is open (no pawns of own color shielding it).
+    // Cheap heuristic — check own pawn shield in front of the king.
+    if (!chessAfter.isCheckmate()) {
+      const sideToMove = chessAfter.turn(); // the side that didn't just move
+      // The side that just moved is the OPPONENT of sideToMove
+      const moverColor: Color = sideToMove === 'w' ? 'b' : 'w';
+      if (isKingExposed(chessAfter, sideToMove) && evalAfter.scoreType === 'cp' && evalAfter.score > 100) {
+        // sideToMove (the player whose king is exposed) is worse — flag from their POV
+        // We just record the motif; the AI will use it as context.
+        motifs.push('exposed_king');
+      }
+      // Suppress unused-variable warning — moverColor reserved for future asymmetric logic
+      void moverColor;
+    }
+
+    // Double check: the move delivers check from two pieces.
+    if (isCheck && isDoubleCheck(fenBefore, moveUci)) {
+      motifs.push('double_check');
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return [...new Set(motifs)];
+}
+
+/** Classify the type of checkmate on the board. */
+function classifyMate(chessAfter: Chess): 'back_rank' | 'smothered' | 'other' {
+  // Find the mated king
+  const board = chessAfter.board();
+  const matedColor = chessAfter.turn(); // side to move is the one being mated
+  let kingSq: Square | null = null;
+  let kingRow = -1;
+  let kingCol = -1;
+  for (let r = 0; r < 8 && !kingSq; r++) {
+    for (let c = 0; c < 8 && !kingSq; c++) {
+      const p = board[r][c];
+      if (p?.type === 'k' && p.color === matedColor) {
+        kingSq = rowColToSquare(r, c);
+        kingRow = r;
+        kingCol = c;
+      }
+    }
+  }
+  if (!kingSq) return 'other';
+
+  const backRankRow = matedColor === 'w' ? 7 : 0; // FEN board: index 0 = rank 8
+
+  // Back rank mate: king on its first rank, mated by rook/queen on the rank,
+  // with own pawns boxing it in front.
+  if (kingRow === backRankRow) {
+    const pawnShieldRow = matedColor === 'w' ? 6 : 1;
+    let allPawnsInFront = true;
+    for (let dc = -1; dc <= 1; dc++) {
+      const c = kingCol + dc;
+      if (c < 0 || c > 7) continue;
+      const piece = board[pawnShieldRow][c];
+      if (!piece || piece.type !== 'p' || piece.color !== matedColor) {
+        allPawnsInFront = false;
+        break;
+      }
+    }
+    if (allPawnsInFront) return 'back_rank';
+  }
+
+  // Smothered mate: king is mated, all surrounding squares are blocked by own pieces,
+  // and the checking piece is a knight.
+  let allBlockedByOwn = true;
+  for (let dr = -1; dr <= 1 && allBlockedByOwn; dr++) {
+    for (let dc = -1; dc <= 1 && allBlockedByOwn; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const r = kingRow + dr;
+      const c = kingCol + dc;
+      if (r < 0 || r > 7 || c < 0 || c > 7) continue;
+      const piece = board[r][c];
+      if (!piece || piece.color !== matedColor) {
+        allBlockedByOwn = false;
+      }
+    }
+  }
+  if (allBlockedByOwn) {
+    // Check if the checking piece is a knight by scanning knight attacks on the king
+    const opponentColor: Color = matedColor === 'w' ? 'b' : 'w';
+    const knightOffsets: [number, number][] = [
+      [-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1],
+    ];
+    for (const [dr, dc] of knightOffsets) {
+      const r = kingRow + dr;
+      const c = kingCol + dc;
+      if (r < 0 || r > 7 || c < 0 || c > 7) continue;
+      const p = board[r][c];
+      if (p?.type === 'n' && p.color === opponentColor) {
+        return 'smothered';
+      }
+    }
+  }
+
+  return 'other';
+}
+
+/** Heuristic for an exposed king: own pawn shield is broken on the king's file or
+ *  immediate neighbours. Only meaningful in middlegame-ish positions. */
+function isKingExposed(chess: Chess, color: Color): boolean {
+  const board = chess.board();
+  let kingRow = -1;
+  let kingCol = -1;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const p = board[r][c];
+      if (p?.type === 'k' && p.color === color) {
+        kingRow = r;
+        kingCol = c;
+        break;
+      }
+    }
+  }
+  if (kingRow < 0) return false;
+
+  // King must be on or close to its back rank — exposed king is a middlegame concept.
+  const expectedBackRank = color === 'w' ? 7 : 0;
+  if (Math.abs(kingRow - expectedBackRank) > 1) return false;
+
+  // Direction "in front" of the king (toward opponent).
+  const dr = color === 'w' ? -1 : 1;
+
+  let missingShield = 0;
+  for (let dc = -1; dc <= 1; dc++) {
+    const c = kingCol + dc;
+    if (c < 0 || c > 7) continue;
+    const r = kingRow + dr;
+    if (r < 0 || r > 7) continue;
+    const piece = board[r][c];
+    if (!piece || piece.type !== 'p' || piece.color !== color) {
+      missingShield += 1;
+    }
+  }
+  // At least two of three shield pawns missing
+  return missingShield >= 2;
+}
+
+/** Detect double check: after the move, the king is attacked by two different
+ *  attacker squares. */
+function isDoubleCheck(fenBefore: string, moveUci: string): boolean {
+  try {
+    const chess = new Chess(fenBefore);
+    const from = moveUci.slice(0, 2) as Square;
+    const to = moveUci.slice(2, 4) as Square;
+    const promotion = moveUci.length > 4 ? (moveUci[4] as PieceSymbol) : undefined;
+    chess.move({ from, to, promotion });
+
+    // After the move, the side to move is the one in check (or not).
+    if (!chess.inCheck()) return false;
+    const defenderColor: Color = chess.turn();
+    const attackerColor: Color = defenderColor === 'w' ? 'b' : 'w';
+
+    // Find the king of the side to move
+    const board = chess.board();
+    let kingSq: Square | null = null;
+    for (let r = 0; r < 8 && !kingSq; r++) {
+      for (let c = 0; c < 8 && !kingSq; c++) {
+        const p = board[r][c];
+        if (p?.type === 'k' && p.color === defenderColor) {
+          kingSq = rowColToSquare(r, c);
+        }
+      }
+    }
+    if (!kingSq) return false;
+
+    // Count attackers on the king square by scanning all opponent pieces.
+    let attackerCount = 0;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const p = board[r][c];
+        if (!p || p.color !== attackerColor) continue;
+        const sq = rowColToSquare(r, c)!;
+        const moves = chess.moves({ square: sq, verbose: true });
+        for (const m of moves) {
+          if (m.to === kingSq) {
+            attackerCount += 1;
+            break;
+          }
+        }
+        if (attackerCount >= 2) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 /**

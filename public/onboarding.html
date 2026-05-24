@@ -1,0 +1,1449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Chess DNA — Engineering Handoff</title>
+<style>
+  :root {
+    /* Base */
+    --bg: #0a1120;
+    --bg-2: #0d1626;
+    --panel: #101a2e;
+    --panel-2: #142238;
+    --panel-3: #18294a;
+    --line: #1f2c46;
+    --line-2: #2a3a5c;
+    --text: #dbe3f5;
+    --muted: #8a98b9;
+    --dim: #5d6a89;
+
+    /* Accents */
+    --accent: #4ade80;
+    --cyan: #22d3ee;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --purple: #a78bfa;
+    --blue: #60a5fa;
+    --green: #34d399;
+    --pink: #f472b6;
+
+    /* Type scale */
+    --fs-display: 42px;
+    --fs-h1: 30px;
+    --fs-h2: 22px;
+    --fs-h3: 16px;
+    --fs-h4: 13px;
+    --fs-body: 15px;
+    --fs-sm: 13.5px;
+    --fs-xs: 12px;
+    --fs-xxs: 10.5px;
+
+    --radius: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 8px 28px rgba(0,0,0,.35);
+
+    --code-bg: #08111f;
+    --code-fg: #d3e3ff;
+  }
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,BlinkMacSystemFont,"Inter","SF Pro Text","Segoe UI",Roboto,sans-serif;
+       font-size:var(--fs-body);line-height:1.62;font-feature-settings:"ss01","cv11";
+       -webkit-font-smoothing:antialiased}
+  a{color:var(--cyan);text-decoration:none;transition:color .15s}
+  a:hover{color:#7ee8f8}
+  code,kbd,pre{font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace}
+  code{background:var(--code-bg);color:var(--code-fg);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-size:12.5px}
+  pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radius:8px;border:1px solid var(--line);overflow-x:auto;line-height:1.55;font-size:13px;position:relative}
+  pre code{background:transparent;border:0;padding:0;font-size:13px}
+
+  /* Reading progress bar */
+  .progress{position:fixed;top:0;left:0;right:0;height:3px;background:transparent;z-index:100}
+  .progress::after{content:'';display:block;height:100%;width:var(--p,0%);background:linear-gradient(90deg,var(--accent),var(--cyan));transition:width .15s}
+
+  /* Layout */
+  .app{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+  aside{position:sticky;top:0;align-self:start;height:100vh;display:flex;flex-direction:column;background:linear-gradient(180deg,var(--bg-2),var(--bg));border-right:1px solid var(--line);overflow:hidden}
+  main{padding:48px 56px 96px;max-width:1080px;margin:0 auto;width:100%}
+  @media (max-width:980px){
+    .app{grid-template-columns:1fr}
+    aside{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+    main{padding:24px}
+  }
+
+  /* Sidebar */
+  .brand{padding:18px 18px 12px;display:flex;align-items:center;gap:10px;color:#fff}
+  .brand .logo{width:28px;height:28px;border-radius:7px;background:linear-gradient(135deg,var(--accent),var(--cyan));display:grid;place-items:center;font-weight:800;color:#0a1120;font-size:13px;letter-spacing:-.5px}
+  .brand .title{font-weight:700;font-size:14px;letter-spacing:-.01em}
+  .brand .title small{display:block;color:var(--muted);font-size:11px;font-weight:500;margin-top:1px}
+
+  .filterbar{padding:6px 14px 8px}
+  .filterbar input{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--text);
+                   padding:8px 10px 8px 30px;border-radius:8px;font-size:13px;outline:none;
+                   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a98b9' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.3-4.3'/></svg>");
+                   background-repeat:no-repeat;background-position:9px center}
+  .filterbar input:focus{border-color:var(--cyan)}
+  .filterbar input::placeholder{color:var(--dim)}
+
+  .toolbar{padding:0 14px 6px;display:flex;gap:6px}
+  .toolbar button{flex:1;background:transparent;border:1px solid var(--line);color:var(--muted);
+                  padding:5px 8px;border-radius:6px;font-size:11px;cursor:pointer;letter-spacing:.04em;
+                  text-transform:uppercase;font-weight:600;font-family:inherit;transition:all .15s}
+  .toolbar button:hover{background:var(--panel);color:var(--text);border-color:var(--line-2)}
+
+  nav{flex:1;overflow-y:auto;padding:6px 8px 16px;scrollbar-width:thin;scrollbar-color:var(--line-2) transparent}
+  nav::-webkit-scrollbar{width:6px}
+  nav::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:3px}
+  nav .group{margin:8px 0}
+  nav h4{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+         margin:10px 8px 4px;font-weight:700}
+  nav ol{list-style:none;padding:0;margin:0;counter-reset:c}
+  nav ol li{counter-increment:c}
+  nav ol li a{display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:6px;
+              color:var(--muted);font-size:13px;line-height:1.3;position:relative}
+  nav ol li a::before{content:counter(c,decimal-leading-zero);color:var(--dim);
+                      font-variant-numeric:tabular-nums;font-size:10.5px;font-weight:600;
+                      min-width:18px;font-family:"JetBrains Mono",monospace}
+  nav ol li a:hover{background:var(--panel);color:var(--text);text-decoration:none}
+  nav ol li a.active{background:rgba(74,222,128,.07);color:#fff;
+                     box-shadow:inset 2px 0 0 var(--accent)}
+  nav ol li a.active::before{color:var(--accent)}
+  nav ol li.hide{display:none}
+  nav .group.empty h4{opacity:.4}
+
+  .sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:11px;color:var(--dim);display:flex;justify-content:space-between;align-items:center}
+  .sidefoot kbd{background:var(--panel);border:1px solid var(--line-2);border-bottom-width:2px;border-radius:4px;padding:1px 5px;font-size:10px;color:var(--text);font-family:inherit}
+
+  /* Hero */
+  .hero{padding:40px 0 28px;border-bottom:1px solid var(--line);margin-bottom:24px}
+  .hero .kicker{display:inline-flex;align-items:center;gap:8px;color:var(--accent);font-size:11px;
+                letter-spacing:.18em;text-transform:uppercase;font-weight:700;
+                background:rgba(74,222,128,.07);border:1px solid rgba(74,222,128,.25);
+                padding:4px 10px;border-radius:999px}
+  .hero h1{font-size:var(--fs-display);line-height:1.1;margin:14px 0 14px;
+           letter-spacing:-.025em;color:#fff;font-weight:800;max-width:840px}
+  .hero p.lede{font-size:17px;color:var(--muted);max-width:760px;margin:0 0 24px;line-height:1.55}
+  .meta{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;max-width:780px}
+  .meta .stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 12px}
+  .meta .stat b{display:block;color:#fff;font-size:13px;font-weight:600;font-feature-settings:"tnum"}
+  .meta .stat span{color:var(--muted);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:2px;display:block}
+  @media (max-width:760px){.meta{grid-template-columns:repeat(2,1fr)}.hero h1{font-size:30px}}
+
+  /* Sections (collapsibles) */
+  details.box{margin:14px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+              overflow:hidden;scroll-margin-top:16px;transition:border-color .15s}
+  details.box[open]{border-color:var(--line-2)}
+  details.box > summary{cursor:pointer;padding:18px 22px;list-style:none;
+                        display:flex;align-items:center;gap:14px;user-select:none}
+  details.box > summary::-webkit-details-marker{display:none}
+  details.box > summary:hover{background:var(--panel-2)}
+  details.box > summary .num{font-size:11px;color:var(--accent);background:rgba(74,222,128,.08);
+                             border:1px solid rgba(74,222,128,.25);border-radius:6px;
+                             padding:3px 9px;font-weight:700;letter-spacing:.1em;
+                             font-family:"JetBrains Mono",monospace;flex-shrink:0}
+  details.box > summary h2{font-size:var(--fs-h2);margin:0;color:#fff;font-weight:700;
+                           letter-spacing:-.012em;flex:1;line-height:1.25}
+  details.box > summary .meta-pill{font-size:11px;color:var(--muted);background:var(--panel-3);
+                                   border:1px solid var(--line-2);border-radius:999px;
+                                   padding:2px 9px;display:flex;align-items:center;gap:6px}
+  details.box > summary .chev{transition:transform .2s;color:var(--muted);flex-shrink:0}
+  details.box[open] > summary .chev{transform:rotate(90deg)}
+  details.box > .body{padding:0 22px 22px;border-top:1px solid var(--line)}
+  details.box > .body > *:first-child{margin-top:18px}
+  details.box > .body p.sub{color:var(--muted);font-size:14.5px;max-width:760px;margin:0 0 18px}
+
+  /* Headings inside sections */
+  h3{font-size:var(--fs-h3);margin:24px 0 8px;color:#fff;font-weight:600;letter-spacing:-.005em}
+  h3::before{content:'';display:inline-block;width:3px;height:13px;background:var(--accent);
+             border-radius:2px;margin-right:9px;vertical-align:-1px}
+  h4{font-size:var(--fs-h4);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+     margin:18px 0 8px;font-weight:600}
+
+  ul,ol{padding-left:22px;margin:8px 0 14px}
+  ul li,ol li{margin:5px 0}
+
+  /* Cards & grids */
+  .grid{display:grid;gap:12px}
+  .grid.cols-2{grid-template-columns:repeat(2,1fr)}
+  .grid.cols-3{grid-template-columns:repeat(3,1fr)}
+  .grid.cols-4{grid-template-columns:repeat(4,1fr)}
+  @media (max-width:780px){.grid.cols-2,.grid.cols-3,.grid.cols-4{grid-template-columns:1fr}}
+
+  .card{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+        padding:14px 16px;transition:border-color .15s,transform .15s}
+  .card:hover{border-color:var(--line-2)}
+  .card h5{margin:0 0 6px;font-size:13.5px;color:#fff;font-weight:600;display:flex;align-items:center;gap:8px}
+  .card p{margin:0;color:var(--muted);font-size:13px;line-height:1.55}
+  .card .tag{font-size:10px;color:var(--accent);background:rgba(74,222,128,.08);
+             border:1px solid rgba(74,222,128,.25);border-radius:4px;padding:1px 6px;
+             letter-spacing:.08em;font-weight:700;text-transform:uppercase;
+             font-family:"JetBrains Mono",monospace}
+
+  /* Pills */
+  .pills{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 14px}
+  .pill{display:inline-flex;align-items:center;gap:6px;background:var(--panel-3);
+        border:1px solid var(--line-2);color:var(--text);font-size:12px;padding:3px 10px;border-radius:999px}
+  .pill.green{background:rgba(74,222,128,.08);border-color:rgba(74,222,128,.3);color:#9eebbc}
+  .pill.cyan{background:rgba(34,211,238,.08);border-color:rgba(34,211,238,.3);color:#9eeaf6}
+  .pill.amber{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.3);color:#f6dba1}
+  .pill.purple{background:rgba(167,139,250,.08);border-color:rgba(167,139,250,.3);color:#cfbffb}
+  .pill.red{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.3);color:#f6b6b6}
+  .pill.pink{background:rgba(244,114,182,.08);border-color:rgba(244,114,182,.3);color:#f6b6d8}
+
+  /* Callouts */
+  .callout{border-left:3px solid var(--cyan);background:rgba(34,211,238,.05);
+           padding:12px 14px 12px 16px;border-radius:6px;margin:14px 0;font-size:13.5px;line-height:1.55}
+  .callout.warn{border-color:var(--amber);background:rgba(251,191,36,.06)}
+  .callout.danger{border-color:var(--red);background:rgba(248,113,113,.06)}
+  .callout.tip{border-color:var(--accent);background:rgba(74,222,128,.05)}
+  .callout b{color:#fff}
+  .callout-label{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:11px;
+                 letter-spacing:.1em;text-transform:uppercase;margin-right:8px;
+                 color:var(--cyan)}
+  .callout.warn .callout-label{color:var(--amber)}
+  .callout.danger .callout-label{color:var(--red)}
+  .callout.tip .callout-label{color:var(--accent)}
+
+  /* Tables */
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0 14px;
+        background:var(--panel-2);border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  th{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+     font-weight:700;background:var(--panel-3)}
+  td code{font-size:12px}
+  .routes td:first-child{color:var(--cyan);font-family:"JetBrains Mono",monospace;font-size:12.5px;white-space:nowrap}
+  .routes td:nth-child(2){color:#fff;font-weight:500;white-space:nowrap}
+
+  /* File chip */
+  .file{display:inline-block;font-family:"JetBrains Mono",monospace;font-size:12px;
+        color:var(--cyan);background:var(--code-bg);border:1px solid var(--line);
+        padding:1px 7px;border-radius:5px}
+
+  /* Pipeline visualization */
+  .pipeline{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:14px 0}
+  .pipeline .step{background:var(--panel-3);border:1px solid var(--line-2);border-radius:8px;
+                  padding:10px 8px;text-align:center;font-size:11px;position:relative;transition:transform .2s,border-color .2s}
+  .pipeline .step:hover{transform:translateY(-2px);border-color:var(--cyan)}
+  .pipeline .step b{display:block;color:#fff;font-size:11px;letter-spacing:.06em;
+                    text-transform:uppercase;margin-bottom:3px;font-weight:700}
+  .pipeline .step span{color:var(--muted);font-size:10.5px;display:block;line-height:1.35}
+  .pipeline .step.persist{background:rgba(34,211,238,.06);border-color:rgba(34,211,238,.3)}
+  .pipeline .step.compute{background:rgba(74,222,128,.05);border-color:rgba(74,222,128,.3)}
+  @media (max-width:780px){.pipeline{grid-template-columns:1fr 1fr}}
+
+  /* Vertical flow */
+  .vflow{display:flex;flex-direction:column;gap:4px;margin:10px 0}
+  .vflow .node{background:var(--panel-3);border:1px solid var(--line-2);border-radius:8px;
+               padding:9px 14px;font-size:13px;display:flex;align-items:center;gap:10px;
+               transition:border-color .15s,background .15s}
+  .vflow .node:hover{border-color:var(--cyan);background:var(--panel-2)}
+  .vflow .node b{color:#fff;font-weight:600;min-width:auto}
+  .vflow .node span{color:var(--muted);font-size:12.5px}
+  .vflow .arrow{text-align:center;color:var(--dim);font-size:13px;line-height:1;margin:1px 0;letter-spacing:2px}
+
+  /* Inline SVG containers */
+  .diagram{margin:16px 0;background:var(--bg-2);border:1px solid var(--line);
+           border-radius:12px;padding:14px;overflow:hidden}
+  .diagram svg{display:block;max-width:100%;height:auto}
+  .diagram-caption{font-size:11.5px;color:var(--dim);text-align:center;
+                   margin-top:8px;letter-spacing:.04em;font-style:italic}
+
+  /* Back to top */
+  .totop{position:fixed;bottom:24px;right:24px;width:42px;height:42px;border-radius:50%;
+         background:var(--panel-2);border:1px solid var(--line-2);color:var(--text);
+         display:grid;place-items:center;cursor:pointer;opacity:0;pointer-events:none;
+         transition:opacity .2s,transform .2s;z-index:50;box-shadow:var(--shadow)}
+  .totop.show{opacity:1;pointer-events:auto}
+  .totop:hover{transform:translateY(-2px);border-color:var(--cyan)}
+
+  /* Footer */
+  .footer{margin-top:48px;padding-top:24px;border-top:1px solid var(--line);
+          color:var(--dim);font-size:12px;line-height:1.7}
+
+  /* Copy button on pre */
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel-3);
+            border:1px solid var(--line-2);color:var(--muted);font-size:10.5px;
+            padding:2px 7px;border-radius:4px;cursor:pointer;letter-spacing:.06em;
+            text-transform:uppercase;font-family:inherit;font-weight:600;opacity:0;transition:opacity .15s}
+  pre:hover .copy{opacity:1}
+  pre .copy:hover{color:var(--text);border-color:var(--cyan)}
+  pre .copy.copied{color:var(--accent);border-color:var(--accent)}
+
+  /* Highlight target section briefly */
+  details.box:target{animation:flash 1.2s ease-out}
+  @keyframes flash{0%{box-shadow:0 0 0 3px rgba(34,211,238,.4)}100%{box-shadow:0 0 0 0 rgba(34,211,238,0)}}
+
+  /* Misc */
+  .hr-section{height:1px;background:linear-gradient(90deg,transparent,var(--line-2),transparent);margin:14px 0}
+  .row-end{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+
+  /* Print */
+  @media print{
+    .app{grid-template-columns:1fr}
+    aside,.totop,.progress{display:none}
+    details.box{break-inside:avoid;border:1px solid #aaa}
+    details.box .body{display:block !important}
+    body{color:#000;background:#fff}
+  }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<div class="app">
+
+<aside>
+  <div class="brand">
+    <div class="logo">DNA</div>
+    <div class="title">Chess DNA<small>Engineering Handoff</small></div>
+  </div>
+
+  <div class="filterbar">
+    <input id="filter" type="text" placeholder="Filter sections…  ( / to focus )" autocomplete="off" />
+  </div>
+
+  <div class="toolbar">
+    <button id="expand-all" type="button">Expand all</button>
+    <button id="collapse-all" type="button">Collapse all</button>
+  </div>
+
+  <nav id="sidenav">
+    <div class="group" data-group="getting-started">
+      <h4>Getting started</h4>
+      <ol>
+        <li><a href="#elevator" data-text="elevator pitch">Elevator pitch</a></li>
+        <li><a href="#quickstart" data-text="quick start setup install">Quick start</a></li>
+        <li><a href="#stack" data-text="tech stack dependencies">Tech stack</a></li>
+      </ol>
+    </div>
+    <div class="group" data-group="architecture">
+      <h4>Architecture</h4>
+      <ol>
+        <li><a href="#overview" data-text="system overview architecture">System overview</a></li>
+        <li><a href="#repo" data-text="repository tour folder structure">Repository tour</a></li>
+        <li><a href="#providers" data-text="context providers state">Context providers</a></li>
+        <li><a href="#routes" data-text="routes navigation pages">Routes &amp; navigation</a></li>
+        <li><a href="#pipeline" data-text="data pipeline analysis stockfish">Core data pipeline</a></li>
+        <li><a href="#ai" data-text="ai router claude generation">AI generation router</a></li>
+        <li><a href="#backend" data-text="backend base44 entities database">Backend &amp; entities</a></li>
+        <li><a href="#storage" data-text="storage localstorage indexeddb">Storage architecture</a></li>
+      </ol>
+    </div>
+    <div class="group" data-group="domain">
+      <h4>Domain logic</h4>
+      <ol>
+        <li><a href="#engine" data-text="stockfish engine wasm analysis">Stockfish &amp; analysis</a></li>
+        <li><a href="#skills" data-text="skill profile tiers radar">Skill profile &amp; tiers</a></li>
+        <li><a href="#patterns" data-text="patterns weakness benchmarks">Patterns &amp; benchmarks</a></li>
+        <li><a href="#onboarding-flow" data-text="onboarding journey stages users">User onboarding flow</a></li>
+      </ol>
+    </div>
+    <div class="group" data-group="operations">
+      <h4>Operations</h4>
+      <ol>
+        <li><a href="#concerns" data-text="cross-cutting concerns auth theming">Cross-cutting concerns</a></li>
+        <li><a href="#critical" data-text="critical files dangerous">Critical files</a></li>
+        <li><a href="#env" data-text="environment env secrets keys">Env &amp; secrets</a></li>
+        <li><a href="#build" data-text="build deploy production">Build &amp; deploy</a></li>
+        <li><a href="#gotchas" data-text="gotchas do not pitfalls">Gotchas — do NOT</a></li>
+        <li><a href="#checklist" data-text="checklist onboarding day one">Onboarding checklist</a></li>
+      </ol>
+    </div>
+  </nav>
+
+  <div class="sidefoot">
+    <span>Press <kbd>/</kbd> to search · <kbd>E</kbd>/<kbd>C</kbd> to toggle</span>
+  </div>
+</aside>
+
+<main>
+
+<header class="hero">
+  <div class="kicker">Engineering Handoff · 2026-05-22</div>
+  <h1>Chess DNA — Architecture &amp; Onboarding Guide</h1>
+  <p class="lede">Everything an engineer needs to take over the Chess DNA web app — what it does, how it's wired, the data flows, the pitfalls, and a 2-day onboarding path. Click any section to drill in.</p>
+  <div class="meta">
+    <div class="stat"><span>Stack</span><b>React 19 · TS</b></div>
+    <div class="stat"><span>Backend</span><b>Base44 (BaaS)</b></div>
+    <div class="stat"><span>Sections</span><b id="stat-sections">21</b></div>
+    <div class="stat"><span>Entities</span><b>15</b></div>
+    <div class="stat"><span>Read time</span><b>~20 min</b></div>
+  </div>
+</header>
+
+<!-- ── 01 Elevator pitch ── -->
+<details class="box" id="elevator" open>
+  <summary>
+    <span class="num">01</span>
+    <h2>Elevator pitch</h2>
+    <span class="meta-pill">2 min read</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Chess DNA imports a player's chess.com / Lichess games, analyses them locally with Stockfish, then surfaces a personalised skill profile, weakness patterns, and AI-written insights about how they're really playing.</p>
+
+    <div class="grid cols-3">
+      <div class="card">
+        <h5>What the user sees</h5>
+        <p>A radar chart of 8 chess skills, a rank tier (Pawn → King), recent-games list with per-move analysis, weakness patterns (e.g. "blunders in king-side attacks"), AI-written insights, and a TimeMachine that replays past opponents as puzzles.</p>
+      </div>
+      <div class="card">
+        <h5>What happens under the hood</h5>
+        <p>PGNs are fetched and parsed client-side, then a singleton Stockfish WASM Web Worker (depth 18) analyses every move. Aggregations feed a pattern engine that detects ~19 themes across the last 50 games.</p>
+      </div>
+      <div class="card">
+        <h5>Where AI fits</h5>
+        <p>Claude (sonnet-4) generates Insight cards from real analysis data — the only AI-generation surface in the app. Calls are server-proxied through a Base44 function so the API key never reaches the browser.</p>
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- ── 02 Quick start ── -->
+<details class="box" id="quickstart" open>
+  <summary>
+    <span class="num">02</span>
+    <h2>Quick start — running locally in 15 minutes</h2>
+    <span class="meta-pill">setup</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">No separate backend to start. Base44 is hosted; you run the React app locally and point it at production.</p>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>Node 20+ (we develop on macOS, but Linux works)</li>
+      <li>An invitation to the Base44 project (admin is <code>yuval.inc@gmail.com</code>)</li>
+      <li>Optional: a personal Anthropic API key to bypass the shared <code>VITE_FALLBACK_CLAUDE_KEY</code></li>
+    </ul>
+
+    <h3>Run it</h3>
+<pre><code>git clone &lt;repo&gt; Chess-dna
+cd Chess-dna
+npm install            # postinstall copies stockfish WASM into public/
+npm run dev            # Vite at http://localhost:5173</code></pre>
+
+    <h3>What to try first</h3>
+    <ol>
+      <li>Sign in (Base44 redirects to its login; JWT lands in <code>localStorage</code>).</li>
+      <li>In <strong>Settings</strong>, enter a chess.com username and click <em>Import games</em>.</li>
+      <li>Watch DevTools console for <code>[Chess DNA]</code> and <code>[Chess Tutor]</code> logs as Stockfish chews through the games.</li>
+      <li>Once analysis finishes, the <em>Overview</em> page shows the skill radar, and <em>Patterns / Lessons / Exercises</em> unlock.</li>
+    </ol>
+
+    <div class="callout tip"><span class="callout-label">▶ Dev shortcut</span> <code>DevModeToggle</code> in the corner lets you simulate auth states and journey stages without re-importing games.</div>
+  </div>
+</details>
+
+<!-- ── 03 Tech stack ── -->
+<details class="box" id="stack">
+  <summary>
+    <span class="num">03</span>
+    <h2>Tech stack</h2>
+    <span class="meta-pill">overview</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">All of this is in <code>package.json</code> — listed here so you can size things up before opening files.</p>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <h5>Frontend <span class="tag">runtime</span></h5>
+        <p><b>React 19</b> · React Router 7 · TypeScript 5.9 (<code>strict</code>) · Vite 7. Tailwind CSS 4 via <code>@tailwindcss/vite</code>, with a custom chess theme keyed off a <code>[data-theme]</code> attribute on <code>&lt;html&gt;</code>.</p>
+      </div>
+      <div class="card">
+        <h5>Backend <span class="tag">baas</span></h5>
+        <p><b>Base44 SDK</b> (<code>@base44/sdk</code>) — entities (CRUD), auth/JWT, RLS, file storage, plus a single server function <code>claude-proxy</code> that holds the Anthropic key.</p>
+      </div>
+      <div class="card">
+        <h5>Chess engine <span class="tag">wasm</span></h5>
+        <p><b>Stockfish 17 WASM</b> in a Web Worker, behind a singleton client. <code>chess.js</code> for PGN parsing, <code>react-chessboard</code> for the board UI. Custom themed pieces in <code>cburnett-shadow-pieces.tsx</code>.</p>
+      </div>
+      <div class="card">
+        <h5>AI <span class="tag">external</span></h5>
+        <p><b>Claude</b> (<code>claude-sonnet-4-20250514</code>) for Insight generation, proxied through Base44's <code>claude-proxy</code> function. Gemini / OpenAI client files still ship in the bundle but the router throws for anything except Claude.</p>
+      </div>
+      <div class="card">
+        <h5>Visualisation</h5>
+        <p><b>Recharts</b> for the radar, line, area, and composed charts. <b>html2canvas</b> + <code>mp4-muxer</code> for the share-card export. <b>@xyflow/react</b> powers the <code>/graph</code> dev visualisation.</p>
+      </div>
+      <div class="card">
+        <h5>Tooling</h5>
+        <p>ESLint 9 + <code>typescript-eslint</code> + React-hooks plugin. No test framework yet — verification is manual via dev server. A <code>prebuild</code> script (<code>check-deploy-safety.mjs</code>) blocks worktree deploys when main is dirty.</p>
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- ── 04 System overview ── -->
+<details class="box" id="overview">
+  <summary>
+    <span class="num">04</span>
+    <h2>System overview</h2>
+    <span class="meta-pill">3 min read</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Three boxes, two arrows. The browser does almost everything; Base44 is mostly a CRUD database with one server function. External services are reached either directly from the browser (chess.com / Lichess public APIs) or through the Base44 proxy (Claude).</p>
+
+    <!-- SVG: System overview -->
+    <div class="diagram">
+<svg viewBox="0 0 920 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="System overview diagram showing Browser, Base44 Cloud, and External Services">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1d2c4d"/><stop offset="1" stop-color="#101a2e"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a3a2f"/><stop offset="1" stop-color="#0f231d"/></linearGradient>
+    <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3d2a4f"/><stop offset="1" stop-color="#22162e"/></linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a98b9"/>
+    </marker>
+  </defs>
+
+  <!-- Browser -->
+  <g>
+    <rect x="20" y="40" width="240" height="240" rx="12" fill="url(#g1)" stroke="#2a3a5c"/>
+    <text x="140" y="68" text-anchor="middle" fill="#fff" font-family="Inter,sans-serif" font-weight="700" font-size="14">Browser — React 19 SPA</text>
+    <g font-family="Inter,sans-serif" font-size="11.5" fill="#c5d3ef">
+      <rect x="38" y="86" width="204" height="30" rx="6" fill="#142238" stroke="#1f2c46"/>
+      <text x="50" y="105">Pages &amp; Components</text>
+      <rect x="38" y="124" width="204" height="30" rx="6" fill="#142238" stroke="#1f2c46"/>
+      <text x="50" y="143">3 Context Providers</text>
+      <rect x="38" y="162" width="204" height="30" rx="6" fill="#142238" stroke="#1f2c46"/>
+      <text x="50" y="181">Stockfish WASM · depth 18</text>
+      <rect x="38" y="200" width="204" height="30" rx="6" fill="#142238" stroke="#1f2c46"/>
+      <text x="50" y="219">localStorage · JWT, tutorial</text>
+      <rect x="38" y="238" width="204" height="30" rx="6" fill="#142238" stroke="#1f2c46"/>
+      <text x="50" y="257">SessionStorage · explanation cache</text>
+    </g>
+  </g>
+
+  <!-- Base44 -->
+  <g>
+    <rect x="340" y="40" width="240" height="240" rx="12" fill="url(#g2)" stroke="#2f5d4d"/>
+    <text x="460" y="68" text-anchor="middle" fill="#fff" font-family="Inter,sans-serif" font-weight="700" font-size="14">Base44 Cloud — BaaS</text>
+    <g font-family="Inter,sans-serif" font-size="11.5" fill="#c5efd9">
+      <rect x="358" y="86" width="204" height="30" rx="6" fill="#142824" stroke="#234234"/>
+      <text x="370" y="105">Auth · JWT</text>
+      <rect x="358" y="124" width="204" height="30" rx="6" fill="#142824" stroke="#234234"/>
+      <text x="370" y="143">Row-Level Security · per user</text>
+      <rect x="358" y="162" width="204" height="30" rx="6" fill="#142824" stroke="#234234"/>
+      <text x="370" y="181">15 Entities · Game, Analysis…</text>
+      <rect x="358" y="200" width="204" height="30" rx="6" fill="#142824" stroke="#234234"/>
+      <text x="370" y="219">claude-proxy · server fn</text>
+      <rect x="358" y="238" width="204" height="30" rx="6" fill="#1f1610" stroke="#4f3a1d"/>
+      <text x="370" y="257" fill="#f6dba1">🔒 CLAUDE_API_KEY (secret)</text>
+    </g>
+  </g>
+
+  <!-- External -->
+  <g>
+    <rect x="660" y="40" width="240" height="240" rx="12" fill="url(#g3)" stroke="#553a78"/>
+    <text x="780" y="68" text-anchor="middle" fill="#fff" font-family="Inter,sans-serif" font-weight="700" font-size="14">External Services</text>
+    <g font-family="Inter,sans-serif" font-size="11.5" fill="#e0d3f6">
+      <rect x="678" y="98" width="204" height="30" rx="6" fill="#21172e" stroke="#3a2a55"/>
+      <text x="690" y="117">Anthropic Claude · sonnet-4</text>
+      <rect x="678" y="136" width="204" height="30" rx="6" fill="#21172e" stroke="#3a2a55" opacity="0.55"/>
+      <text x="690" y="155" opacity="0.7">OpenAI · legacy fallback</text>
+      <rect x="678" y="174" width="204" height="30" rx="6" fill="#21172e" stroke="#3a2a55" opacity="0.55"/>
+      <text x="690" y="193" opacity="0.7">Gemini 2.0-flash · legacy</text>
+      <rect x="678" y="212" width="204" height="30" rx="6" fill="#21172e" stroke="#3a2a55"/>
+      <text x="690" y="231">Chess.com public API</text>
+      <rect x="678" y="250" width="204" height="30" rx="6" fill="#21172e" stroke="#3a2a55"/>
+      <text x="690" y="269">Lichess public API</text>
+    </g>
+  </g>
+
+  <!-- Arrows -->
+  <line x1="260" y1="140" x2="340" y2="140" stroke="#8a98b9" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="300" y="132" text-anchor="middle" fill="#8a98b9" font-family="Inter,sans-serif" font-size="10">REST + JWT</text>
+
+  <line x1="580" y1="215" x2="660" y2="120" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="640" y="160" fill="#a78bfa" font-family="Inter,sans-serif" font-size="10">proxied</text>
+
+  <line x1="260" y1="232" x2="660" y2="232" stroke="#8a98b9" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+  <text x="460" y="224" text-anchor="middle" fill="#8a98b9" font-family="Inter,sans-serif" font-size="10">direct (chess.com, lichess)</text>
+</svg>
+      <div class="diagram-caption">Browser ↔ Base44 ↔ External. The CLAUDE_API_KEY never leaves Base44.</div>
+    </div>
+
+    <h3>Boundary rules at a glance</h3>
+    <table>
+      <tr><th>Boundary</th><th>Who talks to whom</th><th>Auth</th></tr>
+      <tr><td>Browser → Base44</td><td>SDK calls (entities, auth, file)</td><td>JWT in localStorage (<code>base44_access_token</code>)</td></tr>
+      <tr><td>Browser → claude-proxy</td><td>Wraps Anthropic <code>/v1/messages</code></td><td>JWT (key is server-side)</td></tr>
+      <tr><td>Browser → chess.com / Lichess</td><td>Public REST, no key</td><td>None</td></tr>
+    </table>
+
+    <div class="callout"><span class="callout-label">◆ Mental model</span> treat Base44 as a "Firestore + one Lambda" combo. There is no Node server you can <code>git pull</code> — backend changes happen via the Base44 admin UI or by editing <code>.jsonc</code> entity schemas under <code>base44/entities/</code>.</div>
+  </div>
+</details>
+
+<!-- ── 05 Repository tour ── -->
+<details class="box" id="repo">
+  <summary>
+    <span class="num">05</span>
+    <h2>Repository tour</h2>
+    <span class="meta-pill">where things live</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Most folders are flat — there is no nested package structure.</p>
+
+<pre><code>Chess-dna/
+├─ base44/entities/         # 15 JSONC entity schemas (source of truth for the DB)
+├─ public/stockfish/        # WASM worker copied in by postinstall
+├─ scripts/                 # deploy-safety + stockfish-copy build helpers
+├─ src/
+│  ├─ App.tsx               # router + the full provider nesting
+│  ├─ main.tsx              # ReactDOM.createRoot entrypoint
+│  ├─ index.css             # Tailwind 4 + CSS vars (dark/light)
+│  ├─ pages/                # 1 file per route (18 pages incl. admin + dev)
+│  ├─ components/           # All UI primitives — boards, charts, share cards…
+│  │   ├─ share/            # html2canvas share-card layers (avoid CSS vars!)
+│  │   ├─ ChartGallery/     # Composed Recharts dashboards
+│  │   └─ skill-studio/     # Admin-only skill calibration tools
+│  ├─ contexts/             # 3 providers — Auth, ChessData, Tutorial
+│  ├─ hooks/                # useEntity + 9 domain hooks
+│  ├─ engine/               # Stockfish client, analyzers, classifiers
+│  ├─ ai/                   # Claude/Gemini/OpenAI clients, prompts, insight-generator
+│  ├─ patterns/             # 8-dim skill calc, pattern engine, rank tiers
+│  ├─ analytics/            # AnalyticsProvider + Base44 event sink
+│  ├─ api/                  # base44Client + chess.com/Lichess import helpers
+│  ├─ storage/              # settings-store, insight-store, explanation-cache
+│  ├─ shared/
+│  │   ├─ types/            # 9 type files — single source of truth for shapes
+│  │   ├─ utils/            # chess-utils, date-utils
+│  │   └─ constants.ts      # ALL thresholds, endpoints, regexes
+│  └─ i18n/                 # en / es / he locales (he is RTL)
+└─ CLAUDE.md                # Living project notes — read before bigger changes</code></pre>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <h5>One-page-per-route</h5>
+        <p><code>src/pages</code> mirrors the router 1:1. Adding a new screen = new file in pages + a <code>&lt;Route&gt;</code> in <code>App.tsx</code>. No code-splitting yet; everything ships in one bundle.</p>
+      </div>
+      <div class="card">
+        <h5>Cross-cutting state in contexts</h5>
+        <p>Only 3 contexts exist (Auth, ChessData, Tutorial). <code>ChessDataContext</code> is the heavyweight one (1,260 LOC, 40+ derived values).</p>
+      </div>
+      <div class="card">
+        <h5>Engine / AI / patterns are leaf modules</h5>
+        <p>They expose plain functions or singletons. They do not import React. Everything stateful is glued by contexts and route-level pages.</p>
+      </div>
+      <div class="card">
+        <h5>Types live in one place</h5>
+        <p><code>src/shared/types/</code> is the contract. Adding a field to a Base44 entity means updating both the JSONC schema and the TS type — they are not auto-generated.</p>
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- ── 06 Context providers ── -->
+<details class="box" id="providers">
+  <summary>
+    <span class="num">06</span>
+    <h2>Context provider stack</h2>
+    <span class="meta-pill">App.tsx</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Nesting matters. Outer providers don't read inner state, but inner ones can rely on everything above them. Public routes bypass the entire stack.</p>
+
+    <!-- SVG: provider stack -->
+    <div class="diagram">
+<svg viewBox="0 0 720 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Context provider hierarchy">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5d6a89"/>
+    </marker>
+  </defs>
+  <g font-family="Inter,sans-serif" font-size="12.5" fill="#dbe3f5">
+    <!-- error boundary outer -->
+    <rect x="40" y="20" width="640" height="460" rx="10" fill="none" stroke="#f87171" stroke-dasharray="3 3"/>
+    <text x="50" y="38" fill="#f87171" font-size="11" font-weight="700">ErrorBoundary + DevModeToggle + BrowserRouter</text>
+
+    <!-- branch -->
+    <rect x="60" y="58" width="280" height="44" rx="8" fill="#1c2a44" stroke="#2a3a5c"/>
+    <text x="74" y="84" fill="#f6dba1">Public routes (no auth)</text>
+    <text x="74" y="98" fill="#8a98b9" font-size="10.5">/privacy · /support · /data-access-request</text>
+
+    <rect x="380" y="58" width="280" height="44" rx="8" fill="#1c2a44" stroke="#2a3a5c"/>
+    <text x="394" y="84" fill="#9eebbc">Authenticated routes →</text>
+    <text x="394" y="98" fill="#8a98b9" font-size="10.5">all other paths funnel here</text>
+
+    <g font-family="Inter,sans-serif" font-weight="600">
+      <rect x="380" y="118" width="280" height="32" rx="6" fill="#192340" stroke="#2a3a5c"/>
+      <text x="395" y="139">AuthProvider <tspan fill="#8a98b9" font-weight="400" font-size="10.5">— JWT, beta, admin</tspan></text>
+      <line x1="520" y1="150" x2="520" y2="160" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="160" width="280" height="32" rx="6" fill="#192340" stroke="#2a3a5c"/>
+      <text x="395" y="181">AuthGuard <tspan fill="#8a98b9" font-weight="400" font-size="10.5">— gate / WaitlistGate</tspan></text>
+      <line x1="520" y1="192" x2="520" y2="202" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="202" width="280" height="32" rx="6" fill="#192340" stroke="#2a3a5c"/>
+      <text x="395" y="223">ThemeProvider <tspan fill="#8a98b9" font-weight="400" font-size="10.5">— dark/light, 8 boards</tspan></text>
+      <line x1="520" y1="234" x2="520" y2="244" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="244" width="280" height="32" rx="6" fill="#192340" stroke="#2a3a5c"/>
+      <text x="395" y="265">I18nProvider <tspan fill="#8a98b9" font-weight="400" font-size="10.5">— en/es/he + RTL</tspan></text>
+      <line x1="520" y1="276" x2="520" y2="286" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="286" width="280" height="32" rx="6" fill="#192340" stroke="#2a3a5c"/>
+      <text x="395" y="307">ToastProvider</text>
+      <line x1="520" y1="318" x2="520" y2="328" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="328" width="280" height="32" rx="6" fill="#1a2e2a" stroke="#2f5d4d"/>
+      <text x="395" y="349" fill="#9eebbc">ChessDataProvider <tspan fill="#8a98b9" font-weight="400" font-size="10.5">— core data hub</tspan></text>
+      <line x1="520" y1="360" x2="520" y2="370" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="370" width="280" height="32" rx="6" fill="#192340" stroke="#2a3a5c"/>
+      <text x="395" y="391">TutorialProvider</text>
+      <line x1="520" y1="402" x2="520" y2="412" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="412" width="280" height="32" rx="6" fill="#192340" stroke="#2a3a5c"/>
+      <text x="395" y="433">AnalyticsProvider</text>
+      <line x1="520" y1="444" x2="520" y2="454" stroke="#5d6a89" marker-end="url(#arr2)"/>
+
+      <rect x="380" y="454" width="280" height="20" rx="6" fill="#0e2a1d" stroke="#2f5d4d"/>
+      <text x="395" y="468" fill="#9eebbc" font-size="11">AppShell + Routes (page outlet)</text>
+    </g>
+  </g>
+</svg>
+      <div class="diagram-caption">Eight providers wrap every authenticated page. Public routes (left) bypass the entire stack.</div>
+    </div>
+
+    <h3>Public-route bypass</h3>
+    <p>Privacy / Support / Data-Access-Request routes sit <em>outside</em> the provider stack. Apple App Store + Play Store policies require they be reachable without an account. Don't accidentally move them inside <code>AuthGuard</code>.</p>
+  </div>
+</details>
+
+<!-- ── 07 Routes ── -->
+<details class="box" id="routes">
+  <summary>
+    <span class="num">07</span>
+    <h2>Routes &amp; navigation</h2>
+    <span class="meta-pill">18 routes</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Every route maps to exactly one page component. Admin routes check <code>email === 'yuval.inc@gmail.com'</code>. Some pages are journey-stage gated (won't render until the user has imported &amp; analysed enough games).</p>
+
+    <h3>Public (no auth)</h3>
+    <table class="routes">
+      <tr><th>Path</th><th>Page</th><th>Notes</th></tr>
+      <tr><td>/privacy</td><td>PrivacyPolicy</td><td>App-store compliance</td></tr>
+      <tr><td>/support</td><td>Support</td><td>Contact form</td></tr>
+      <tr><td>/data-access-request</td><td>DataAccessRequest</td><td>GDPR / CCPA</td></tr>
+    </table>
+
+    <h3>Authenticated user</h3>
+    <table class="routes">
+      <tr><th>Path</th><th>Page</th><th>Notes</th></tr>
+      <tr><td>/</td><td>Overview</td><td>Skill radar, tier, recent games, insights</td></tr>
+      <tr><td>/games</td><td>RecentGames</td><td>List + chess.com sync status</td></tr>
+      <tr><td>/games/:gameId</td><td>GameDetail</td><td>Move-by-move analysis. <b>Hooks-before-returns is critical</b> here.</td></tr>
+      <tr><td>/patterns</td><td>Patterns</td><td>Weakness themes (journey-gated)</td></tr>
+      <tr><td>/timemachine</td><td>TimeMachine</td><td>"Beat your past opponent" puzzles</td></tr>
+      <tr><td>/compare</td><td>Compare</td><td>Friend radar — pick an opponent and diff skills</td></tr>
+      <tr><td>/settings</td><td>Settings</td><td>API keys, theme, locale, time class</td></tr>
+    </table>
+    <div class="callout"><span class="callout-label">◆ Removed routes</span> <code>/lessons</code>, <code>/exercises</code>, and <code>/training</code> were dropped in the May refactor. The catch-all redirects any old bookmarks to <code>/</code>.</div>
+
+    <h3>Admin only <span class="pill amber" style="margin-left:8px">yuval.inc@gmail.com</span></h3>
+    <table class="routes">
+      <tr><th>Path</th><th>Page</th><th>Purpose</th></tr>
+      <tr><td>/skill</td><td>SkillStudio</td><td>Calibrate skill-calc weights</td></tr>
+      <tr><td>/affiliate</td><td>AffiliateAdmin</td><td>Share cards via html2canvas + <code>SHARE_COLORS</code></td></tr>
+      <tr><td>/prompts</td><td>PromptsAdmin</td><td>Versioned prompt CRUD (<code>AIPrompt</code> entity)</td></tr>
+      <tr><td>/feedbacks</td><td>FeedbackAdmin</td><td>Reads <code>Feedback</code> entity</td></tr>
+      <tr><td>/analytics</td><td>AnalyticsAdmin</td><td>Reads <code>AnalyticsEvent</code> entity</td></tr>
+      <tr><td>/seo</td><td>SeoAdmin</td><td>SEO controls / metadata (reads <code>SeoRun</code>)</td></tr>
+    </table>
+
+    <h3>Dev tools</h3>
+    <table class="routes">
+      <tr><td>/nav</td><td>NavFlow</td><td>Visual sitemap</td></tr>
+      <tr><td>/graph</td><td>Graph</td><td>@xyflow visualisation of internal state</td></tr>
+    </table>
+  </div>
+</details>
+
+<!-- ── 08 Data pipeline ── -->
+<details class="box" id="pipeline">
+  <summary>
+    <span class="num">08</span>
+    <h2>Core data pipeline</h2>
+    <span class="meta-pill">7 stages</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">From "user pastes a PGN" to "weakness pattern shows up on the radar". Seven discrete stages, three of which write to Base44.</p>
+
+    <div class="pipeline">
+      <div class="step"><b>1 · Import</b><span>chess.com · Lichess · paste PGN</span></div>
+      <div class="step"><b>2 · Parse</b><span><code>parsePgnToGameRecord</code> via chess.js</span></div>
+      <div class="step persist"><b>3 · Persist</b><span><code>Game</code> entity → Base44</span></div>
+      <div class="step compute"><b>4 · Analyze</b><span>Stockfish d18 · classify · phase · tactical</span></div>
+      <div class="step persist"><b>5 · Persist</b><span><code>Analysis</code> entity (JSON)</span></div>
+      <div class="step compute"><b>6 · Compute</b><span>Patterns (19 themes) · 8-dim skill · benchmarks</span></div>
+      <div class="step persist"><b>7 · Persist</b><span><code>Pattern</code> + <code>PatternSnapshot</code></span></div>
+    </div>
+
+    <h3>Important properties</h3>
+    <ul>
+      <li><b>Batch mode</b> — <code>isBatchMode()</code> in <code>analysis-pipeline.ts</code> suppresses incremental re-renders during bulk imports. Use it whenever you're analysing &gt; 1 game in a row.</li>
+      <li><b>Event-driven progress</b> — <code>analysisEvents</code> emitter pushes progress updates; UIs subscribe instead of polling.</li>
+      <li><b>Queue, don't call directly</b> — always use <code>queueForAnalysis()</code> from <code>ChessDataContext</code>. Calling <code>runBatchAnalysis</code> directly bypasses the queue and can spawn duplicate work.</li>
+      <li><b>Windowed</b> — pattern + skill computation looks at the <em>last 50 games</em> by default (<code>DEFAULT_WINDOW_SIZE</code> in constants).</li>
+      <li><b>Singleton patterns</b> — there is exactly one <code>Pattern</code> row per user (current state); history lives in <code>PatternSnapshot</code> rows.</li>
+    </ul>
+
+    <h3>Move classification</h3>
+    <p>chess.com-style "Expected Points" model. We compute win-chance loss between the played move and Stockfish's top choice, then bucket:</p>
+    <table>
+      <tr><th>Bucket</th><th>Win-chance loss</th><th>Default score (0–99)</th></tr>
+      <tr><td><span class="pill green">brilliant / great / best</span></td><td>0.00 — tagged via sacrifice / alternative-gap heuristics</td><td>99</td></tr>
+      <tr><td><span class="pill cyan">excellent</span></td><td>≤ 0.02</td><td>75</td></tr>
+      <tr><td><span class="pill">good / book</span></td><td>≤ 0.05</td><td>50 / 65</td></tr>
+      <tr><td><span class="pill amber">inaccuracy</span></td><td>≤ 0.10</td><td>15</td></tr>
+      <tr><td><span class="pill amber">mistake</span></td><td>≤ 0.20</td><td>3</td></tr>
+      <tr><td><span class="pill red">blunder</span></td><td>&gt; 0.20</td><td>0</td></tr>
+      <tr><td><span class="pill">forced</span></td><td>—</td><td><em>excluded from the average</em></td></tr>
+    </table>
+    <p>All thresholds live in <code>src/shared/constants.ts</code>. Changing a number here ripples through the entire scoring system — bump the schema version too.</p>
+  </div>
+</details>
+
+<!-- ── 09 AI router ── -->
+<details class="box" id="ai">
+  <summary>
+    <span class="num">09</span>
+    <h2>AI generation router</h2>
+    <span class="meta-pill">claude · insight-only</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">After the May refactor only one AI surface remains: the <strong>Insight generator</strong> + per-move explanation streams. Lessons, exercises, training plans, and podcast scripts are all gone. The router shape stayed because it was small and still has a job.</p>
+
+    <!-- SVG: AI router flow -->
+    <div class="diagram">
+<svg viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AI router flow">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a98b9"/>
+    </marker>
+  </defs>
+  <g font-family="Inter,sans-serif" font-size="12" fill="#dbe3f5">
+    <!-- 1 component -->
+    <rect x="20" y="30" width="180" height="48" rx="8" fill="#192340" stroke="#2a3a5c"/>
+    <text x="32" y="50" font-weight="600">1 · Component</text>
+    <text x="32" y="68" font-size="11" fill="#8a98b9">requests Insight or explanation</text>
+
+    <line x1="200" y1="54" x2="240" y2="54" stroke="#8a98b9" marker-end="url(#arr3)"/>
+
+    <!-- 2 prompt builder -->
+    <rect x="240" y="30" width="180" height="48" rx="8" fill="#192340" stroke="#2a3a5c"/>
+    <text x="252" y="50" font-weight="600">2 · Prompt Builder</text>
+    <text x="252" y="68" font-size="11" fill="#8a98b9">templates · versioned</text>
+
+    <line x1="420" y1="54" x2="460" y2="54" stroke="#8a98b9" marker-end="url(#arr3)"/>
+
+    <!-- 3 router -->
+    <rect x="460" y="30" width="180" height="48" rx="8" fill="#0e2a1d" stroke="#2f5d4d"/>
+    <text x="472" y="50" font-weight="600" fill="#9eebbc">3 · AI Router</text>
+    <text x="472" y="68" font-size="11" fill="#8a98b9">sendWithFallback()</text>
+
+    <line x1="550" y1="78" x2="550" y2="118" stroke="#8a98b9" marker-end="url(#arr3)"/>
+
+    <!-- 4 claude client -->
+    <rect x="460" y="120" width="180" height="48" rx="8" fill="#192340" stroke="#2a3a5c"/>
+    <text x="472" y="140" font-weight="600">4 · Claude Client</text>
+    <text x="472" y="158" font-size="11" fill="#8a98b9">via claude-proxy</text>
+
+    <!-- legacy fallbacks (faded) -->
+    <rect x="660" y="120" width="120" height="22" rx="6" fill="#21172e" stroke="#3a2a55" opacity="0.5"/>
+    <text x="672" y="135" font-size="10.5" fill="#cfbffb" opacity="0.6">OpenAI · unused</text>
+    <rect x="660" y="146" width="120" height="22" rx="6" fill="#21172e" stroke="#3a2a55" opacity="0.5"/>
+    <text x="672" y="161" font-size="10.5" fill="#cfbffb" opacity="0.6">Gemini · unused</text>
+    <line x1="640" y1="144" x2="660" y2="131" stroke="#5d6a89" stroke-dasharray="2 2" opacity="0.5"/>
+    <line x1="640" y1="148" x2="660" y2="157" stroke="#5d6a89" stroke-dasharray="2 2" opacity="0.5"/>
+
+    <line x1="550" y1="168" x2="550" y2="208" stroke="#8a98b9" marker-end="url(#arr3)"/>
+
+    <!-- 5 persist -->
+    <rect x="460" y="210" width="180" height="48" rx="8" fill="#0e2a1d" stroke="#2f5d4d"/>
+    <text x="472" y="230" font-weight="600" fill="#9eebbc">5 · Persist &amp; Cache</text>
+    <text x="472" y="248" font-size="11" fill="#8a98b9">Insight entity + session cache</text>
+
+    <!-- token tracker badge -->
+    <rect x="20" y="120" width="180" height="48" rx="8" fill="#1c2a44" stroke="#2a3a5c"/>
+    <text x="32" y="140" font-weight="600" fill="#9eeaf6">Token Tracker</text>
+    <text x="32" y="158" font-size="11" fill="#8a98b9">localStorage + UserPrefs</text>
+    <line x1="200" y1="144" x2="460" y2="144" stroke="#5d6a89" stroke-dasharray="3 3"/>
+  </g>
+</svg>
+      <div class="diagram-caption">Two consumers (insights + per-move explanations) share one router, one provider, one proxy.</div>
+    </div>
+
+    <h3>Active consumers</h3>
+    <ul>
+      <li><b>Insight generator</b> (<code>src/ai/insight-generator.ts</code>) — turns recent <code>GameSummary[]</code> + <code>WeaknessPattern[]</code> into Insight cards. The only "card" generation surface left.</li>
+      <li><b>Move explanation streams</b> — when you click a move in <code>GameDetail</code>, <code>sendWithFallbackStream()</code> generates an explanation chunk-by-chunk. Cached in SessionStorage (<code>explanation-cache.ts</code>) so re-clicking the same move is free.</li>
+    </ul>
+
+    <h3>Other notable hops</h3>
+    <ul>
+      <li><b>Token tracking</b> — every successful Claude call updates the local <code>tokenUsage</code> (localStorage) and syncs to <code>UserPreferences</code>.</li>
+      <li><b>Removed validation</b> — <code>stockfish-validator.ts</code> was deleted with the exercise generator. If you re-add AI-generated puzzles, you'll need a new validator.</li>
+      <li><b>Best-effort analytics</b> — every AI request emits an <code>ai_request</code> event; failures here never block generation.</li>
+      <li><b>OpenAI / Gemini clients</b> still ship in the bundle but <code>createProvider()</code> throws for anything other than Claude. Marginal dead weight — left for easy re-enable.</li>
+    </ul>
+  </div>
+</details>
+
+<!-- ── 10 Backend ── -->
+<details class="box" id="backend">
+  <summary>
+    <span class="num">10</span>
+    <h2>Backend &amp; Base44 entities</h2>
+    <span class="meta-pill">15 entities</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">15 entity schemas under <code>base44/entities/*.jsonc</code>, but only ~11 are wired to the app — three are vestigial from the May refactor. RLS is enforced server-side per user; never filter by <code>created_by_id</code> client-side (legacy rows don't have it).</p>
+
+    <table>
+      <tr><th>Entity</th><th>Status</th><th>Cardinality</th><th>Used for</th></tr>
+      <tr><td><code>Game</code></td><td><span class="pill green">live</span></td><td>Many / user</td><td>PGN + metadata + analysis status</td></tr>
+      <tr><td><code>Analysis</code></td><td><span class="pill green">live</span></td><td>0..1 / game</td><td>Stockfish output (stringified JSON; <code>deserializeAnalysis()</code>)</td></tr>
+      <tr><td><code>Pattern</code></td><td><span class="pill green">live</span></td><td>Singleton / user</td><td>Current weakness themes &amp; skill profile</td></tr>
+      <tr><td><code>PatternSnapshot</code></td><td><span class="pill green">live</span></td><td>Many / user</td><td>Historical pattern states (last 200; older pruned)</td></tr>
+      <tr><td><code>UserPreferences</code></td><td><span class="pill green">live</span></td><td>Singleton / user</td><td>Username, time class, theme, locale, tokens, journey stage, claude key</td></tr>
+      <tr><td><code>Insight</code></td><td><span class="pill green">live</span></td><td>Many / user</td><td>AI-generated takeaways — the only active AI surface</td></tr>
+      <tr><td><code>Feedback</code></td><td><span class="pill green">live</span></td><td>Many global</td><td>User-submitted feedback</td></tr>
+      <tr><td><code>AnalyticsEvent</code></td><td><span class="pill green">live</span></td><td>Many global</td><td>Event tracking</td></tr>
+      <tr><td><code>AIPrompt</code></td><td><span class="pill green">live</span></td><td>Versioned global</td><td>Prompt templates — admin-editable via <code>/prompts</code></td></tr>
+      <tr><td><code>BetaTester</code></td><td><span class="pill green">live</span></td><td>0..1 / user</td><td>Whitelist status</td></tr>
+      <tr><td><code>BetaWaitlist</code></td><td><span class="pill green">live</span></td><td>Many global</td><td>Sign-ups awaiting approval</td></tr>
+      <tr><td><code>SeoRun</code></td><td><span class="pill green">live</span></td><td>Many global</td><td>SEO crawl/audit runs — surfaced at <code>/seo</code></td></tr>
+      <tr><td><code>Lesson</code></td><td><span class="pill amber">vestigial</span></td><td>—</td><td>Schema kept; generator + page were removed in May. Will be deleted on the next backend cleanup.</td></tr>
+      <tr><td><code>Exercise</code></td><td><span class="pill amber">vestigial</span></td><td>—</td><td>Same — code surface removed, schema awaits deletion.</td></tr>
+      <tr><td><code>TrainingPlan</code></td><td><span class="pill amber">vestigial</span></td><td>—</td><td>Same — no readers/writers in the current codebase.</td></tr>
+    </table>
+
+    <h3>The <code>useEntity</code> contract</h3>
+<pre><code>// All three return [data, loading, error, refetch]
+useEntityList&lt;T&gt;(entityName: string, query?: object)
+useEntityById&lt;T&gt;(entityName: string, id: string | null)
+useSingletonEntity&lt;T&gt;(entityName: string)</code></pre>
+    <p>Hooks branch on guest vs auth, retry on 429 with exponential backoff, and cache results in module-level maps. The hook count must stay stable across renders — don't put one behind a conditional.</p>
+
+    <div class="callout warn"><span class="callout-label">⚠ Schema discipline</span> Base44 silently drops unknown fields. If a save "succeeds" but the data didn't show up, the field probably isn't in the entity JSONC. Update the schema in the Base44 UI <em>and</em> commit the JSONC.</div>
+    <div class="callout warn"><span class="callout-label">⚠ 5,000-row ceiling</span> <code>entity.list()</code> caps at 5,000 records. For anything that could grow past that (games, analyses, events) you must paginate or query with filters.</div>
+  </div>
+</details>
+
+<!-- ── 11 Storage ── -->
+<details class="box" id="storage">
+  <summary>
+    <span class="num">11</span>
+    <h2>Storage architecture</h2>
+    <span class="meta-pill">3 tiers</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Three tiers: Base44 (durable, cross-device), localStorage (durable, single browser), in-memory + SessionStorage (ephemeral). IndexedDB is gone — it only held audio sessions, which were removed.</p>
+
+    <div class="grid cols-3">
+      <div class="card">
+        <h5>Server-side · Base44 <span class="tag">durable</span></h5>
+        <p>All 15 entity schemas + the <code>CLAUDE_API_KEY</code> server env secret. RLS scoped per user. The only place that survives reinstalling on a new device.</p>
+      </div>
+      <div class="card">
+        <h5>localStorage <span class="tag">durable</span></h5>
+        <p>JWT, guest-mode games, token usage, tutorial step, theme &amp; locale, schema version. Beware the <strong>iOS Safari ~5 MB quota</strong> — that's why we cap snapshots at 200.</p>
+      </div>
+      <div class="card">
+        <h5>SessionStorage / memory <span class="tag">ephemeral</span></h5>
+        <p>Move-explanation cache (<code>explanation-cache.ts</code>) — re-clicking a move doesn't re-call Claude. chess.com avatars in an in-process Map. Both reset on tab close.</p>
+      </div>
+    </div>
+
+    <p>Storage keys live in <code>STORAGE_KEYS</code> in <code>src/shared/constants.ts</code>. When bumping a schema, also bump <code>meta:schema_version</code> and add a migration in <code>settings-store.ts</code>.</p>
+  </div>
+</details>
+
+<!-- ── 12 Stockfish ── -->
+<details class="box" id="engine">
+  <summary>
+    <span class="num">12</span>
+    <h2>Stockfish &amp; analysis</h2>
+    <span class="meta-pill">depth 18 · singleton</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">One singleton Web Worker handles all engine work. Breaking it breaks every analysis flow in the app.</p>
+
+    <h3>Singleton client</h3>
+<pre><code>import { StockfishClient } from '@/engine/stockfish-client';
+const sf = StockfishClient.getInstance();
+const result = await sf.analyzePosition(fen, { depth: 18 });</code></pre>
+
+    <h3>Pipeline modules</h3>
+    <table>
+      <tr><th>File</th><th>Role</th></tr>
+      <tr><td><code>engine/stockfish-client.ts</code></td><td>Singleton wrapper around the Web Worker, UCI protocol</td></tr>
+      <tr><td><code>engine/uci-parser.ts</code></td><td>Parses raw <code>info ...</code> lines</td></tr>
+      <tr><td><code>engine/game-analyzer.ts</code></td><td>Orchestrates per-move analysis (top moves, eval, pv)</td></tr>
+      <tr><td><code>engine/analysis-pipeline.ts</code></td><td>Batching, progress events, persistence</td></tr>
+      <tr><td><code>engine/eval-classifier.ts</code></td><td>Win-chance loss → quality bucket</td></tr>
+      <tr><td><code>engine/phase-detector.ts</code></td><td>Material-weighted opening / middle / end phase</td></tr>
+      <tr><td><code>engine/tactical-detector.ts</code></td><td>Forks, pins, hanging-piece heuristics</td></tr>
+      <tr><td><code>engine/bot-mover.ts</code></td><td>Plays moves against the user (used by TimeMachine)</td></tr>
+    </table>
+    <p style="margin-top:8px;color:var(--muted);font-size:13px"><em>The previous <code>ai/stockfish-validator.ts</code> module was deleted with the exercise generator. If you re-introduce AI-generated puzzles, plan on rewriting it.</em></p>
+
+    <h3>Performance notes</h3>
+    <ul>
+      <li>Depth 18 is a deliberate tradeoff — deep enough for accurate classification, fast enough that 50 games analyse in ~2–4 minutes on a modern laptop.</li>
+      <li>Validation runs at depth 16 (cheaper) with a 50cp tolerance — exercises only need to be "good enough", not engine-perfect.</li>
+      <li>Worker is created lazily on first use, persisted for the rest of the session. Don't <code>new StockfishClient()</code> — always go through <code>.getInstance()</code>.</li>
+    </ul>
+  </div>
+</details>
+
+<!-- ── 13 Skill profile ── -->
+<details class="box" id="skills">
+  <summary>
+    <span class="num">13</span>
+    <h2>Skill profile &amp; rank tiers</h2>
+    <span class="meta-pill">8 dimensions · 6 tiers</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">The radar's 8 axes and the King/Queen/Rook/… rank are produced by <code>skill-calculator.ts</code>. Weights sum to 1.0.</p>
+
+    <table>
+      <tr><th>Dimension</th><th>Weight</th><th>What it measures</th></tr>
+      <tr><td><b>Tactics</b></td><td>0.18</td><td>Critical-position accuracy + missed tactics</td></tr>
+      <tr><td><b>Defense</b></td><td>0.15</td><td>Performance when under attack / worse eval</td></tr>
+      <tr><td><b>Calculation</b></td><td>0.15</td><td>Accuracy on long-PV positions</td></tr>
+      <tr><td><b>Positional</b></td><td>0.13</td><td>Quiet-move quality, pawn structure</td></tr>
+      <tr><td><b>Endgame</b></td><td>0.13</td><td>Late-game accuracy (low material)</td></tr>
+      <tr><td><b>Openings</b></td><td>0.12</td><td>Book conformity + early-game accuracy</td></tr>
+      <tr><td><b>Time Management</b></td><td>0.10</td><td>Time-pressure blunder rate</td></tr>
+      <tr><td><b>Resilience</b></td><td>0.07</td><td>Recovery from worse positions</td></tr>
+    </table>
+
+    <h3>Rank tiers</h3>
+    <div class="pills">
+      <span class="pill">♙ Pawn · 0–29</span>
+      <span class="pill cyan">♘ Knight · 30–44</span>
+      <span class="pill cyan">♗ Bishop · 45–59</span>
+      <span class="pill purple">♖ Rook · 60–74</span>
+      <span class="pill amber">♕ Queen · 75–89</span>
+      <span class="pill green">♔ King · 90–99</span>
+    </div>
+    <p>Defined in <code>src/patterns/rank-tiers.ts</code>. <code>getTierForScore(overall)</code> returns the tier object (label, colour, icon).</p>
+
+    <h3>Opponent-strength adjustment</h3>
+    <p>Skill scores are normalised against a 1200-elo baseline opponent. Beating a 2000 weighs more than beating an 800 — see <code>windowed-profile.ts</code>.</p>
+
+    <h3>Fallback for broken joins</h3>
+    <p><code>skill-calculator.ts</code> has fallback logic for when <code>Game ⨝ Analysis</code> joins are incomplete (e.g. analysis dropped mid-batch). Don't simplify this away — historical accounts have orphan analyses.</p>
+  </div>
+</details>
+
+<!-- ── 14 Patterns ── -->
+<details class="box" id="patterns">
+  <summary>
+    <span class="num">14</span>
+    <h2>Patterns &amp; benchmarks</h2>
+    <span class="meta-pill">19 themes · last 50 games</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">The pattern engine looks at the most recent 50 games and tags up to 19 themes — things like "loses pieces in king-side attacks" or "panic blunders under 30 seconds".</p>
+
+    <ul>
+      <li><b>Minimum games</b> — <code>PATTERN_MIN_GAMES = 3</code>. Below this, patterns stay empty (UI shows an onboarding message).</li>
+      <li><b>Theme catalogue</b> — see <code>src/patterns/pattern-engine.ts</code>. Each theme is a pure function over the windowed game set; adding one is a matter of writing the function + registering it.</li>
+      <li><b>Benchmarks</b> — <code>score-benchmarks.ts</code> compares the user's per-dimension scores against rough rating cohorts (800 / 1200 / 1600 / 2000).</li>
+      <li><b>Snapshot history</b> — every meaningful change writes a <code>PatternSnapshot</code>; <code>MAX_PATTERN_SNAPSHOTS = 200</code> prunes older ones to stay under the iOS storage cap.</li>
+    </ul>
+  </div>
+</details>
+
+<!-- ── 15 Onboarding flow ── -->
+<details class="box" id="onboarding-flow">
+  <summary>
+    <span class="num">15</span>
+    <h2>User onboarding flow</h2>
+    <span class="meta-pill">6 journey stages</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">The product progresses through 6 journey stages (0–5). Features unlock progressively to avoid showing an empty radar to a brand-new account.</p>
+
+    <table>
+      <tr><th>Stage</th><th>State</th><th>What's unlocked</th></tr>
+      <tr><td><span class="pill">0</span></td><td>No account / no games</td><td>Overview empty state, Settings</td></tr>
+      <tr><td><span class="pill">1</span></td><td>Chess.com username saved</td><td>Game import in progress</td></tr>
+      <tr><td><span class="pill cyan">2</span></td><td>Games imported</td><td>RecentGames list</td></tr>
+      <tr><td><span class="pill cyan">3</span></td><td>Analysis running</td><td>Per-game detail page</td></tr>
+      <tr><td><span class="pill amber">4</span></td><td>Patterns + skill profile computed</td><td>Radar, Patterns, Compare</td></tr>
+      <tr><td><span class="pill green">5</span></td><td>Fully onboarded</td><td>Insights, TimeMachine, share cards</td></tr>
+    </table>
+
+    <p>The current stage lives in <code>UserPreferences.journeyStage</code>. <code>OnboardingFlow.tsx</code> drives the visible UX; gates use <code>useChessData()</code>'s derived <code>tier</code> and <code>profile</code> values to decide what to render.</p>
+  </div>
+</details>
+
+<!-- ── 16 Cross-cutting ── -->
+<details class="box" id="concerns">
+  <summary>
+    <span class="num">16</span>
+    <h2>Cross-cutting concerns</h2>
+    <span class="meta-pill">conventions</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <div class="grid cols-2">
+      <div class="card">
+        <h5>Auth &amp; access</h5>
+        <p>Base44 JWT in localStorage; guest mode (pre-auth play, IndexedDB persistence); beta whitelist via <code>BetaTester</code>; admin role via email match. <code>auth.me()</code> may 401 even when the token is fine — don't gate CRUD on it.</p>
+      </div>
+      <div class="card">
+        <h5>AI routing &amp; safety</h5>
+        <p>One proxy, one provider, two consumers (Insights + move explanations). Token tracking is per-user; the shared <code>VITE_FALLBACK_CLAUDE_KEY</code> lets brand-new users try the app without bringing their own key.</p>
+      </div>
+      <div class="card">
+        <h5>Performance</h5>
+        <p>Stockfish singleton; <code>useMemo</code> wraps every heavy derived value in <code>ChessDataContext</code>; batch mode suppresses re-renders during imports; per-move explanations stream chunk-by-chunk. Bundle is single-chunk — split later if perf becomes an issue.</p>
+      </div>
+      <div class="card">
+        <h5>Theming</h5>
+        <p>Tailwind 4 with CSS vars on <code>[data-theme]</code>. Custom palette: <code>chess-surface</code>, <code>chess-text</code>, <code>chess-accent</code>, plus per-quality colours. 8 board themes. Mobile-first.</p>
+      </div>
+      <div class="card">
+        <h5>i18n</h5>
+        <p>English / Español / עברית. Hebrew flips to RTL. Strings live in <code>src/i18n/locales/{en,es,he}.ts</code>; locale is stored in <code>UserPreferences</code>.</p>
+      </div>
+      <div class="card">
+        <h5>Analytics</h5>
+        <p>Custom <code>AnalyticsProvider</code> writes to the <code>AnalyticsEvent</code> entity. Best-effort: failures never block UX. Admin reads aggregates at <code>/analytics</code>.</p>
+      </div>
+      <div class="card">
+        <h5>Share cards</h5>
+        <p>Rendered with html2canvas. <strong>Do not use Tailwind CSS variables</strong> in <code>components/share/*</code> — html2canvas can't resolve them. Use <code>SHARE_COLORS</code> hex constants.</p>
+      </div>
+      <div class="card">
+        <h5>Prebuild safety</h5>
+        <p><code>scripts/check-deploy-safety.mjs</code> aborts the build when run from a worktree while main has uncommitted changes. <strong>Do not bypass it</strong> — twice it has caught wiped-prod deploys.</p>
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- ── 17 Critical files ── -->
+<details class="box" id="critical">
+  <summary>
+    <span class="num">17</span>
+    <h2>Critical files — do not break these</h2>
+    <span class="meta-pill red" style="background:rgba(248,113,113,.06);color:#f6b6b6;border-color:rgba(248,113,113,.3)">high blast radius</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">High blast radius. Read them before changing them. Most accidents in this codebase trace back to one of these.</p>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <h5><span class="file">src/contexts/ChessDataContext.tsx</span></h5>
+        <p>1,260 LOC, 40+ derived values, event listeners with refs. <b>All hooks must come before any early return</b> (React error #300). Touch carefully.</p>
+      </div>
+      <div class="card">
+        <h5><span class="file">src/pages/GameDetail.tsx</span></h5>
+        <p>The most hook-heavy page. Every <code>useState</code> / <code>useEffect</code> / <code>useMemo</code> / <code>useCallback</code> must precede every conditional <code>return</code>.</p>
+      </div>
+      <div class="card">
+        <h5><span class="file">src/engine/stockfish-client.ts</span></h5>
+        <p>Singleton WASM worker. Break it and every analysis path breaks with it. Test imports + game detail + exercises after any change.</p>
+      </div>
+      <div class="card">
+        <h5><span class="file">src/patterns/skill-calculator.ts</span></h5>
+        <p>Profile computation. Keeps fallback logic for broken Game⨝Analysis joins — historical accounts depend on it.</p>
+      </div>
+      <div class="card">
+        <h5><span class="file">src/shared/constants.ts</span></h5>
+        <p>Single source of truth for thresholds, endpoints, regexes, storage keys. Changes ripple — bump the schema version when shifting bucket scoring.</p>
+      </div>
+      <div class="card">
+        <h5><span class="file">src/hooks/useEntity.ts</span></h5>
+        <p>Base44 entity hooks with guest/auth branching. Hook count must stay stable across renders. Used by literally every page.</p>
+      </div>
+      <div class="card">
+        <h5><span class="file">src/ai/ai-router.ts</span></h5>
+        <p>Provider fallback &amp; streaming. Keep both <code>sendWithFallback</code> and <code>sendWithFallbackStream</code> in sync.</p>
+      </div>
+      <div class="card">
+        <h5><span class="file">src/ai/prompt-builder.ts</span></h5>
+        <p>~195 LOC (down from 685 after the May cleanup) — system prompt + Insight + explanation templates. Pulls latest revisions from the <code>AIPrompt</code> entity.</p>
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- ── 18 Env ── -->
+<details class="box" id="env">
+  <summary>
+    <span class="num">18</span>
+    <h2>Env &amp; secrets</h2>
+    <span class="meta-pill">3 vars</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Two things to know: no <code>.env</code> secrets needed to deploy; one server-side secret lives in Base44; one optional shared-beta key is baked into the build.</p>
+
+    <table>
+      <tr><th>Variable</th><th>Where</th><th>Purpose</th></tr>
+      <tr><td><code>CLAUDE_API_KEY</code></td><td>Base44 server env (never in browser)</td><td>Used by the <code>claude-proxy</code> function</td></tr>
+      <tr><td><code>VITE_FALLBACK_CLAUDE_KEY</code></td><td>Build-time env</td><td>Lets the app work without users bringing their own key</td></tr>
+    </table>
+    <p style="color:var(--muted);font-size:13px;margin-top:6px"><em>The previous <code>VITE_FALLBACK_OPENAI_KEY</code> was retired with the TTS / podcast feature. Safe to remove from any CI configs.</em></p>
+
+    <p>Base44 app id is hard-coded in <code>src/api/base44Client.ts</code>: <code>69a04516fd2be6e9fdd5fbde</code>. Don't move it to env — there's only ever one Base44 project.</p>
+
+    <div class="callout warn"><span class="callout-label">⚠ Rotate carefully</span> Never commit a real Anthropic key, even in a fallback. To rotate, update Base44's secret manager + the build-time env in CI.</div>
+  </div>
+</details>
+
+<!-- ── 19 Build ── -->
+<details class="box" id="build">
+  <summary>
+    <span class="num">19</span>
+    <h2>Build &amp; deploy</h2>
+    <span class="meta-pill">prod only</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">Exactly one production environment: <code>chess-dna-fdd5fbde.base44.app</code>. There is no staging.</p>
+
+<pre><code># From /Users/yuval/Chess-dna (NOT a worktree)
+npm run build                  # prebuild safety + tsc -b + vite build → dist/
+npx base44 site deploy -y      # uploads dist/ to Base44 hosting</code></pre>
+
+    <ul>
+      <li><b>Verify the bundle hash changes.</b> <code>dist/assets/index-*.js</code> is content-hashed. If unchanged, the build didn't pick up your edits.</li>
+      <li><b>Don't trust <code>tsc -b</code> exit code.</b> Incremental cache bugs exist — check that <code>dist/</code> exists and the hash advanced.</li>
+      <li><b>Cache-bust after deploy.</b> Hard-refresh and check the network tab for the new bundle filename. Mobile Safari is the worst offender for caching old bundles.</li>
+    </ul>
+
+    <div class="callout danger"><span class="callout-label">✕ NEVER deploy from a worktree</span> Main almost always has uncommitted in-progress work that prod already includes. A worktree sits at a clean commit and would ship a bundle <em>missing</em> that work, wiping it from production. The <code>prebuild</code> guard catches this — do not bypass it. (We've lost work twice this way already.)</div>
+  </div>
+</details>
+
+<!-- ── 20 Gotchas ── -->
+<details class="box" id="gotchas">
+  <summary>
+    <span class="num">20</span>
+    <h2>Gotchas — do NOT</h2>
+    <span class="meta-pill">pitfalls</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">A checklist of "things that look fine but blow up later". Most of these are also in <code>CLAUDE.md</code>; treat that file as the living version.</p>
+
+    <ul>
+      <li><b>Don't</b> use the <code>any</code> type. Define a proper interface in <code>src/shared/types/</code>.</li>
+      <li><b>Don't</b> add npm dependencies without discussing first. Bundle size matters; React 19 + Tailwind 4 + Recharts is already chunky.</li>
+      <li><b>Don't</b> modify Base44 entity schemas casually — unknown fields are silently dropped.</li>
+      <li><b>Don't</b> put React hooks after conditional <code>return</code> statements (React error #300/#310). Especially in <code>GameDetail.tsx</code> and <code>ChessDataContext.tsx</code>.</li>
+      <li><b>Don't</b> filter entities server-side by <code>created_by_id</code> — legacy records don't have that field.</li>
+      <li><b>Don't</b> call <code>runBatchAnalysis()</code> directly — always go through <code>queueForAnalysis()</code> in <code>ChessDataContext</code>.</li>
+      <li><b>Don't</b> use CSS variables (<code>var(--chess-*)</code>) in share-card components — html2canvas can't resolve them. Use <code>SHARE_COLORS</code> hex constants.</li>
+      <li><b>Don't</b> assume <code>entity.list()</code> returns everything — Base44 caps at 5,000 records per call.</li>
+      <li><b>Don't</b> trust <code>tsc -b</code>'s exit code for "build succeeded" — check the <code>dist/</code> output hash instead.</li>
+      <li><b>Don't</b> deploy from a worktree under any circumstance.</li>
+      <li><b>Don't</b> write to <code>localStorage</code> without considering the iOS 5 MB quota. That's the most common cause of mobile-Safari white-screen crashes.</li>
+      <li><b>Don't</b> create extra README / planning files. The codebase has <code>CLAUDE.md</code> + this handoff — that is the documentation.</li>
+    </ul>
+  </div>
+</details>
+
+<!-- ── 21 Checklist ── -->
+<details class="box" id="checklist">
+  <summary>
+    <span class="num">21</span>
+    <h2>Onboarding checklist</h2>
+    <span class="meta-pill">2 day path</span>
+    <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+  </summary>
+  <div class="body">
+    <p class="sub">A two-day path to "I can ship a change with confidence". Tick them off in order.</p>
+
+    <h3>Day 1 — read &amp; run</h3>
+    <ul>
+      <li>Read this document end-to-end.</li>
+      <li>Read <code>CLAUDE.md</code> at the repo root.</li>
+      <li>Get a Base44 invite + verify you can log in.</li>
+      <li><code>npm install</code> &amp; <code>npm run dev</code>; reach Overview.</li>
+      <li>Import a real chess.com username and watch the pipeline run.</li>
+      <li>Open <code>/games/:id</code> for a single game and step through every move.</li>
+      <li>Open Overview and trigger an Insight refresh; confirm the <code>claude-proxy</code> network request and the cached <code>Insight</code> entity.</li>
+      <li>Toggle the dev panel; force the journey stage between 2, 4, and 5; verify the gates work.</li>
+    </ul>
+
+    <h3>Day 2 — small change, full loop</h3>
+    <ul>
+      <li>Pick a tiny visible change (e.g. tweak a copy string in en.ts and its translations).</li>
+      <li>Commit on <code>main</code> in <code>/Users/yuval/Chess-dna</code>. No feature branches.</li>
+      <li><code>npm run build</code> — confirm bundle hash advanced.</li>
+      <li><code>npx base44 site deploy -y</code> from the main checkout, never from a worktree.</li>
+      <li>Hard-refresh production; verify the new bundle is live.</li>
+      <li>Read the Base44 admin UI sections you haven't touched yet (entities, functions, secrets, hosting).</li>
+    </ul>
+
+    <h3>Where to ask for help</h3>
+    <ul>
+      <li>For product/business context: Yuval (<code>yuval.inc@gmail.com</code>).</li>
+      <li>For codebase questions: <code>CLAUDE.md</code> + the file headers in the critical files.</li>
+      <li>For Base44 surface: their docs + the admin UI for this project.</li>
+    </ul>
+  </div>
+</details>
+
+<div class="footer">
+  Generated as a static reference for the Chess DNA codebase. Snapshot date: <b>2026-05-22</b>. The authoritative source is the code and <code>CLAUDE.md</code> — when this doc and the code disagree, the code wins.
+</div>
+
+</main>
+</div>
+
+<button class="totop" id="totop" aria-label="Back to top">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 15-6-6-6 6"/></svg>
+</button>
+
+<script>
+(() => {
+  // ── 1. Reading progress
+  const prog = document.getElementById('progress');
+  const onScroll = () => {
+    const doc = document.documentElement;
+    const total = (doc.scrollHeight - doc.clientHeight) || 1;
+    const pct = Math.min(100, Math.max(0, (window.scrollY / total) * 100));
+    prog.style.setProperty('--p', pct + '%');
+    document.getElementById('totop').classList.toggle('show', window.scrollY > 600);
+  };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  // ── 2. Scroll spy (active nav item)
+  const sections = [...document.querySelectorAll('details.box[id]')];
+  const navLinks = new Map();
+  document.querySelectorAll('#sidenav a').forEach(a => {
+    const href = a.getAttribute('href');
+    if (href && href.startsWith('#')) navLinks.set(href.slice(1), a);
+  });
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      const id = e.target.id;
+      const link = navLinks.get(id);
+      if (!link) return;
+      if (e.isIntersecting) {
+        document.querySelectorAll('#sidenav a.active').forEach(x => x.classList.remove('active'));
+        link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-30% 0px -55% 0px', threshold: 0 });
+  sections.forEach(s => io.observe(s));
+
+  // ── 3. Sidebar filter
+  const filter = document.getElementById('filter');
+  const groupEls = document.querySelectorAll('#sidenav .group');
+  filter.addEventListener('input', () => {
+    const q = filter.value.trim().toLowerCase();
+    groupEls.forEach(g => {
+      const items = g.querySelectorAll('li');
+      let anyVisible = false;
+      items.forEach(li => {
+        const a = li.querySelector('a');
+        const text = (a.textContent + ' ' + (a.dataset.text || '')).toLowerCase();
+        const match = !q || text.includes(q);
+        li.classList.toggle('hide', !match);
+        if (match) anyVisible = true;
+      });
+      g.classList.toggle('empty', !anyVisible);
+    });
+  });
+
+  // ── 4. Expand / collapse all
+  document.getElementById('expand-all').addEventListener('click', () => {
+    sections.forEach(s => s.open = true);
+  });
+  document.getElementById('collapse-all').addEventListener('click', () => {
+    sections.forEach(s => s.open = false);
+  });
+
+  // ── 5. Auto-open section when clicked from nav (in case it's collapsed)
+  document.querySelectorAll('#sidenav a').forEach(a => {
+    a.addEventListener('click', (e) => {
+      const href = a.getAttribute('href');
+      if (!href || !href.startsWith('#')) return;
+      const target = document.querySelector(href);
+      if (target && target.tagName === 'DETAILS') target.open = true;
+    });
+  });
+
+  // ── 6. Auto-open via hash on load
+  if (location.hash) {
+    const target = document.querySelector(location.hash);
+    if (target && target.tagName === 'DETAILS') {
+      target.open = true;
+      setTimeout(() => target.scrollIntoView({ block: 'start' }), 50);
+    }
+  }
+
+  // ── 7. Back to top
+  document.getElementById('totop').addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // ── 8. Copy buttons on <pre>
+  document.querySelectorAll('pre').forEach(pre => {
+    const btn = document.createElement('button');
+    btn.className = 'copy';
+    btn.type = 'button';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(pre.querySelector('code')?.textContent || pre.textContent);
+        btn.textContent = 'Copied';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1200);
+      } catch {}
+    });
+    pre.appendChild(btn);
+  });
+
+  // ── 9. Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === '/') { e.preventDefault(); filter.focus(); filter.select(); }
+    else if (e.key === 'e' || e.key === 'E') { sections.forEach(s => s.open = true); }
+    else if (e.key === 'c' || e.key === 'C') { sections.forEach(s => s.open = false); }
+    else if (e.key === 't' || e.key === 'T') { window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  });
+
+  // ── 10. Set section count stat
+  const stat = document.getElementById('stat-sections');
+  if (stat) stat.textContent = sections.length;
+})();
+</script>
+
+</body>
+</html>

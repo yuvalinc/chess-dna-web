@@ -82,6 +82,18 @@ function ensureContext(): AnalyticsContext {
 
 let lastPath = '';
 
+/** External document.referrer captured at module init. Only set on the
+ *  user's very first navigation in a tab — after that, in-app navigation
+ *  rewrites the referrer to the previous page. We snapshot it once and
+ *  attach to the first page_view of the session so the dashboard can see
+ *  "this visitor arrived from chatgpt.com" even though the URL has long
+ *  since rolled forward. */
+const initialDocReferrer: string =
+  typeof document !== 'undefined' && typeof document.referrer === 'string'
+    ? document.referrer
+    : '';
+let docReferrerAttached = false;
+
 function buildEvent(
   eventType: EventType,
   eventName: string,
@@ -91,6 +103,26 @@ function buildEvent(
   const path = typeof window !== 'undefined' ? window.location.pathname : '';
   const referrer = lastPath;
   if (eventType === 'page_view') lastPath = path;
+
+  // Attach the external referrer to the first page_view of the session
+  // (and only if it's actually cross-site — same-origin navigations are
+  // uninteresting and would just be noise). The flag prevents repeating
+  // it on every subsequent event in this tab.
+  let props: Record<string, unknown> | undefined = properties;
+  if (eventType === 'page_view' && !docReferrerAttached && initialDocReferrer) {
+    const ownOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    let external = false;
+    try {
+      external = new URL(initialDocReferrer).origin !== ownOrigin;
+    } catch {
+      external = false;
+    }
+    if (external) {
+      props = { ...(props ?? {}), _docReferrer: initialDocReferrer };
+    }
+    docReferrerAttached = true;
+  }
+
   return {
     anonymousId: ctx.anonymousId,
     sessionId: ctx.sessionId,
@@ -100,7 +132,7 @@ function buildEvent(
     eventName,
     path,
     referrer,
-    properties: properties ? JSON.stringify(properties) : '{}',
+    properties: props ? JSON.stringify(props) : '{}',
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
     platform: 'web',
     isGuest: ctx.isGuest,

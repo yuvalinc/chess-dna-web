@@ -10,7 +10,22 @@ export type TacticalMotif =
   | 'deflection'
   | 'removal_of_guard'
   | 'pawn_promotion_threat'
-  | 'zwischenzug';
+  | 'zwischenzug'
+  // ── Cheap deterministic motifs (derived from MoveAnalysis flags or move SAN) ──
+  | 'promotion'
+  | 'under_promotion'
+  | 'en_passant'
+  | 'castling_move'
+  | 'mate_in_1'
+  | 'mate_in_2'
+  | 'mate_in_3'
+  | 'mate_in_4'
+  | 'mate_in_5'
+  | 'back_rank_mate'
+  | 'smothered_mate'
+  | 'mate_threat'
+  | 'exposed_king'
+  | 'double_check';
 
 export interface PositionEval {
   depth: number;

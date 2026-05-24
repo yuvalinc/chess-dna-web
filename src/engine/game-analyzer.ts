@@ -10,7 +10,7 @@ import {
 } from './eval-classifier';
 import { cpLossToAccuracy } from './uci-parser';
 import { detectPhase, countMaterial } from './phase-detector';
-import { detectTacticalMotifs } from './tactical-detector';
+import { detectTacticalMotifs, deriveAdditionalMotifs } from './tactical-detector';
 
 type ProgressCallback = (moveIndex: number, totalMoves: number) => void;
 
@@ -156,9 +156,24 @@ export async function analyzeGame(
     const pvSan = pvToSan(fenBefore, evalBefore.pv);
 
     // Detect tactical motifs
-    const tacticalMotifs = cpLoss > 30
+    const baseMotifs = cpLoss > 30
       ? detectTacticalMotifs(fenBefore, evalBefore.bestMove, moveUci)
       : detectTacticalMotifs(fenBefore, evalBefore.bestMove, '');
+
+    // Cheap motif additions derived from existing MoveAnalysis-level data:
+    // mate-in-N, promotion, en passant, castling, back-rank/smothered mate,
+    // exposed king, double check, mate threat.
+    const extraMotifs = deriveAdditionalMotifs({
+      fenBefore,
+      fenAfter,
+      moveSan: move.san,
+      moveUci,
+      isCheck: chess.inCheck(),
+      isCastling: move.san === 'O-O' || move.san === 'O-O-O',
+      evalBefore,
+      evalAfter,
+    });
+    const tacticalMotifs = [...new Set([...baseMotifs, ...extraMotifs])];
 
     // Normalize eval scores to always be from White's perspective for storage/display.
     const normalizedEvalBefore = normalizeEvalToWhite(evalBefore, isWhite);

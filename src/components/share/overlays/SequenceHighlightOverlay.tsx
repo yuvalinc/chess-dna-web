@@ -13,6 +13,7 @@ import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
 import { SHARE_COLORS } from '../share-colors';
 import { getBoardTheme } from '@/components/board-themes';
+import { cburnettShadowPieces } from '@/components/cburnett-shadow-pieces';
 import { playChessSound, type SoundType } from '@shared/utils/chess-sounds';
 import type { GameRecord } from '@shared/types/game';
 import type { MoveAnalysis } from '@shared/types/analysis';
@@ -313,6 +314,7 @@ const SequenceHighlightOverlay = forwardRef<SequenceHandle, Props>(function Sequ
                   boardWidth={boardSize}
                   arePiecesDraggable={false}
                   animationDuration={recordingMode ? 0 : Math.min(150, Math.max(80, Math.round(speedMs * 0.25)))}
+                  customPieces={cburnettShadowPieces}
                   customDarkSquareStyle={{ backgroundColor: theme.darkSquare }}
                   customLightSquareStyle={{ backgroundColor: theme.lightSquare }}
                   customBoardStyle={{ borderRadius: '8px' }}

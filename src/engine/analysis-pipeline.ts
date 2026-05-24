@@ -9,11 +9,10 @@ import { isError } from './eval-classifier';
 import { base44 } from '@/api/base44Client';
 import { StockfishClient } from './stockfish-client';
 import { createSnapshot, computePatterns, assignThemes } from '@/patterns/pattern-engine';
-import { DEFAULT_WINDOW_SIZE } from '@shared/constants';
+import { DEFAULT_WINDOW_SIZE, MAX_PATTERN_SNAPSHOTS } from '@shared/constants';
 import type { GameRecord } from '@shared/types/game';
 import type { GameAnalysis } from '@shared/types/analysis';
 import type { PatternExample, PatternSnapshot } from '@shared/types/patterns';
-import type { Lesson, Exercise } from '@shared/types/ai';
 import {
   getGuestEntities, createGuestEntity, updateGuestEntity, deleteGuestEntity,
   setGuestSingleton,
@@ -65,72 +64,6 @@ export function deserializePattern(raw: Record<string, unknown>): Record<string,
     ? raw.patterns.map((p: unknown) => (typeof p === 'string' ? JSON.parse(p) : p))
     : [];
   return { ...raw, patterns };
-}
-
-/**
- * Deserialize a raw TrainingPlan state from Base44.
- * Base44 stores `options` as string[] (each plan JSON-serialized).
- */
-export function deserializeTrainingPlan(raw: Record<string, unknown>): Record<string, unknown> {
-  const options = Array.isArray(raw.options)
-    ? raw.options.map((o: unknown) => (typeof o === 'string' ? JSON.parse(o) : o))
-    : [];
-  return { ...raw, options };
-}
-
-/**
- * Serialize a TrainingPlan state for Base44 storage.
- * Converts `options` array of objects to string[].
- */
-export function serializeTrainingPlan(data: Record<string, unknown>): Record<string, unknown> {
-  if (!data.options) return data;
-  const options = Array.isArray(data.options)
-    ? data.options.map((o: unknown) => (typeof o === 'string' ? o : JSON.stringify(o)))
-    : [];
-  return { ...data, options };
-}
-
-/**
- * Deserialize a raw Lesson from Base44.
- * Maps themeId → theme, deserializes examplePositions from string[].
- */
-export function deserializeLesson(raw: unknown): Lesson {
-  const r = raw as Record<string, unknown>;
-  const examplePositions = Array.isArray(r.examplePositions)
-    ? r.examplePositions.map((p: unknown) => (typeof p === 'string' ? JSON.parse(p) : p))
-    : [];
-  const keyTakeaways = Array.isArray(r.keyTakeaways) ? r.keyTakeaways : [];
-  return {
-    ...r,
-    theme: r.theme ?? r.themeId,
-    examplePositions,
-    keyTakeaways,
-    conceptExplanation: r.conceptExplanation ?? r.explanation ?? '',
-    difficulty: r.difficulty ?? 'beginner',
-    isCompleted: r.isCompleted ?? false,
-  } as Lesson;
-}
-
-/**
- * Deserialize a raw Exercise from Base44.
- * Maps themeId → theme, position → fen, deserializes solution arrays.
- */
-export function deserializeExercise(raw: unknown): Exercise {
-  const r = raw as Record<string, unknown>;
-  const parseSafe = (v: unknown) => {
-    if (typeof v === 'string') { try { return JSON.parse(v); } catch { return v; } }
-    return v;
-  };
-  return {
-    ...r,
-    theme: r.theme ?? r.themeId,
-    fen: r.fen ?? r.position ?? '',
-    solution: Array.isArray(r.solution) ? r.solution : (parseSafe(r.solution) ?? []),
-    solutionSan: Array.isArray(r.solutionSan) ? r.solutionSan : (parseSafe(r.solutionSan) ?? []),
-    isCompleted: r.isCompleted ?? false,
-    wasCorrect: r.wasCorrect ?? null,
-    attemptedAt: r.attemptedAt ?? null,
-  } as Exercise;
 }
 
 /**
@@ -216,6 +149,9 @@ export async function runAnalysisPipeline(
         gameId: analysis.gameId,
         // Store chess.com gameId for stable matching across re-imports
         chessGameId: (game as unknown as Record<string, unknown>).gameId as string | undefined,
+        // Flat, server-filterable field mirroring the Game's playerUsername
+        // so the Analysis fetch can also be scoped per-user (see Game create).
+        playerUsername: ((game.player?.username ?? '') as string).toLowerCase(),
         moves: analysis.moves.map((m: unknown) => JSON.stringify(m)),
         summary: analysis.summary,
         analyzedAt: analysis.analyzedAt,
@@ -359,6 +295,32 @@ export async function runBatchAnalysis(
 }
 
 /**
+ * Write to localStorage with quota fallback. iOS Safari enforces a ~5MB
+ * cap per origin and throws QuotaExceededError on overflow — uncaught,
+ * this crashes the analysis pipeline and triggers a white screen on
+ * iPhone. On failure, drops the lowest-priority pattern caches and
+ * retries once before giving up.
+ */
+function safeWritePatternStorage(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+    return;
+  } catch (err) {
+    console.warn(`[Chess DNA] localStorage quota hit for ${key} — pruning ancillary pattern caches and retrying`, err);
+  }
+  // Free space: drop the largest disposable caches first.
+  for (const fallbackKey of ['chess-dna:pattern-examples', 'chess-dna:current-patterns']) {
+    if (fallbackKey === key) continue;
+    try { localStorage.removeItem(fallbackKey); } catch { /* noop */ }
+  }
+  try {
+    localStorage.setItem(key, value);
+  } catch (retryErr) {
+    console.warn(`[Chess DNA] localStorage still over quota after cleanup; skipping write for ${key}`, retryErr);
+  }
+}
+
+/**
  * Update patterns after a game analysis.
  */
 async function updatePatterns(
@@ -374,10 +336,20 @@ async function updatePatterns(
   let allSnapshots: PatternSnapshot[];
   if (isGuestMode()) {
     // Guest: always use localStorage
-    const stored = localStorage.getItem('chess-dna:pattern-snapshots');
-    allSnapshots = stored ? JSON.parse(stored) : [];
+    let stored: string | null = null;
+    try { stored = localStorage.getItem('chess-dna:pattern-snapshots'); } catch { /* noop */ }
+    try {
+      allSnapshots = stored ? JSON.parse(stored) : [];
+    } catch {
+      allSnapshots = [];
+    }
     allSnapshots.push(snapshot);
-    localStorage.setItem('chess-dna:pattern-snapshots', JSON.stringify(allSnapshots));
+    // Cap to prevent unbounded growth — pattern window is DEFAULT_WINDOW_SIZE,
+    // we keep ~4x that for trending/history.
+    if (allSnapshots.length > MAX_PATTERN_SNAPSHOTS) {
+      allSnapshots = allSnapshots.slice(-MAX_PATTERN_SNAPSHOTS);
+    }
+    safeWritePatternStorage('chess-dna:pattern-snapshots', JSON.stringify(allSnapshots));
   } else {
     try {
       const existing = await entities.PatternSnapshot.list();
@@ -390,18 +362,28 @@ async function updatePatterns(
       });
       allSnapshots.push(snapshot);
     } catch {
-      const stored = localStorage.getItem('chess-dna:pattern-snapshots');
-      allSnapshots = stored ? JSON.parse(stored) : [];
+      let stored: string | null = null;
+      try { stored = localStorage.getItem('chess-dna:pattern-snapshots'); } catch { /* noop */ }
+      try {
+        allSnapshots = stored ? JSON.parse(stored) : [];
+      } catch {
+        allSnapshots = [];
+      }
       allSnapshots.push(snapshot);
-      localStorage.setItem('chess-dna:pattern-snapshots', JSON.stringify(allSnapshots));
+      if (allSnapshots.length > MAX_PATTERN_SNAPSHOTS) {
+        allSnapshots = allSnapshots.slice(-MAX_PATTERN_SNAPSHOTS);
+      }
+      safeWritePatternStorage('chess-dna:pattern-snapshots', JSON.stringify(allSnapshots));
     }
   }
 
   // Build pattern examples
-  const storedExamples = localStorage.getItem('chess-dna:pattern-examples');
-  const existingExamples: Record<string, PatternExample[]> = storedExamples
-    ? JSON.parse(storedExamples)
-    : {};
+  let storedExamples: string | null = null;
+  try { storedExamples = localStorage.getItem('chess-dna:pattern-examples'); } catch { /* noop */ }
+  let existingExamples: Record<string, PatternExample[]> = {};
+  if (storedExamples) {
+    try { existingExamples = JSON.parse(storedExamples); } catch { existingExamples = {}; }
+  }
 
   for (const mistake of mistakes) {
     const themes = assignThemes(mistake, openingName);
@@ -419,7 +401,7 @@ async function updatePatterns(
       existingExamples[key] = examples.slice(-10);
     }
   }
-  localStorage.setItem('chess-dna:pattern-examples', JSON.stringify(existingExamples));
+  safeWritePatternStorage('chess-dna:pattern-examples', JSON.stringify(existingExamples));
 
   // Recompute current patterns
   const examplesByTheme = new Map<string, PatternExample[]>(
@@ -445,7 +427,7 @@ async function updatePatterns(
         await entities.Pattern.create(serializedPatterns);
       }
     } catch {
-      localStorage.setItem('chess-dna:current-patterns', JSON.stringify(patterns));
+      safeWritePatternStorage('chess-dna:current-patterns', JSON.stringify(patterns));
     }
   }
 

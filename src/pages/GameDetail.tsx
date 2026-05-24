@@ -1,25 +1,53 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue } from 'react';
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import ThemedChessboard from '@/components/ThemedChessboard';
 import EvalBar from '@/components/EvalBar';
 import MoveList from '@/components/MoveList';
 import { useChessData } from '@/contexts/ChessDataContext';
 import { useTheme } from '@/components/ThemeContext';
-import { useAudioPlayer } from '@/contexts/AudioPlayerContext';
 import { runAnalysisPipeline } from '@/engine/analysis-pipeline';
 import { useResponsiveBoardSize } from '@/hooks/useResponsiveBoardSize';
 import { detectGamePatterns, getThemeDescription } from '@/patterns/pattern-engine';
-import { sendWithFallback, hasAnyProvider } from '@/ai/ai-router';
+import { sendWithFallbackStream, hasAnyProvider } from '@/ai/ai-router';
+import { getExplanation as getCachedExplanation, setExplanation as setCachedExplanation } from '@/storage/explanation-cache';
 import { useActivePrompt } from '@/hooks/useActivePrompt';
 import ExplanationText from '@/components/ExplanationText';
+import ThemeChip from '@/components/ThemeChip';
+import { extractThemes, MOTIF_TO_THEME, isValidThemeSlug } from '@shared/theme-catalog';
+import { playChessSound, type SoundType } from '@shared/utils/chess-sounds';
 import ShareComposer from '@/components/share/ShareComposer';
 import { useTutorial } from '@/contexts/TutorialContext';
 import type { MoveAnalysis } from '@shared/types/analysis';
 import { DataAttribution } from '@/components/PlatformBadge';
 import PlayerAvatar from '@/components/PlayerAvatar';
 import { useT } from '@/i18n/index';
+import type { TranslationKey } from '@/i18n/locales/en';
+import { getTerminationReason, type TerminationReason } from '@shared/utils/chess-utils';
+import { detectTrapsInGame } from '@/patterns/trap-detector';
+import { OPENING_TRAPS_BY_ID } from '@shared/data/opening-traps';
+import { getBotReply, type BotMode } from '@/engine/bot-mover';
+import StockfishClient from '@/engine/stockfish-client';
+import { classifyMove, calcWinChanceLoss, getQualityColor } from '@/engine/eval-classifier';
+import type { MoveQuality } from '@shared/types/analysis';
 import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
+
+// Stable empty-arrows reference: avoids handing react-chessboard a fresh
+// `[]` on every render (which would trigger arrow re-diffs).
+const EMPTY_ARROWS: [Square, Square, string][] = [];
+
+const TERMINATION_I18N_KEY: Record<TerminationReason, TranslationKey> = {
+  checkmate: 'game_term_checkmate',
+  stalemate: 'game_term_stalemate',
+  time: 'game_term_time',
+  resignation: 'game_term_resignation',
+  agreement: 'game_term_agreement',
+  repetition: 'game_term_repetition',
+  insufficient: 'game_term_insufficient',
+  '50-move': 'game_term_50move',
+  abandoned: 'game_term_abandoned',
+  rules: 'game_term_rules',
+};
 
 export default function GameDetail() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -28,7 +56,6 @@ export default function GameDetail() {
   const initialMoveIndex = (location.state as { moveIndex?: number } | null)?.moveIndex;
 
   const { settings } = useTheme();
-  const { state: audioState, controls: audioControls } = useAudioPlayer();
   const { t, ttsLanguageName } = useT();
   const { buildPrompt } = useActivePrompt();
 
@@ -46,6 +73,11 @@ export default function GameDetail() {
   // an explicit `initialMoveIndex` (e.g. when arriving from Time Machine
   // with a specific move to inspect).
   const [currentMoveIndex, setCurrentMoveIndex] = useState(initialMoveIndex ?? -1);
+
+  // Deferred copy for non-critical children (MoveList, EvalChart). The board
+  // uses `currentMoveIndex` so stepping feels instant; the list catches up
+  // on the next idle commit, preventing scrub flood.
+  const deferredMoveIndex = useDeferredValue(currentMoveIndex);
 
   // Deep-link support: arriving with `?move=<moveNumber>` (1-based, the
   // value shown in `#N` chips on the Recent Games row) jumps straight to
@@ -108,6 +140,25 @@ export default function GameDetail() {
     return detectGamePatterns(analysis.moves, game.player.color, game.opening?.name ?? '');
   }, [analysis, game]);
 
+  const gameTraps = useMemo(() => {
+    if (!game) return [];
+    return detectTrapsInGame(game);
+  }, [game]);
+
+  // SAN history of the original game — used by play mode to (a) tell the
+  // opponent bot what's "on-script" so it can replay the real opponent's
+  // move, and (b) reconstruct the move list up to the anchor position.
+  const originalSan = useMemo<string[]>(() => {
+    if (!game?.pgn) return [];
+    try {
+      const c = new Chess();
+      c.loadPgn(game.pgn);
+      return c.history();
+    } catch {
+      return [];
+    }
+  }, [game?.pgn]);
+
   const keyMoments = useMemo(() => {
     if (!analysis || !game) return [];
     const playerMoves = analysis.moves.filter(m => m.color === game.player.color);
@@ -125,7 +176,8 @@ export default function GameDetail() {
   }, [analysis, game]);
 
   const hasKeyMoments = keyMoments.length > 0;
-  const hasPatterns = gamePatterns.length > 0;
+  const hasGameTraps = gameTraps.length > 0;
+  const hasPatterns = gamePatterns.length > 0 || hasGameTraps;
   // Default tab: Patterns when available — no specific key moment is
   // selected on initial load, so the broader pattern view is the more
   // informative landing surface. The deep-link effect below overrides
@@ -145,6 +197,289 @@ export default function GameDetail() {
     setInsightTab(hasPatterns ? 'patterns' : 'moments');
   }, [hasPatterns, hasKeyMoments]);
   const [selectedPatternIdx, setSelectedPatternIdx] = useState(0);
+  const [selectedTrapId, setSelectedTrapId] = useState<string | null>(null);
+
+  // ── Play mode (drag-to-play vs. bot) ──
+  //
+  // When the user drags a piece on the analysis board, we enter play mode:
+  // the board switches from showing the original game's position to a
+  // mutable Chess() instance anchored at the move the user was viewing.
+  // The bot replies after each user move. Any action that changes the
+  // currently-viewed position (move list click, prev/next nav, deep-link)
+  // exits play mode and snaps the board back to the original game.
+  const [playFen, setPlayFen] = useState<string | null>(null);
+  const [playSan, setPlaySan] = useState<string[]>([]);
+  const [playAnchorIdx, setPlayAnchorIdx] = useState<number | null>(null);
+  const [botMode, setBotMode] = useState<BotMode>('engine');
+  const [isBotThinking, setIsBotThinking] = useState(false);
+  // Whether to show move-quality color + best-move suggestion after each
+  // user move. Persisted per-session in localStorage.
+  const [showFeedback, setShowFeedbackState] = useState<boolean>(() => {
+    try { return (typeof window !== 'undefined' ? localStorage.getItem('chess-dna-play-feedback') : null) !== 'off'; } catch { return true; }
+  });
+  const setShowFeedback = useCallback((v: boolean) => {
+    setShowFeedbackState(v);
+    try { localStorage.setItem('chess-dna-play-feedback', v ? 'on' : 'off'); } catch { /* noop */ }
+  }, []);
+  // Last user move's quality + suggested-best. Set by an async Stockfish
+  // eval after each user drop. Drives the destination-square color and the
+  // small text under the board.
+  const [lastUserMove, setLastUserMove] = useState<null | {
+    from: string;
+    to: string;
+    san: string;
+    quality: MoveQuality;
+    bestSan: string;
+    cpLoss: number;
+  }>(null);
+  const playChessRef = useRef<Chess | null>(null);
+  // Bumped on every play-mode reset so stale async bot replies (still
+  // resolving after the user navigated away) can be ignored.
+  const playSessionRef = useRef(0);
+
+  const exitPlayMode = useCallback(() => {
+    playSessionRef.current++;
+    playChessRef.current = null;
+    setPlayFen(null);
+    setPlaySan([]);
+    setPlayAnchorIdx(null);
+    setIsBotThinking(false);
+    setLastUserMove(null);
+  }, []);
+
+  // Enter play mode anchored at the opening (move -1 = starting position).
+  // Used by the "Practice this trap" CTA so the user can drill the trap
+  // line from move 1 against the bot. When the user plays black, we
+  // immediately play white's opening move from the original game so the
+  // first turn is always the user's.
+  const practiceFromStart = useCallback(() => {
+    const startFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    playSessionRef.current++;
+    const chess = new Chess(startFen);
+    let initialSan: string[] = [];
+    if (game?.player.color === 'black') {
+      const firstMove = originalSan[0] || 'e4';
+      try {
+        const m = chess.move(firstMove);
+        if (m) {
+          initialSan = [firstMove];
+          try {
+            playChessSound(pickMoveSound(
+              m.san,
+              {
+                isCapture: m.flags.includes('c') || m.flags.includes('e'),
+                isCastling: m.flags.includes('k') || m.flags.includes('q'),
+              },
+              false,
+            ));
+          } catch { /* audio may be locked pre-gesture */ }
+        }
+      } catch { /* fall through with no auto-played move */ }
+    }
+    playChessRef.current = chess;
+    setCurrentMoveIndex(-1);
+    setPlayFen(chess.fen());
+    setPlaySan(initialSan);
+    setPlayAnchorIdx(-1);
+    setIsBotThinking(false);
+    setLastUserMove(null);
+  }, [game, originalSan]);
+
+  // When in play mode with a selected trap, compute the next expected move
+  // from the trap's first signature variant — as long as the user is still
+  // following the script. Returns null once the user has deviated or the
+  // signature is exhausted. Used to highlight from/to squares on the board.
+  const trapHint = useMemo(() => {
+    if (!playFen || !selectedTrapId) return null;
+    const def = OPENING_TRAPS_BY_ID.get(selectedTrapId);
+    if (!def) return null;
+    const sig = def.signatures[0];
+    if (!sig) return null;
+    const onScript = playSan.every((s, i) => sig[i] === s);
+    if (!onScript) return null;
+    const nextSan = sig[playSan.length];
+    if (!nextSan) return null;
+    // Only hint when it's the user's turn to move.
+    try {
+      const c = new Chess(playFen);
+      const userTurnChar = game?.player.color === 'white' ? 'w' : 'b';
+      if (c.turn() !== userTurnChar) return null;
+      const m = c.move(nextSan);
+      if (!m) return null;
+      return { from: m.from, to: m.to, san: nextSan };
+    } catch {
+      return null;
+    }
+  }, [playFen, selectedTrapId, playSan, game]);
+
+  // Reset play mode when the user navigates to a different move via the
+  // move list / nav arrows / deep-link / pattern click. Stays put when the
+  // user is mid-game and only the play state changes.
+  useEffect(() => {
+    if (playAnchorIdx === null) return;
+    if (currentMoveIndex !== playAnchorIdx) exitPlayMode();
+  }, [currentMoveIndex, playAnchorIdx, exitPlayMode]);
+
+  // ── Piece-drop handler: enters play mode on first drop, applies the
+  // user's move, then triggers the bot reply. Returns true so the
+  // chessboard accepts the move; false rejects the drag.
+  // Practice can only START at a position where it's the user's turn —
+  // we never auto-advance the opponent's move silently, because that hides
+  // the fact that the board state has changed and led to "phantom piece"
+  // confusion in earlier iterations.
+  const handlePieceDrop = useCallback(
+    (from: string, to: string): boolean => {
+      if (!game) return false;
+      if (isBotThinking) return false;
+
+      // Anchor FEN: where we resume from on first drop. After that, we use
+      // the running Chess instance in playChessRef.
+      const anchorFen = (currentMoveIndex >= 0 && analysis)
+        ? analysis.moves[currentMoveIndex].fenAfter
+        : 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+      const userTurnChar = game.player.color === 'white' ? 'w' : 'b';
+      let chess = playChessRef.current;
+      if (!chess) {
+        chess = new Chess(anchorFen);
+        playChessRef.current = chess;
+      }
+
+      // Reject the drag if it isn't the user's turn at this position. The
+      // user should navigate to one of their own moves in the move list
+      // first. isDraggablePiece below also enforces this so the cursor
+      // doesn't even invite the drag.
+      if (chess.turn() !== userTurnChar) return false;
+
+      const fenBefore = chess.fen();
+
+      // Always pass promotion='q' — chess.js ignores it for non-promotion
+      // moves. For promotion moves we'd need a separate picker; for v1 we
+      // auto-queen.
+      let userMove;
+      try {
+        userMove = chess.move({ from, to, promotion: 'q' });
+      } catch {
+        return false;
+      }
+      if (!userMove) return false;
+
+      const newSan = [...playSan, userMove.san];
+      setPlaySan(newSan);
+      setPlayFen(chess.fen());
+      if (playAnchorIdx === null) setPlayAnchorIdx(currentMoveIndex);
+
+      try {
+        playChessSound(pickMoveSound(
+          userMove.san,
+          {
+            isCapture: userMove.flags.includes('c') || userMove.flags.includes('e'),
+            isCastling: userMove.flags.includes('k') || userMove.flags.includes('q'),
+          },
+          true,
+        ));
+      } catch { /* audio may be locked pre-gesture */ }
+      // Clear the previous feedback overlay so we don't show stale colors
+      // while the new eval is in flight.
+      setLastUserMove(null);
+
+      // Bump play session — any in-flight feedback eval or bot reply from a
+      // prior move (or a prior play session) will see playSessionRef.current
+      // !== session and bail out.
+      const session = ++playSessionRef.current;
+
+      // Kick off move-quality eval in parallel with the bot reply, but only
+      // when the user has feedback enabled. Two depth-12 Stockfish calls
+      // (before + after) classify the user's move; the bot reply call
+      // proceeds independently.
+      if (showFeedback) {
+        (async () => {
+          try {
+            const sf = StockfishClient.getInstance();
+            await sf.ensureHealthy();
+            const evalBefore = await sf.analyzePosition(fenBefore, 12);
+            // Bail out if the user has exited play mode or moved on.
+            if (playSessionRef.current !== session) return;
+            const evalAfter = await sf.analyzePosition(chess!.fen(), 12);
+            if (playSessionRef.current !== session) return;
+            const toCp = (sc: { scoreType: 'cp' | 'mate'; score: number }) =>
+              sc.scoreType === 'mate' ? (sc.score > 0 ? 10000 : -10000) : sc.score;
+            const evalBeforeCp = toCp(evalBefore);
+            // evalAfter is from opponent's perspective (now their turn) —
+            // flip the sign to express it from the user's perspective.
+            const evalAfterFromUser = -toCp(evalAfter);
+            const cpLoss = Math.max(0, evalBeforeCp - evalAfterFromUser);
+            const winChanceLoss = calcWinChanceLoss(evalBeforeCp, evalAfterFromUser);
+            const quality = classifyMove({
+              cpLoss,
+              winChanceLoss,
+              evalBeforeCp,
+              evalAfterCp: evalAfterFromUser,
+              isSacrifice: false,
+              legalMoveCount: 0,
+              isBookMove: false,
+              isMissedOpportunity: false,
+            });
+            setLastUserMove({
+              from,
+              to,
+              san: userMove!.san,
+              quality,
+              bestSan: evalBefore.bestMoveSan || evalBefore.bestMove,
+              cpLoss,
+            });
+          } catch (err) {
+            console.warn('[GameDetail] feedback eval failed', err);
+          }
+        })();
+      }
+
+      if (chess.isGameOver()) return true;
+
+      // Trigger bot reply asynchronously (uses the shared `session` from above).
+      const prefixLen = currentMoveIndex + 1;
+      const playedSoFar = [...originalSan.slice(0, prefixLen), ...newSan];
+      const opponentElo = game.opponent.rating || 1500;
+
+      setIsBotThinking(true);
+      getBotReply({
+        fen: chess!.fen(),
+        mode: botMode,
+        playedSan: playedSoFar,
+        originalSan,
+        opponentElo,
+      })
+        .then((reply) => {
+          // Ignore late replies from a prior play session.
+          if (playSessionRef.current !== session) return;
+          if (!reply) return;
+          const botMove = chess!.move({ from: reply.from, to: reply.to, promotion: reply.promotion ?? 'q' });
+          if (!botMove) return;
+          setPlayFen(chess!.fen());
+          setPlaySan((prev) => [...prev, botMove.san]);
+          try {
+            playChessSound(pickMoveSound(
+              botMove.san,
+              {
+                isCapture: botMove.flags.includes('c') || botMove.flags.includes('e'),
+                isCastling: botMove.flags.includes('k') || botMove.flags.includes('q'),
+              },
+              false,
+            ));
+          } catch { /* audio may be locked pre-gesture */ }
+        })
+        .catch((err) => {
+          console.warn('[GameDetail] bot reply failed', err);
+        })
+        .finally(() => {
+          if (playSessionRef.current === session) setIsBotThinking(false);
+        });
+
+      return true;
+    },
+    [analysis, game, currentMoveIndex, isBotThinking, playSan, playAnchorIdx, botMode, originalSan, showFeedback],
+  );
+
   const [, _setSelectedMomentIdx] = useState(0);
 
   // When the user arrives via a `?move=N` deep-link from the Recent Games
@@ -179,6 +514,20 @@ export default function GameDetail() {
       setSelectedPatternIdx(patternIdx);
     }
   }, [analysis, searchParams, keyMoments, gamePatterns]);
+
+  // Deep-link from Takeaways trap card: `?trap=<id>` auto-selects the
+  // matching trap card in the Patterns tab. Runs after gameTraps is computed.
+  const trapAutoSelectedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const trapParam = searchParams.get('trap');
+    if (!trapParam) return;
+    if (trapAutoSelectedRef.current === trapParam) return; // already handled
+    if (!gameTraps.some((t) => t.trapId === trapParam)) return; // not in this game
+    trapAutoSelectedRef.current = trapParam;
+    setInsightTab('patterns');
+    setSelectedTrapId(trapParam);
+    setSelectedPatternIdx(-1);
+  }, [searchParams, gameTraps]);
 
   // Track last selected move index per tab for state restoration
   const lastMomentMoveRef = useRef<number>(-1);
@@ -236,6 +585,63 @@ export default function GameDetail() {
       ? analysis.moves[currentMoveIndex]
       : undefined;
 
+  // Pick a SoundType for a move from its SAN + analysis flags. Purely
+  // physical — what kind of move was it (castle / capture / regular)? Side
+  // (user vs opponent) just picks the pitch. Check / checkmate are NOT
+  // surfaced as special sounds here: navigation is replaying past moves and
+  // a "check fanfare" on every check feels like a reward / accuracy cue,
+  // which we explicitly don't want in the analysis view.
+  const pickMoveSound = useCallback(
+    (san: string, flags: { isCapture?: boolean; isCastling?: boolean }, isUserMove: boolean): SoundType => {
+      if (flags.isCastling || /^O-O/.test(san)) return 'castle';
+      if (flags.isCapture || /x/.test(san)) return 'capture';
+      return isUserMove ? 'move' : 'move-opponent';
+    },
+    [],
+  );
+
+  // Play a piece-move sound whenever the scrubbed move changes. The variant
+  // (capture / castle / check / move / move-opponent) is derived from the
+  // move's flags, and user vs opponent is determined by comparing the
+  // move's color to the analyzed player's color — so playing as Black still
+  // produces "move" (your own piece) on Black's moves, not "move-opponent".
+  const lastSoundedIndex = useRef<number | null>(null);
+  useEffect(() => {
+    if (currentMoveIndex < 0 || !currentMove) {
+      lastSoundedIndex.current = null;
+      return;
+    }
+    if (lastSoundedIndex.current === currentMoveIndex) return;
+    lastSoundedIndex.current = currentMoveIndex;
+    const playerColor = analysis?.summary?.playerColor;
+    const isUserMove = playerColor ? currentMove.color === playerColor : true;
+    const sound = pickMoveSound(
+      currentMove.moveSan || '',
+      {
+        isCapture: currentMove.isCapture,
+        isCastling: currentMove.isCastling,
+      },
+      isUserMove,
+    );
+    try {
+      playChessSound(sound);
+    } catch {
+      // Audio context may be locked before first user gesture — silently ignore.
+    }
+  }, [currentMoveIndex, currentMove, analysis, pickMoveSound]);
+
+  // No-op tab handler. Previously this played a "preview" sound for the
+  // best move whenever the user opened the Best Move tab — but that sound
+  // (especially when the best move was a check) read as an accuracy reward,
+  // making the user feel the app was congratulating them for selecting the
+  // best alternative. The tab is purely informational; no audio cue belongs
+  // here. Kept as a stable function reference so the existing
+  // `onTabChange={...}` props don't need to be touched.
+  const handleExplanationTabChange = useCallback(
+    (_activeTab: 0 | 1) => { void _activeTab; },
+    [],
+  );
+
   // All hooks must be BEFORE early returns to avoid React error #300
 
   useEffect(() => {
@@ -291,37 +697,45 @@ export default function GameDetail() {
     return false;
   }, [insightTab, currentMoveIndex, keyMoments, gamePatterns]);
 
-  // "Focus mode" — engaged whenever the user is viewing ANY played move.
-  // The starting position (currentMoveIndex === -1) keeps the full chrome
-  // so users can read the game header. Once they navigate to move 1+ (via
-  // chips, the move list, or arrows) we collapse to the focus layout.
-  // The user can override either way via the floating Focus toggle.
-  const [focusOverride, setFocusOverride] = useState(false);
-  const autoFocus = useMemo(() => currentMoveIndex >= 0, [currentMoveIndex]);
-  const inFocusMode = autoFocus && !focusOverride;
-  // Reset the manual override on EVERY navigation — when the active move
-  // changes (new chip clicked, arrow stepped, etc.) we re-engage focus
-  // mode automatically. Same when the trigger conditions flip off.
-  useEffect(() => { setFocusOverride(false); }, [autoFocus, currentMoveIndex, insightTab, selectedPatternIdx]);
-  // Toggle a body-level attribute so the bottom nav (in AppShell) can
-  // slide out of view in focus mode. CSS rule lives in src/index.css.
+  // Compact single-screen layout — board + explanation panel + fixed dock,
+  // with the bottom nav hidden via the body-level data-focus-mode attribute.
+  // Always-on; the AI explanation panel scrolls internally if its content
+  // overflows the available height.
   useEffect(() => {
-    if (inFocusMode) document.body.setAttribute('data-focus-mode', 'true');
-    else document.body.removeAttribute('data-focus-mode');
+    document.body.setAttribute('data-focus-mode', 'true');
     return () => document.body.removeAttribute('data-focus-mode');
-  }, [inFocusMode]);
+  }, []);
 
-  // Auto-generate AI explanation for notable moves — only when move is in the active tab
+  // Auto-generate AI explanation for notable moves — only when move is in the active tab.
+  // When the current move is NOT a notable player move (e.g. opponent's reply,
+  // or a quiet player move outside the active tab), clear any stale text so
+  // we never display an explanation that talks about a different move.
   useEffect(() => {
-    if (!isMoveInActiveTab || !isNotableMove || !currentMove || !analysis || !game || !settings) return;
+    if (!isMoveInActiveTab || !isNotableMove || !currentMove || !analysis || !game || !settings) {
+      setAiExplanation(null);
+      setAiExplanationLoading(false);
+      return;
+    }
     const idx = currentMoveIndex;
 
-    // Check cache first
+    // Check in-memory cache first (intra-session) — synchronous, no debounce.
     const cached = explanationCache.current.get(idx);
     if (cached) {
       setAiExplanation(cached);
       setAiExplanationLoading(false);
       return;
+    }
+
+    // Check persistent localStorage cache (survives reload — avoids re-billing
+    // when the user revisits a previously-explained move). Also synchronous.
+    if (gameId) {
+      const persisted = getCachedExplanation(gameId, idx);
+      if (persisted) {
+        explanationCache.current.set(idx, persisted);
+        setAiExplanation(persisted);
+        setAiExplanationLoading(false);
+        return;
+      }
     }
 
     // Check if AI is available
@@ -400,17 +814,48 @@ export default function GameDetail() {
       currentMove.tacticalMotifs,
       positionFacts,
       ttsLanguageName,
+      game.player.color,
+      currentMove.phase,
     );
 
-    sendWithFallback(settings, prompt.system, [{ role: 'user', content: prompt.user }], 200)
-      .then(text => {
-        explanationCache.current.set(idx, text);
-        setAiExplanation(text);
+    // Stream the response — first token arrives in ~400ms instead of waiting
+    // ~3s for the full message. Each delta callback appends to the local
+    // accumulator and pushes the growing text into state so the user reads
+    // along as Claude generates. AbortController lets cleanup cancel the
+    // in-flight stream when the user navigates to a different move.
+    // 400 tokens — fits 1 sentence on "Your move" and 2-3 on "Best move"
+    // plus the THEMES: prefix. 200 was clipping the best-move explanation.
+    const controller = new AbortController();
+    let accumulated = '';
+    sendWithFallbackStream(
+      settings,
+      prompt.system,
+      [{ role: 'user', content: prompt.user }],
+      400,
+      (chunk) => {
+        accumulated += chunk;
+        // First chunk flips us out of the loading skeleton; subsequent
+        // chunks just grow the rendered text.
+        setAiExplanation(accumulated);
+        setAiExplanationLoading(false);
+      },
+      controller.signal,
+    )
+      .then(finalText => {
+        // The accumulator usually already equals finalText, but assigning
+        // it explicitly covers the edge case where no deltas arrived.
+        explanationCache.current.set(idx, finalText);
+        if (gameId) setCachedExplanation(gameId, idx, finalText);
+        setAiExplanation(finalText);
         setAiExplanationLoading(false);
       })
-      .catch(() => {
+      .catch((err) => {
+        // AbortError = user navigated away mid-stream; not an error to show.
+        if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message)))) return;
         setAiExplanationLoading(false);
       });
+
+    return () => controller.abort();
   }, [currentMoveIndex, isNotableMove, isMoveInActiveTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const bestMoveArrow = useMemo(() => {
@@ -419,10 +864,10 @@ export default function GameDetail() {
     //   - Orange: the move the player actually made.
     //   - Green: Stockfish's recommended best move (if different).
     // No "Show best" toggle anymore — it's always visible in this context.
-    if (!isMoveInActiveTab || !isNotableMove) return [];
+    if (!isMoveInActiveTab || !isNotableMove) return EMPTY_ARROWS;
 
     const analysisMov = analysis?.moves[currentMoveIndex];
-    if (!analysisMov) return [];
+    if (!analysisMov) return EMPTY_ARROWS;
 
     const arrows: [Square, Square, string][] = [];
     if (analysisMov.moveUci && analysisMov.moveUci.length >= 4) {
@@ -446,6 +891,36 @@ export default function GameDetail() {
     return arrows;
   }, [currentMoveIndex, analysis, isMoveInActiveTab, isNotableMove]);
 
+  // Memoize customSquareStyles so react-chessboard doesn't re-diff all 64
+  // squares on every ply change. Only rebuilds when one of the inputs
+  // actually changes.
+  const customSquareStyles = useMemo<Record<string, React.CSSProperties> | undefined>(() => {
+    const styles: Record<string, React.CSSProperties> = {};
+    if (highlightedSquare) {
+      styles[highlightedSquare] = {
+        backgroundColor: 'rgba(59,130,246,0.45)',
+        boxShadow: 'inset 0 0 0 2px rgba(59,130,246,0.8)',
+      };
+    }
+    if (playFen && trapHint) {
+      styles[trapHint.from] = {
+        boxShadow: 'inset 0 0 0 3px rgba(96,165,250,0.55)',
+      };
+      styles[trapHint.to] = {
+        background: 'rgba(96,165,250,0.22)',
+        boxShadow: 'inset 0 0 0 2px rgba(96,165,250,0.55)',
+      };
+    }
+    if (playFen && lastUserMove) {
+      const color = getQualityColor(lastUserMove.quality);
+      styles[lastUserMove.to] = {
+        background: `${color}55`,
+        boxShadow: `inset 0 0 0 3px ${color}`,
+      };
+    }
+    return Object.keys(styles).length ? styles : undefined;
+  }, [highlightedSquare, playFen, trapHint, lastUserMove]);
+
   const requestAnalysis = async (force = false) => {
     if (!game || isAnalyzing) return;
     setIsAnalyzing(true);
@@ -461,25 +936,15 @@ export default function GameDetail() {
   };
 
 
-  const handleAudioGenerate = () => {
-    if (!game || !analysis || audioState.isGenerating) return;
-    audioControls.generateGameAndPlay(settings, game, analysis);
-  };
-
-  const audioHasThisGame = !!(
-    audioState.script &&
-    audioState.script.source.type === 'game' &&
-    audioState.script.source.gameId === gameId &&
-    audioState.ttsData &&
-    !audioState.isPlaying
-  );
-
   /* ── Result indicator ── */
   const resultLabel: Record<string, string> = {
     win: 'text-chess-accent',
     loss: 'text-chess-blunder/80',
     draw: 'text-gray-400',
   };
+
+  const terminationKey = game ? getTerminationReason(game.pgn) : null;
+  const terminationLabel = terminationKey ? t(TERMINATION_I18N_KEY[terminationKey]) : null;
 
   // Scroll insight tabs into view on mobile when switching tabs
   const insightTabsRef = useRef<HTMLDivElement>(null);
@@ -497,12 +962,6 @@ export default function GameDetail() {
       setCurrentMoveIndex(lastPatternMoveRef.current);
     }
 
-    // On mobile, scroll the tab bar to top of viewport so board + content are visible
-    if (window.innerWidth < 768 && insightTabsRef.current) {
-      setTimeout(() => {
-        insightTabsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 50);
-    }
   }, [insightTab, currentMoveIndex]);
 
   // ── Checkmate flourish — mirrors the Sequence share overlay so the
@@ -569,26 +1028,24 @@ export default function GameDetail() {
   const currentEval = currentMove?.evalAfter;
   const boardOrientation = game.player.color === 'black' ? 'black' : 'white';
 
-  // Hoisted board / panel sizing for focus mode. Computing both with the
-  // same constraints lets the explanation panel grow to fill any space
-  // between the board and the dock — when the board is width-limited
-  // (typical mobile), this kills the visible empty gap below the panel.
+  // When a move is being viewed, collapse the in-flow header and show only
+  // a floating back button so the board can sit flush at the top of the
+  // screen. The starting position (currentMoveIndex < 0) keeps the full
+  // header visible since there's nothing else above the board to hint at
+  // game context.
+  const inMoveView = currentMoveIndex >= 0;
+  const headerReserve = inMoveView ? 0 : 70;
+
+  // Hoisted board / panel sizing. The board area extends edge-to-edge on
+  // mobile (no main padding), only reserving room for the eval bar.
   const evalReserve = currentEval ? 32 : 0;
-  const viewportSafe = (typeof window !== 'undefined' ? window.innerWidth : 1200) - 32 - evalReserve;
-  // Same reservation used by the board-cap below: panel min (80) +
-  // dock + focus toggle (40) + safe-area worst-case (50) + buffer (16).
-  const focusBoardCap = inFocusMode
-    ? Math.max(200, viewportHeight - (160 + dockHeight + 40 + 24 + 8))
-    : Number.POSITIVE_INFINITY;
+  const viewportSafe = (typeof window !== 'undefined' ? window.innerWidth : 1200) - evalReserve;
+  // Reservation: header (when shown) + panel min (80, just status line + a
+  // couple lines of AI text) + dock (measured) + safe-area worst-case (24) +
+  // buffer (8). Less aggressive than the previous 160px panel reserve so
+  // the board fills more of the screen vertically.
+  const focusBoardCap = Math.max(200, viewportHeight - (headerReserve + 80 + dockHeight + 24 + 8));
   const safeBoardWidth = Math.min(Math.max(boardSize, 200), Math.max(viewportSafe, 200), focusBoardCap);
-  // Panel fills the gap between the rendered board and the dock. Its own
-  // scrollbar handles long AI commentary. Min 160 so even on tiny viewports
-  // the user always sees a few lines of explanation — 80px was leaving room
-  // for only the header line. The board cap above reserves the same 160px
-  // so the math stays consistent.
-  const focusPanelMaxHeight = inFocusMode
-    ? Math.max(160, viewportHeight - safeBoardWidth - dockHeight - 40 - 24 - 8)
-    : undefined;
 
   // Insights panel — rendered in sidebar on desktop, above board on mobile
   const insightsPanel = analysis ? (
@@ -639,13 +1096,48 @@ export default function GameDetail() {
               tutorialTargetId={inGameDetailTutorial && moment.halfMoveIndex === demoMoveHalfIndex ? 'game-detail-moment' : undefined}
             />
           ))}
+          {insightTab === 'patterns' && hasGameTraps && gameTraps.map((trap) => {
+            const def = OPENING_TRAPS_BY_ID.get(trap.trapId);
+            const isSelected = selectedTrapId === trap.trapId;
+            const isSetter = trap.playerWasSetter;
+            const tintText = isSetter ? 'text-chess-accent' : 'text-chess-blunder';
+            const selectedBorder = isSetter ? 'border-chess-accent/40 bg-chess-accent/[0.06]' : 'border-chess-blunder/40 bg-chess-blunder/[0.06]';
+            // "Use" = player set the trap (positive framing — keep using it).
+            // "Missed" = player fell into the trap (they missed defending).
+            const sideLabel = isSetter ? 'Use' : 'Missed';
+            return (
+              <button
+                key={trap.trapId}
+                onClick={() => {
+                  setSelectedTrapId(trap.trapId);
+                  setSelectedPatternIdx(-1);
+                  jumpToMoveWithAnimation(0);
+                }}
+                title={def?.description ?? trap.trapName}
+                className={`shrink-0 w-[140px] md:w-full rounded-xl p-2.5 text-start transition-all border ${
+                  isSelected ? selectedBorder : 'border-white/[0.04] bg-white/[0.02] hover:border-white/[0.08]'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className={`text-[10px] font-bold ${tintText}`}>Trap</span>
+                  <span className={`text-[10px] font-bold ${tintText}`}>{sideLabel}</span>
+                </div>
+                <div className="text-xs font-medium text-white/90 leading-tight mb-0.5">
+                  {trap.trapName}
+                </div>
+                <div className="text-[10px] text-gray-500 leading-snug line-clamp-2">
+                  {def?.description ?? (isSetter ? 'You set this trap.' : 'Opponent set this trap.')}
+                </div>
+              </button>
+            );
+          })}
           {insightTab === 'patterns' && hasPatterns && gamePatterns.map((pattern, idx) => {
             const severityKey = pattern.totalCpLoss >= 400 ? 'detail_severity_high' as const : pattern.totalCpLoss >= 150 ? 'detail_severity_medium' as const : 'detail_severity_low' as const;
             const severity = t(severityKey);
             const sevColor = severityKey === 'detail_severity_high' ? 'text-chess-blunder' : severityKey === 'detail_severity_medium' ? 'text-chess-mistake' : 'text-chess-inaccuracy';
             const isSelected = selectedPatternIdx === idx;
             return (
-              <button key={pattern.theme} onClick={() => { setSelectedPatternIdx(idx); jumpToMoveWithAnimation(gamePatterns[idx].moves[0]?.moveIndex); }} title={getThemeDescription(pattern.theme as Parameters<typeof getThemeDescription>[0])} className={`shrink-0 w-[140px] md:w-full rounded-xl p-2.5 text-start transition-all border ${isSelected ? 'border-chess-accent/40 bg-chess-accent/[0.06]' : 'border-white/[0.04] bg-white/[0.02] hover:border-white/[0.08]'}`}>
+              <button key={pattern.theme} onClick={() => { setSelectedTrapId(null); setSelectedPatternIdx(idx); jumpToMoveWithAnimation(gamePatterns[idx].moves[0]?.moveIndex); }} title={getThemeDescription(pattern.theme as Parameters<typeof getThemeDescription>[0])} className={`shrink-0 w-[140px] md:w-full rounded-xl p-2.5 text-start transition-all border ${isSelected ? 'border-chess-accent/40 bg-chess-accent/[0.06]' : 'border-white/[0.04] bg-white/[0.02] hover:border-white/[0.08]'}`}>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[10px] text-chess-blunder font-bold">{pattern.moves.length}×</span>
                   <span className={`text-[10px] font-bold ${sevColor}`}>{severity}</span>
@@ -672,6 +1164,20 @@ export default function GameDetail() {
       {/* "Show best" + "Practice" buttons removed — best move is now drawn
           on the board automatically when a moment/pattern move is active. */}
 
+      {/* Selected trap → Practice CTA. Launches drag-to-play mode anchored
+          at the starting position so the user can drill the trap line. */}
+      {insightTab === 'patterns' && selectedTrapId && gameTraps.find((t) => t.trapId === selectedTrapId) && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={practiceFromStart}
+            className="w-full px-3 py-2 rounded-lg bg-chess-accent/15 hover:bg-chess-accent/25 text-chess-accent text-xs font-bold transition-colors"
+          >
+            Practice this trap
+          </button>
+        </div>
+      )}
+
       {/* Selected pattern move chips. CTAs (Show best, Practice) removed —
           best move is drawn on the board automatically when the move is active. */}
       {insightTab === 'patterns' && gamePatterns[selectedPatternIdx] && (
@@ -693,29 +1199,29 @@ export default function GameDetail() {
   ) : null;
 
   return (
-    <div className={`max-w-[1200px] mx-auto md:pt-6 ${inFocusMode ? 'pt-[1.5px]' : 'pt-4'}`}>
+    <div className={`max-w-[1200px] mx-auto md:pt-6 ${inMoveView ? 'pt-0' : 'pt-2'}`}>
 
-      {/* ══════ 1. HEADER — clean, consolidated ══════
-           In Focus Mode (a key-moment / pattern move is active) the back
-           button floats in the upper-left corner — slightly enlarged so it
-           stays tappable when the rest of the header collapses. The full
-           header (with opponent info) still appears on desktop in focus mode,
-           but its inline back button is hidden to avoid duplicating the
-           floating one. */}
-      {inFocusMode && (
+      {/* ══════ Floating back button — visible while a move is being
+           viewed and the in-flow header is collapsed. Sits over the board
+           with a blurred backdrop so it's tappable on light squares. */}
+      {inMoveView && (
         <button
           onClick={() => navigate(-1)}
           aria-label="Back"
-          className="fixed top-3 start-3 z-50 text-gray-300 hover:text-white bg-chess-surface/20 backdrop-blur-md border border-chess-border/30 shadow-lg p-2.5 rounded-lg active:bg-white/10 active:scale-95 transition-all"
+          className="md:hidden fixed top-3 start-3 z-50 text-gray-100 bg-black/35 backdrop-blur-md border border-white/15 shadow-lg p-2 rounded-full active:bg-black/50 active:scale-95 transition-all"
         >
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" className="rtl:rotate-180"><path d="M15 18l-6-6 6-6"/></svg>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="rtl:rotate-180"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
       )}
-      <div className={`flex items-center gap-2 mb-4 ${inFocusMode ? 'hidden md:flex' : ''}`}>
+
+      {/* ══════ 1. HEADER — clean, consolidated. Collapses on mobile while
+           a move is active so the board can sit flush at the top.
+           Always visible on desktop. ══════ */}
+      <div className={`flex items-center gap-2 mb-2 md:mb-4 ${inMoveView ? 'hidden md:flex' : ''}`}>
         <button
           onClick={() => navigate(-1)}
           aria-label="Back"
-          className={`text-gray-400 hover:text-white transition-colors p-2 -ml-2 rounded-lg active:bg-white/10 active:scale-95 ${inFocusMode ? 'hidden' : ''}`}
+          className="text-gray-400 hover:text-white transition-colors p-2 -ml-2 rounded-lg active:bg-white/10 active:scale-95"
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" className="rtl:rotate-180"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
@@ -731,6 +1237,9 @@ export default function GameDetail() {
             <span className={`text-xs font-semibold uppercase tracking-wide ${resultLabel[game.player.result] ?? 'text-gray-400'}`}>
               {game.player.result === 'win' ? t('result_win_full') : game.player.result === 'loss' ? t('result_loss_full') : t('result_draw_full')}
             </span>
+            {terminationLabel && (
+              <span className="text-[10px] text-gray-500 truncate">· {terminationLabel}</span>
+            )}
           </div>
           {/* Meta line */}
           <p className="text-xs text-gray-500 mt-0.5 truncate">
@@ -775,11 +1284,6 @@ export default function GameDetail() {
                 </button>
               )}
               <div className={`${showBoard ? '' : 'hidden md:block'}`}>
-                {!inFocusMode && (
-                  <div className="flex justify-end md:hidden mb-1">
-                    <button onClick={() => setShowBoard(false)} className="text-xs text-gray-600 hover:text-gray-300 transition-colors">{t('detail_hide_board')}</button>
-                  </div>
-                )}
 
                 {/* Board + eval — no gap between them */}
                 {/* Board column. We measure the BOARD wrapper via
@@ -805,7 +1309,7 @@ export default function GameDetail() {
                   const loserRect = mateFlourish ? sqRect(mateFlourish.loser) : null;
                   const winnerRect = mateFlourish ? sqRect(mateFlourish.winner) : null;
                   return (
-                    <div className="flex gap-0 justify-center w-full min-w-0 overflow-hidden">
+                    <div className="flex gap-0 justify-center min-w-0 overflow-hidden w-screen ml-[calc(50%-50vw)] md:w-full md:ml-0">
                       {currentEval && (
                         <div className="shrink-0">
                           <EvalBar score={currentEval.score} scoreType={currentEval.scoreType} height={safeBoardWidth} />
@@ -813,13 +1317,30 @@ export default function GameDetail() {
                       )}
                       <div ref={containerRef} className="flex-1 min-w-0 overflow-hidden relative" style={{ maxWidth: safeBoardWidth }}>
                         <ThemedChessboard
-                          position={currentFen}
+                          position={playFen ?? currentFen}
                           boardOrientation={boardOrientation}
                           boardWidth={safeBoardWidth}
-                          arePiecesDraggable={false}
-                          customArrows={bestMoveArrow}
-                          customSquareStyles={highlightedSquare ? { [highlightedSquare]: { backgroundColor: 'rgba(59,130,246,0.45)', boxShadow: 'inset 0 0 0 2px rgba(59,130,246,0.8)' } } : undefined}
+                          arePiecesDraggable={!isBotThinking}
+                          isDraggablePiece={({ piece }) => {
+                            if (isBotThinking) return false;
+                            const ownPiece =
+                              (game.player.color === 'white' && piece.startsWith('w')) ||
+                              (game.player.color === 'black' && piece.startsWith('b'));
+                            if (!ownPiece) return false;
+                            // Only let the user grab their pieces when it's
+                            // their actual turn at the displayed position.
+                            const displayedFen = playFen ?? currentFen;
+                            const turnChar = displayedFen.split(' ')[1];
+                            const userTurnChar = game.player.color === 'white' ? 'w' : 'b';
+                            return turnChar === userTurnChar;
+                          }}
+                          onPieceDrop={(from, to) => handlePieceDrop(from, to)}
+                          customArrows={playFen ? EMPTY_ARROWS : bestMoveArrow}
+                          customSquareStyles={customSquareStyles}
                         />
+                        {/* Board overlay intentionally empty in play mode —
+                            all chrome (X, PRACTICE label, toggles) lives in
+                            the compact toolbar BELOW the board. */}
                         {/* ─── Checkmate flourish — same red+green glow + banner
                               we paint into the share video, now in-app too. ─── */}
                         {mateFlourish && loserRect && (
@@ -863,66 +1384,52 @@ export default function GameDetail() {
                   );
                 })()}
 
-                {/* Mobile order beneath the board:
-                      1. AI move-insight explanation
-                      2. Stats / Key Moments / Patterns tabs + chip gallery
-                      3. Move list with prev/next arrows
-                    Desktop layout (the sidebar below) is unchanged. */}
-
-                {/* 1. AI MOVE INSIGHT — mobile only (desktop shows in sidebar)
-                       Always rendered when a move is selected so the box
-                       keeps its size; for non-notable moves it shows a
-                       short "no commentary" message instead of disappearing.
-                       In focus mode it caps to a max-height and scrolls
-                       internally so the page itself stays scroll-free. */}
+                {/* Mobile flex column: AI panel fills the remaining space
+                    between the board and the dock; long AI text scrolls
+                    inside the panel; the dock sits flush at the bottom of
+                    the viewport with no orphan spacer. The wrapper height is
+                    locked to the leftover viewport (after the board) so
+                    flex-1 inside has something to flex against. */}
                 <div
-                  className={`md:hidden ${inFocusMode ? 'overflow-y-auto' : ''}`}
-                  style={inFocusMode ? { maxHeight: focusPanelMaxHeight } : undefined}
+                  className="md:hidden flex flex-col w-screen ml-[calc(50%-50vw)] px-3 md:w-full md:ml-0"
+                  style={{ height: `calc(100dvh - ${safeBoardWidth + headerReserve}px)` }}
                 >
-                  {currentMove && (
-                    <MoveInsightPanel
-                      move={currentMove}
-                      aiExplanation={aiExplanation}
-                      aiExplanationLoading={aiExplanationLoading}
-                      hasCommentary={isMoveInActiveTab && isNotableMove}
-                      onSquareClick={(sq) => setHighlightedSquare(prev => prev === sq ? null : sq)}
-                    />
-                  )}
-                </div>
+                  {/* 1. AI MOVE INSIGHT — flex-1 grows to fill the remaining
+                         space; overflow-y-auto handles long commentary. */}
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    {playFen ? (
+                      <PracticeCoachPanel
+                        trapId={selectedTrapId}
+                        trapHintSan={trapHint?.san ?? null}
+                        lastUserMove={lastUserMove}
+                        showFeedback={showFeedback}
+                        onToggleFeedback={setShowFeedback}
+                        botMode={botMode}
+                        onSetBotMode={setBotMode}
+                        isBotThinking={isBotThinking}
+                        onExit={exitPlayMode}
+                      />
+                    ) : currentMove && (
+                      <MoveInsightPanel
+                        move={currentMove}
+                        aiExplanation={aiExplanation}
+                        aiExplanationLoading={aiExplanationLoading}
+                        hasCommentary={isMoveInActiveTab && isNotableMove}
+                        onSquareClick={(sq) => setHighlightedSquare(prev => prev === sq ? null : sq)}
+                        onTabChange={handleExplanationTabChange}
+                      />
+                    )}
+                  </div>
 
-                {/* Spacer reserving room for the fixed bottom dock below —
-                    only when the dock is fixed (focus mode). Uses the
-                    live measured dock height + focus toggle bar (40px) +
-                    safe-area inset so flowing content cleanly meets the
-                    top edge of the dock on every device. */}
-                {inFocusMode && (
+                  {/* 2 + 3. DOCK — INSIGHT TABS + CHIP GALLERY, then MOVE
+                         LIST with nav arrows. Flex-none, sits at the bottom
+                         of the wrapper. The ref measures the dock's actual
+                         rendered height so the board cap above can subtract
+                         the right amount. */}
                   <div
-                    aria-hidden
-                    className="md:hidden"
-                    style={{ height: `calc(env(safe-area-inset-bottom) + ${dockHeight + 40}px)` }}
-                  />
-                )}
-
-                {/* 2 + 3. INSIGHT TABS + CHIP GALLERY, then MOVE LIST with nav arrows.
-                       In focus mode the dock is fixed above the focus toggle so
-                       Key Moments + focus stripe stay visible while explanation
-                       content scrolls. Otherwise it renders inline below the
-                       insight panel. The ref measures the dock's actual
-                       rendered height so the board cap above can subtract
-                       the right amount and the panel never gets clipped. */}
-                <div
-                  ref={inFocusMode ? dockRef : undefined}
-                  className={
-                    inFocusMode
-                      ? 'md:hidden fixed left-0 right-0 z-30 px-3 pt-2 pb-1.5 bg-chess-bg/95 backdrop-blur-sm border-t border-white/[0.04]'
-                      : 'md:hidden mt-3'
-                  }
-                  style={
-                    inFocusMode
-                      ? { bottom: 'calc(env(safe-area-inset-bottom) + 40px)' }
-                      : undefined
-                  }
-                >
+                    ref={dockRef}
+                    className="flex-none pt-2 pb-[calc(env(safe-area-inset-bottom)+4px)]"
+                  >
                   {insightsPanel && (
                     <div className="mb-2">
                       {insightsPanel}
@@ -950,7 +1457,7 @@ export default function GameDetail() {
                     </button>
 
                     <div className="flex-1 min-w-0 bg-white/[0.03] rounded-xl overflow-hidden border border-white/[0.04]">
-                      <MoveList moves={analysis.moves} currentMoveIndex={currentMoveIndex} onMoveClick={setCurrentMoveIndex} />
+                      <MoveList moves={analysis.moves} currentMoveIndex={deferredMoveIndex} onMoveClick={setCurrentMoveIndex} />
                     </div>
 
                     <button
@@ -970,6 +1477,7 @@ export default function GameDetail() {
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 17l5-5-5-5"/><path d="M13 17l5-5-5-5"/></svg>
                     </button>
                   </div>
+                  </div>
                 </div>
               </div>
             </>
@@ -981,41 +1489,45 @@ export default function GameDetail() {
           {/* Insights at top */}
           {insightsPanel && <div>{insightsPanel}</div>}
 
+          {/* Practice coach — desktop. Shown above MoveInsightPanel while
+              in play mode. */}
+          {analysis && playFen && (
+            <PracticeCoachPanel
+              trapId={selectedTrapId}
+              trapHintSan={trapHint?.san ?? null}
+              lastUserMove={lastUserMove}
+              showFeedback={showFeedback}
+              onToggleFeedback={setShowFeedback}
+              botMode={botMode}
+              onSetBotMode={setBotMode}
+              isBotThinking={isBotThinking}
+              onExit={exitPlayMode}
+            />
+          )}
+
           {/* Move insight panel — desktop. Always rendered when there is
               a current move so the layout stays stable while scrubbing. */}
-          {analysis && currentMove && (
+          {analysis && currentMove && !playFen && (
             <MoveInsightPanel
               move={currentMove}
               aiExplanation={aiExplanation}
               aiExplanationLoading={aiExplanationLoading}
               hasCommentary={isMoveInActiveTab && isNotableMove}
               onSquareClick={(sq) => setHighlightedSquare(prev => prev === sq ? null : sq)}
+              onTabChange={handleExplanationTabChange}
             />
           )}
 
           {/* CTAs pinned to the bottom, aligned with board nav arrows */}
           {analysis && (
-            <div className="mt-auto pt-4 grid grid-cols-4 gap-2">
+            <div className="mt-auto pt-4 grid grid-cols-3 gap-2">
               <button
                 onClick={() => navigate('/timemachine', { state: { gameFilter: gameId, returnTo: { path: `/games/${gameId}`, moveIndex: currentMoveIndex } } })}
                 className="bg-white/[0.03] rounded-xl p-3 text-center border border-white/[0.04] hover:border-chess-accent/30 hover:bg-white/[0.05] transition-all group"
               >
-                <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg></div>
+                <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><circle cx="12" cy="12" r="9"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg></div>
                 <div className="text-xs font-semibold text-white">{t('detail_practice_cta')}</div>
                 {hasPatterns && <div className="text-[10px] text-gray-500 mt-0.5">{t('detail_practice_sub', { count: gamePatterns.reduce((sum, p) => sum + p.moves.length, 0) })}</div>}
-              </button>
-              <button
-                onClick={() => { if (audioHasThisGame) audioControls.play(); else handleAudioGenerate(); }}
-                disabled={audioState.isGenerating}
-                className="bg-white/[0.03] rounded-xl p-3 text-center border border-white/[0.04] hover:border-chess-accent/30 hover:bg-white/[0.05] transition-all group disabled:opacity-50"
-              >
-                {audioState.isGenerating ? (
-                  <div className="text-lg mb-0.5"><span className="inline-block w-4 h-4 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" /></div>
-                ) : (
-                  <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg></div>
-                )}
-                <div className="text-xs font-semibold text-white">{audioHasThisGame ? t('detail_replay_audio') : t('detail_listen')}</div>
-                <div className="text-[10px] text-gray-500 mt-0.5">{t('detail_listen_sub')}</div>
               </button>
               <button
                 onClick={() => navigate('/compare', { state: { autoCompare: game.opponent.username } })}
@@ -1038,33 +1550,18 @@ export default function GameDetail() {
         </div>
       </div>{/* end flex layout */}
 
-      {/* ── ACTION CTAs — mobile only (desktop shows in sidebar) ── */}
+      {/* ── ACTION CTAs — mobile only (desktop shows in sidebar) ──
+            Three columns at full width with title + small subtitle. */}
       {analysis && (
-        <div className="grid grid-cols-4 gap-2 mt-5 mb-8 md:hidden">
+        <div className="grid grid-cols-3 gap-2 mt-5 mb-8 md:hidden">
           {/* Practice → TimeMachine filtered to this game */}
           <button
             onClick={() => navigate('/timemachine', { state: { gameFilter: gameId, returnTo: { path: `/games/${gameId}`, moveIndex: currentMoveIndex } } })}
             className="bg-white/[0.03] rounded-xl p-3 text-center border border-white/[0.04] hover:border-chess-accent/30 hover:bg-white/[0.05] transition-all group"
           >
-            <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg></div>
+            <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><circle cx="12" cy="12" r="9"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg></div>
             <div className="text-xs font-semibold text-white">{t('detail_practice_cta')}</div>
-          </button>
-
-          {/* Listen → generate/play audio recap */}
-          <button
-            onClick={() => {
-              if (audioHasThisGame) audioControls.play();
-              else handleAudioGenerate();
-            }}
-            disabled={audioState.isGenerating}
-            className="bg-white/[0.03] rounded-xl p-3 text-center border border-white/[0.04] hover:border-chess-accent/30 hover:bg-white/[0.05] transition-all group disabled:opacity-50"
-          >
-            {audioState.isGenerating ? (
-              <div className="text-lg mb-0.5"><span className="inline-block w-4 h-4 border-2 border-chess-accent border-t-transparent rounded-full animate-spin" /></div>
-            ) : (
-              <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg></div>
-            )}
-            <div className="text-xs font-semibold text-white">{audioHasThisGame ? t('detail_replay_audio') : t('detail_listen')}</div>
+            <div className="text-[10px] text-gray-500 mt-0.5">mistakes</div>
           </button>
 
           {/* Compare → auto-start comparison with opponent */}
@@ -1074,6 +1571,7 @@ export default function GameDetail() {
           >
             <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><rect x="3" y="10" width="4" height="11" rx="1"/><rect x="10" y="4" width="4" height="17" rx="1"/><rect x="17" y="8" width="4" height="13" rx="1"/></svg></div>
             <div className="text-xs font-semibold text-white">{t('detail_compare')}</div>
+            <div className="text-[10px] text-gray-500 mt-0.5 truncate">vs. {game.opponent.username}</div>
           </button>
 
           {/* Share → open share composer */}
@@ -1083,53 +1581,11 @@ export default function GameDetail() {
           >
             <div className="mb-0.5 opacity-70 group-hover:opacity-100 transition-opacity flex justify-center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg></div>
             <div className="text-xs font-semibold text-white">{t('detail_share') ?? 'Share'}</div>
+            <div className="text-[10px] text-gray-500 mt-0.5">moments</div>
           </button>
         </div>
       )}
       <DataAttribution />
-
-      {/* Focus-mode toggle — only rendered while focus mode is ON, so it
-          acts purely as an "exit focus" affordance. To re-enter focus the
-          user just clicks another move/chip (autoFocus kicks back in via
-          the reset effect above). */}
-      {inFocusMode && (
-        <>
-          {/* Full-width bottom bar — visual "floor" that replaces the
-              hidden bottom nav. 40px tall (plus safe-area). */}
-          <div
-            aria-hidden
-            className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-chess-bg/98 backdrop-blur-md border-t border-chess-border/30 shadow-[0_-4px_16px_rgba(0,0,0,0.15)] pb-[env(safe-area-inset-bottom)]"
-            style={{ height: 'calc(env(safe-area-inset-bottom) + 40px)' }}
-          />
-          {/* The pill itself — vertically centered inside the 40px bar
-              ((40 - 26) / 2 = 7px above safe-area). */}
-          <button
-            onClick={() => setFocusOverride(true)}
-            role="switch"
-            aria-checked={true}
-            aria-label="Exit focus mode"
-            className="md:hidden fixed left-1/2 -translate-x-1/2 z-50 select-none rounded-full shadow-md focus:outline-none focus:ring-2 focus:ring-chess-accent/40"
-            style={{
-              bottom: 'calc(env(safe-area-inset-bottom) + 7px)',
-              background: 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)',
-              width: 96,
-              height: 26,
-              position: 'fixed',
-            }}
-          >
-            <span
-              className="absolute top-0.5 w-[22px] h-[22px] rounded-full bg-white shadow-md"
-              style={{ left: 'calc(100% - 24px)' }}
-            />
-            <span
-              className="absolute inset-0 flex items-center justify-center text-[10px] font-bold uppercase tracking-[2px] pointer-events-none"
-              style={{ color: '#0a3517' }}
-            >
-              Focus
-            </span>
-          </button>
-        </>
-      )}
 
       {/* Share Composer */}
       {game && (
@@ -1263,6 +1719,118 @@ function KeyMomentCard({
   );
 }
 
+/* ══════ PracticeCoachPanel — guidance + compact toolbar shown while in
+   play mode. The toolbar (one row, very compact) replaces the old multi-
+   button overlay that used to clutter the board. Only the X (exit) button
+   stays on the board itself. */
+function PracticeCoachPanel({
+  trapId,
+  trapHintSan,
+  lastUserMove,
+  showFeedback,
+  onToggleFeedback,
+  botMode,
+  onSetBotMode,
+  isBotThinking,
+  onExit,
+}: {
+  trapId: string | null;
+  trapHintSan: string | null;
+  lastUserMove: { from: string; to: string; san: string; quality: MoveQuality; bestSan: string; cpLoss: number } | null;
+  showFeedback: boolean;
+  onToggleFeedback: (v: boolean) => void;
+  botMode: BotMode;
+  onSetBotMode: (m: BotMode) => void;
+  isBotThinking: boolean;
+  onExit: () => void;
+}) {
+  const trap = trapId ? OPENING_TRAPS_BY_ID.get(trapId) ?? null : null;
+  const qualityColor = lastUserMove ? getQualityColor(lastUserMove.quality) : null;
+  const qualityLabel = lastUserMove ? lastUserMove.quality.charAt(0).toUpperCase() + lastUserMove.quality.slice(1) : null;
+  const isError = lastUserMove ? ['inaccuracy', 'mistake', 'miss', 'blunder'].includes(lastUserMove.quality) : false;
+
+  return (
+    <div className="space-y-2">
+      {/* Compact one-row toolbar — sits flush below the board. Single row
+          (no wrap), horizontal scroll only if needed on very narrow widths. */}
+      <div className="rounded-full bg-white/[0.04] border border-white/[0.06] px-1.5 py-1 flex items-center gap-1.5 flex-nowrap overflow-x-auto">
+        <button
+          type="button"
+          onClick={onExit}
+          aria-label="Exit practice mode"
+          title="Exit practice mode"
+          className="shrink-0 w-6 h-6 inline-flex items-center justify-center rounded-full bg-chess-blunder/90 text-white hover:bg-chess-blunder transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+        <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-[1.2px] text-chess-accent shrink-0">
+          <span className={`w-1.5 h-1.5 rounded-full bg-chess-accent ${isBotThinking ? 'animate-pulse' : ''}`} />
+          {isBotThinking ? 'Bot…' : 'Practice'}
+        </span>
+        <div className="inline-flex items-stretch rounded-full overflow-hidden border border-white/[0.08] text-[10px] font-bold shrink-0">
+          <button type="button" onClick={() => onSetBotMode('engine')} className={`px-2 py-0.5 transition-colors ${botMode === 'engine' ? 'bg-chess-accent/25 text-chess-accent' : 'text-gray-400 hover:text-white'}`}>Engine</button>
+          <button type="button" onClick={() => onSetBotMode('opponent')} className={`px-2 py-0.5 transition-colors ${botMode === 'opponent' ? 'bg-chess-accent/25 text-chess-accent' : 'text-gray-400 hover:text-white'}`}>Opponent</button>
+        </div>
+        <button
+          type="button"
+          onClick={() => onToggleFeedback(!showFeedback)}
+          className={`px-2 py-0.5 rounded-full border border-white/[0.08] text-[10px] font-bold transition-colors shrink-0 ${showFeedback ? 'text-chess-accent' : 'text-gray-400 hover:text-white'}`}
+          title="Show move-quality color after each of your moves"
+        >
+          Feedback {showFeedback ? 'on' : 'off'}
+        </button>
+      </div>
+
+      {/* Coach text — trap description / last-move feedback. */}
+      <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-3 space-y-2">
+        {trap && (
+          <div>
+            <div className="text-[10px] font-extrabold uppercase tracking-[1.4px] text-chess-accent mb-0.5">
+              Practicing
+            </div>
+            <div className="text-sm font-bold text-white">{trap.name}</div>
+            <p className="text-[11px] text-gray-400 mt-1 leading-snug">{trap.description}</p>
+            {trapHintSan && (
+              <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/15 text-blue-300 text-[11px] font-bold">
+                Try {trapHintSan}
+              </div>
+            )}
+          </div>
+        )}
+        {showFeedback && lastUserMove && qualityColor && (
+          <div className={`${trap ? 'pt-2 border-t border-white/[0.06]' : ''}`}>
+            <div className="text-[10px] font-extrabold uppercase tracking-[1.4px] text-gray-400 mb-0.5">
+              Your move
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono font-bold text-white text-sm">{lastUserMove.san}</span>
+              <span className="text-[11px] font-extrabold uppercase tracking-[1.2px] px-1.5 py-0.5 rounded" style={{ backgroundColor: `${qualityColor}33`, color: qualityColor }}>
+                {qualityLabel}
+              </span>
+              {lastUserMove.cpLoss >= 50 && (
+                <span className="text-[10px] text-gray-500 tabular-nums">−{lastUserMove.cpLoss}cp</span>
+              )}
+            </div>
+            {isError && lastUserMove.bestSan && lastUserMove.bestSan !== lastUserMove.san && (
+              <p className="text-[11px] text-gray-400 mt-1">
+                Best was <span className="font-mono font-bold text-chess-accent">{lastUserMove.bestSan}</span>.
+              </p>
+            )}
+          </div>
+        )}
+        {!trap && !lastUserMove && (
+          <div className="text-[11px] text-gray-400">
+            Drag a piece to start playing. Tap Exit on the board to leave practice mode.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ══════ MoveInsightPanel — compact explanation below board ══════ */
 
 function ClockGlyph({ size = 12 }: { size?: number }) {
@@ -1318,7 +1886,7 @@ function StatPill({
         : 'text-chess-text-secondary';
   return (
     <span
-      className={`inline-flex items-center tabular-nums ${sizeCls} ${toneCls}`}
+      className={`inline-flex items-center tabular-nums whitespace-nowrap ${sizeCls} ${toneCls}`}
       title={title}
       dir="ltr"
     >
@@ -1327,7 +1895,9 @@ function StatPill({
   );
 }
 
-/** Joins an array of pills with subtle dot separators. */
+/** Joins an array of pills with subtle dot separators. Each pill wrapper
+ *  is `flex-shrink-0 whitespace-nowrap` so the metadata row stays on a
+ *  single line — the parent container handles horizontal overflow. */
 function joinWithDots(
   items: Array<React.ReactNode | false | null | undefined>,
   size: 'sm' | 'md',
@@ -1336,7 +1906,7 @@ function joinWithDots(
   const dotCls =
     size === 'sm' ? 'text-[11px] text-gray-700' : 'text-[13px] text-gray-700';
   return visible.map((el, i) => (
-    <span key={i} className="inline-flex items-center gap-1.5">
+    <span key={i} className="inline-flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
       {i > 0 && <span className={dotCls} aria-hidden>·</span>}
       {el}
     </span>
@@ -1349,6 +1919,7 @@ function MoveInsightPanel({
   aiExplanationLoading,
   hasCommentary = true,
   onSquareClick,
+  onTabChange,
 }: {
   move: MoveAnalysis;
   aiExplanation: string | null;
@@ -1358,18 +1929,23 @@ function MoveInsightPanel({
    *  short "no commentary on this move" placeholder instead of skeleton/text. */
   hasCommentary?: boolean;
   onSquareClick: (sq: string) => void;
+  /** Fires when the user toggles the Your move / Best move tabs. The parent
+   *  uses this to play a sound matching the best move when tab 1 is shown. */
+  onTabChange?: (activeTab: 0 | 1) => void;
 }) {
   const { t } = useT();
 
-  // Build structured facts — each one becomes its own pill so we can style
-  // tactical motifs, clock warnings, and the phase chip independently.
-  const motifLabel = move.tacticalMotifs?.length
-    ? (() => {
-        const key = `pattern_${move.tacticalMotifs[0].replace(/\s+/g, '_')}` as Parameters<typeof t>[0];
-        const v = t(key);
-        return v !== key ? v : move.tacticalMotifs[0].replace(/_/g, ' ');
-      })()
-    : null;
+  // Theme slugs surfaced as clickable chips: engine-detected motifs
+  // (deterministic) merged with AI-declared themes parsed off the THEMES:
+  // prefix of the AI explanation. Deduped, capped at 2 so the header row
+  // stays on a single line on mobile.
+  const themeSlugs = useMemo(() => {
+    const fromEngine = (move.tacticalMotifs ?? [])
+      .map((m) => MOTIF_TO_THEME[m] ?? m)
+      .filter((s) => isValidThemeSlug(s));
+    const fromAi = aiExplanation ? extractThemes(aiExplanation).slugs : [];
+    return [...new Set([...fromEngine, ...fromAi])].slice(0, 2);
+  }, [move.tacticalMotifs, aiExplanation]);
   const phaseLabel = move.phase
     ? (() => {
         const key = `phase_${move.phase}` as Parameters<typeof t>[0];
@@ -1403,8 +1979,11 @@ function MoveInsightPanel({
       {/* Small inline header — only when AI commentary is present. The
           no-commentary path renders its own BIG centered version below. */}
       {hasCommentary && (
-        <div className="flex items-center gap-2 mb-2 flex-wrap">
-          <span className={`text-sm font-bold ${qualityColor}`}>{qualityLabel}</span>
+        <div
+          className="flex items-center gap-2 mb-2 flex-nowrap overflow-x-auto"
+          style={{ scrollbarWidth: 'none' }}
+        >
+          <span className={`text-sm font-bold whitespace-nowrap ${qualityColor}`}>{qualityLabel}</span>
           {joinWithDots(
             [
               move.cpLoss > 0 && <StatPill size="sm">−{move.cpLoss}cp</StatPill>,
@@ -1419,11 +1998,16 @@ function MoveInsightPanel({
                   {clockLowText}
                 </StatPill>
               ),
-              motifLabel && (
-                <StatPill size="sm" tone="accent">
-                  {motifLabel}
-                </StatPill>
-              ),
+              // Header theme chips are only shown when there's NO AI
+              // explanation — in that case the chips are the user's only
+              // surface for discovering themes. When an explanation is
+              // present, the chips render inline inside the prose instead
+              // (see ExplanationText), so we don't double up here.
+              ...(aiExplanation
+                ? []
+                : themeSlugs.map((slug) => (
+                    <ThemeChip key={slug} slug={slug} size="sm" />
+                  ))),
               phaseLabel && <StatPill size="sm">{phaseLabel}</StatPill>,
             ],
             'sm',
@@ -1462,11 +2046,13 @@ function MoveInsightPanel({
                     {clockLowText}
                   </StatPill>
                 ),
-                motifLabel && (
-                  <StatPill size="md" tone="accent">
-                    {motifLabel}
-                  </StatPill>
-                ),
+                // Same rule for the md (no-commentary) row: chips only when
+                // there's no AI explanation to host them inline.
+                ...(aiExplanation
+                  ? []
+                  : themeSlugs.map((slug) => (
+                      <ThemeChip key={slug} slug={slug} size="md" />
+                    ))),
                 phaseLabel && <StatPill size="md">{phaseLabel}</StatPill>,
               ],
               'md',
@@ -1499,7 +2085,17 @@ function MoveInsightPanel({
       )}
       {hasCommentary && aiExplanation && !aiExplanationLoading && (
         <div className="text-[13px] leading-relaxed text-chess-text-secondary">
-          <ExplanationText text={aiExplanation} onSquareClick={onSquareClick} />
+          <ExplanationText
+            text={aiExplanation}
+            onSquareClick={onSquareClick}
+            onTabChange={onTabChange}
+            isBestMove={
+              !!move.bestMoveSan && !!move.moveSan &&
+              (move.moveSan === move.bestMoveSan ||
+                move.moveUci === move.bestMoveUci ||
+                move.quality === 'best' || move.quality === 'brilliant' || move.quality === 'great')
+            }
+          />
         </div>
       )}
     </div>

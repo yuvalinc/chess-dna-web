@@ -1,5 +1,6 @@
 {
   "name": "UserPreferences",
+  "description": "Per-user settings: linked Chess.com / Lichess usernames, language, theme, and other preferences.",
   "type": "object",
   "properties": {
     "chesscomUsername": { "type": "string" },
@@ -27,7 +28,9 @@
     "patternsUnlockedAt": { "type": "number" },
     "aiChoiceMade": { "type": "boolean", "default": false },
     "guidedWalkthroughDone": { "type": "boolean", "default": false },
-    "tutorialStep": { "type": "number", "default": 0 }
+    "tutorialStep": { "type": "number", "default": 0 },
+    "friendUsernames": { "type": "array", "default": [] },
+    "topPlayerUsernames": { "type": "array", "default": [] }
   },
   "rls": {
     "create": true,

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import type { MoveAnalysis, MoveQuality } from '@shared/types/analysis';
 
 interface MoveListProps {
@@ -27,7 +27,7 @@ const qualityPillStyles: Record<MoveQuality, { bg: string; text: string }> = {
 const hasPill = (q: MoveQuality) =>
   q === 'brilliant' || q === 'great' || q === 'inaccuracy' || q === 'mistake' || q === 'miss' || q === 'blunder' || q === 'book';
 
-export default function MoveList({ moves, currentMoveIndex, onMoveClick }: MoveListProps) {
+function MoveList({ moves, currentMoveIndex, onMoveClick }: MoveListProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -75,3 +75,5 @@ export default function MoveList({ moves, currentMoveIndex, onMoveClick }: MoveL
     </div>
   );
 }
+
+export default memo(MoveList);

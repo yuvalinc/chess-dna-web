@@ -15,7 +15,7 @@
  */
 import { useMemo } from 'react';
 
-const SUPPORT_EMAIL = 'yuval.inc@gmail.com';
+const SUPPORT_EMAIL = 'yuval@chessdna.app';
 const APP_NAME = 'Chess DNA';
 const EFFECTIVE_DATE = 'April 18, 2026';
 
@@ -73,6 +73,7 @@ export default function PrivacyPolicy() {
           <li><strong>Usage analytics.</strong> Aggregate token usage counters (inputs/outputs for AI features) used to show cost estimates. These are tied to your account but never shared with third parties for advertising.</li>
           <li><strong>Technical logs.</strong> Standard server logs (IP address, user-agent, timestamps) retained for a maximum of 30 days for debugging and abuse prevention, then deleted.</li>
           <li><strong>No advertising identifiers.</strong> We do not use IDFA, AAID, or any ad-tracking SDK.</li>
+          <li><strong>Push-notification token (mobile apps only).</strong> When you install the iOS or Android app and grant notification permission, our push provider <a href="https://onesignal.com/privacy_policy" target="_blank" rel="noopener noreferrer" style={link}>OneSignal</a> generates an anonymous device push token so we can send you transactional notifications (e.g.&nbsp;a finished analysis, a weekly summary). The token is not linked to advertising IDs and you can revoke it any time in your device settings.</li>
         </ul>
 
         {/* ── 2. How we use ── */}

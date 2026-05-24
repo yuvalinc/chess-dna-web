@@ -15,7 +15,7 @@
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="Chess DNA" />
     <meta property="og:title" content="Chess Pattern Recognition: How to Train on Your Own Patterns" />
-    <meta property="og:description" content="Chess pattern recognition isn't about random puzzles — it's about training on the exact patterns you keep missing in your own games." />
+    <meta property="og:description" content="Pattern recognition isn't random puzzles — it's drilling the exact patterns you keep missing in your own games. Here's the process." />
     <meta property="og:url" content="https://chessdna.app/learn/chess-pattern-recognition.html" />
     <meta property="og:image" content="https://chessdna.app/favicon.png" />
 
@@ -24,7 +24,7 @@
       "@context": "https://schema.org",
       "@type": "Article",
       "headline": "Chess Pattern Recognition: How to Train on Your Own Patterns",
-      "description": "Chess pattern recognition isn't about random puzzles — it's about training on the exact patterns you keep missing in your own games.",
+      "description": "A practical guide to building chess pattern recognition from your own games, including the 13 named patterns Chess DNA detects.",
       "url": "https://chessdna.app/learn/chess-pattern-recognition.html",
       "image": "https://chessdna.app/favicon.png",
       "datePublished": "2026-05-23",
@@ -68,44 +68,47 @@
       </header>
 
       <h1>Chess Pattern Recognition: How to Train on Your Own Patterns</h1>
-      <p class="lede">Strong players don't out-calculate weaker ones nearly as often as they out-recognize them. Pattern recognition is the actual engine of chess improvement — and the fastest way to build it isn't a random puzzle set. It's training on the exact patterns you keep missing in your own games.</p>
+      <p class="lede">Chess pattern recognition is the difference between players who calculate every position from scratch and players who just <em>see</em> the right move. The fastest way to build it isn't grinding random puzzles — it's drilling the patterns you keep missing in your own games. Here's how to identify them and train the right ones.</p>
 
       <h2>What chess pattern recognition actually means</h2>
-      <p>Pattern recognition in chess is the instant move-recognition you get from experience. A strong player sees a position and the candidate moves are already lit up before any calculation begins — not because they're computing faster, but because they've seen this exact <em>shape</em> enough times that the right idea is automatic. The pin, the back-rank weakness, the typical pawn break — it surfaces on its own.</p>
-      <p>Calculation comes second. It's the verification step on top of recognition. If recognition doesn't fire, calculation is searching blind. That's why a club player can spend two minutes on a move and miss a knight fork that a master sees in half a second: the master isn't calculating harder, the master is recognizing the pattern and skipping straight to "is there a refutation?"</p>
+      <p>Pattern recognition is the ability to instantly identify a tactical or strategic motif on the board without calculating it from scratch. When a strong player sees a knight on f3, a bishop on c4, and a queen lined up against f7, they don't compute — they <em>recognize</em>. The move comes from memory of similar positions, not from a fresh tree search.</p>
+      <p>This is what separates a 1200 from a 2000. Both can calculate. The 2000 calculates far less, because most of what they need to "calculate" they've already seen. The position triggers a stored pattern: pin, fork, weak back rank, overloaded defender. Calculation is reserved for the genuinely novel. Pattern recognition is built through repeated exposure to the same motif in slightly different forms — not through sheer puzzle volume.</p>
 
       <h2>Why generic puzzle sets don't build your personal patterns</h2>
-      <p>Generic puzzle trainers serve up a stream of unrelated tactics — a smothered mate, then a Greek gift, then a windmill, then a deflection. You get a broad tour of the tactical universe and almost no repetition of the specific patterns you actually keep missing. The puzzles are well-curated, but they're curated for the population, not for you.</p>
-      <p>Patterns extracted from your own games are the opposite. They're already filtered by what your brain doesn't see. If you've hung a piece to a discovered attack three times in the last month, that's a pattern your eyes are sliding past — and no amount of mate-in-three puzzles will fix it. The position type you keep losing in is the position type you should be drilling.</p>
+      <p>A puzzle set from Lichess or Chess.com is sampled from millions of games — most of which look nothing like yours. You'll drill mate-in-3 combinations from Sicilians you never play and rook endings you'll never reach. Some of it sticks; most doesn't, because it isn't connected to anything you're actually struggling with.</p>
+      <p>The patterns <em>you</em> miss are specific: the back-rank mate you've fallen into eight times, the knight fork you keep walking into when castled short, the pin on the long diagonal you never see coming. These show up over and over in your games. A generic puzzle pool won't surface them — your own game history will.</p>
 
       <h2>The 13 patterns Chess DNA detects</h2>
-      <p>Chess DNA classifies every mistake into one of a named taxonomy so you can see your patterns instead of just your blunders. The 13 patterns:</p>
+      <p>Chess DNA categorizes mistakes into 13 named patterns so you can see exactly which one is costing you rating:</p>
       <ul>
-        <li><strong>Missed Tactic</strong> — a winning tactical sequence existed and you played something else.</li>
-        <li><strong>Missed Pin</strong> — a piece could have been pinned to a more valuable target and the chance passed.</li>
-        <li><strong>Missed Fork</strong> — a knight, pawn, or queen fork was available and went unplayed.</li>
-        <li><strong>Missed Skewer</strong> — a skewer through a high-value piece was on the board and you didn't see it.</li>
-        <li><strong>Missed Mate</strong> — a forced mating sequence (Mate-in-1 through Mate-in-5) existed and you played a non-mating move.</li>
-        <li><strong>Trapped Piece</strong> — one of your pieces wandered into a square it couldn't escape from.</li>
-        <li><strong>Discovered Attack</strong> — your opponent uncovered an attack you didn't account for, or you missed one of your own.</li>
-        <li><strong>Hanging Pieces</strong> — a piece was left undefended and capturable for free.</li>
-        <li><strong>Back Rank Weakness</strong> — your king's back rank had no escape and got mated or threatened.</li>
-        <li><strong>Endgame Technique</strong> — a known endgame method (opposition, Lucena, Philidor, K+P vs K) was misplayed.</li>
-        <li><strong>Opening Inaccuracy</strong> — an early-game move that left you with a structural or development problem.</li>
-        <li><strong>King Safety</strong> — the king's position deteriorated through pawn pushes, missing defenders, or a botched castle.</li>
-        <li><strong>Time Pressure Blunder</strong> — a mistake clustered in the last seconds of the clock rather than a real understanding gap.</li>
+        <li><strong>Missed Tactic</strong> — a tactical opportunity (typically winning material) that the engine saw and you didn't.</li>
+        <li><strong>Missed Pin</strong> — failing to spot or exploit a piece pinned to a more valuable target behind it.</li>
+        <li><strong>Missed Fork</strong> — failing to play or defend against a single piece attacking two targets at once.</li>
+        <li><strong>Missed Skewer</strong> — failing to spot a long-range attack that forces a more valuable piece off the line, winning the piece behind it.</li>
+        <li><strong>Missed Mate</strong> — a forced mate-in-1 through mate-in-5 that was on the board but never played.</li>
+        <li><strong>Trapped Piece</strong> — leaving a piece with no safe squares, or missing the chance to trap an opponent's.</li>
+        <li><strong>Discovered Attack</strong> — missing a discovery (yours or theirs) where moving one piece unmasks another's threat.</li>
+        <li><strong>Hanging Pieces</strong> — undefended pieces left on squares the opponent can capture for free.</li>
+        <li><strong>Back Rank Weakness</strong> — vulnerability to back-rank tactics from a lack of luft or thin defenders.</li>
+        <li><strong>Endgame Technique</strong> — losing or drawing a winning endgame because the technical method wasn't known.</li>
+        <li><strong>Opening Inaccuracy</strong> — a known move-order or development error in the first 15 moves.</li>
+        <li><strong>King Safety</strong> — exposing your king through loose pawn moves, delayed castling, or open files near the monarch.</li>
+        <li><strong>Time Pressure Blunder</strong> — a mistake whose cause was the clock, not the position.</li>
       </ul>
 
       <h2>How to build pattern recognition from your own games</h2>
-      <p>The process is three steps and it works whether you do it manually with a notebook or let an app run it for you.</p>
+      <p>The process is three steps, and it works whether you do it manually or use a tool to automate it.</p>
       <ol>
-        <li><strong>Identify recurring mistakes across 50+ games.</strong> One blunder is noise. The same blunder showing up six times across fifty games is a pattern. You need volume — and you need to look across games, not at one at a time.</li>
-        <li><strong>Name the pattern.</strong> "I keep hanging pieces to discovered attacks" is actionable. "I lost again" is not. Once the pattern has a name from the taxonomy above, it stops feeling like bad luck and starts feeling like a fixable weakness.</li>
-        <li><strong>Replay that exact position type until recognition is automatic.</strong> Drill positions of the same shape — ideally the actual positions from your games where the pattern fired — until your eyes catch the motif before you've calculated anything. Recognition is the goal, not solution speed.</li>
+        <li><strong>Identify recurring mistakes across 50+ games.</strong> One bad move is noise. Ten bad moves with the same shape is a pattern. Fewer than 50 games and you'll mistake a bad streak for a real trend — you need volume to separate signal from variance.</li>
+        <li><strong>Name the pattern.</strong> Vague labels ("I'm bad at tactics") don't help. Specific ones do: "I miss back-rank threats when I'm up material and trying to consolidate." Use the 13 named patterns above as your starting vocabulary — naming forces precision.</li>
+        <li><strong>Replay that exact position type until recognition is automatic.</strong> Pull the positions from your own games where the pattern fired. Replay them — same motif, slightly different setups — until your eyes lock onto the critical square <em>before</em> you start calculating. That's pattern recognition installed.</li>
       </ol>
+      <div class="callout">
+        <strong>The short version:</strong> calculation handles novel positions. Recognition handles everything you've seen before. Most of your rating leak is in patterns you've already seen many times but still don't <em>see</em>.
+      </div>
 
-      <h2>Train on your own patterns</h2>
-      <p><a href="https://chessdna.app/">Chess DNA</a> imports your Chess.com or Lichess games, classifies every mistake into the 13 patterns above, and queues replay positions from your real games so you drill the exact shapes your brain keeps missing. Pattern recognition is built by repetition of <em>your</em> patterns — not someone else's curated puzzle set.</p>
+      <h2>Try it on your own games</h2>
+      <p><a href="https://chessdna.app/">Chess DNA</a> automates the whole loop. Import your Chess.com or Lichess games, get every mistake classified into the 13 named patterns, ranked by how much rating each one is costing you — with replay positions queued from the actual games where each pattern fired. Train on what you've actually been missing.</p>
 
       <h2>Related</h2>
       <p><a href="/learn/find-your-chess-weaknesses.html">How to find your chess weaknesses from your own games</a> · <a href="/learn/how-to-analyze-your-chess-games.html">How to analyze your chess games — a practical guide</a> · <a href="/features.html">All Chess DNA features</a> · <a href="/faq.html">FAQ</a></p>

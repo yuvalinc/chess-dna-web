@@ -67,6 +67,55 @@ export interface CurrentPatterns {
   gamesInWindow: number;
 }
 
+/* -- Opening Traps -- */
+
+export interface TrapDefinition {
+  id: string;
+  name: string;
+  /** Which side sets/initiates the trap. */
+  setterSide: 'white' | 'black';
+  /** ECO codes commonly associated with this trap (informational; not used for matching). */
+  ecoCodes: string[];
+  /** Move sequences that identify this trap. Each variant is an array of SAN
+   *  moves starting from move 1. The detector matches a game if any variant
+   *  is a prefix of the game's move list. */
+  signatures: string[][];
+  /** Short, user-facing description shown when the trap row is expanded. */
+  description: string;
+}
+
+export interface TrapOccurrence {
+  gameId: string;
+  playedAt: number;
+  /** 'win' | 'loss' | 'draw' — from the player's perspective. */
+  result: 'win' | 'loss' | 'draw';
+  /** True if the player set the trap; false if the player was on the receiving side. */
+  playerWasSetter: boolean;
+}
+
+export interface TrapStat {
+  trapId: string;
+  trapName: string;
+  /** 'used' = player set the trap; 'fellInto' = opponent set it on player. */
+  side: 'used' | 'fellInto';
+  occurrences: TrapOccurrence[];
+  count: number;
+  /** Wins / draws / losses from the player's perspective. */
+  wins: number;
+  draws: number;
+  losses: number;
+  lastSeen: number;
+  /** 'Frequent' | 'Occasional' | 'Rare' — bucketed by absolute count. */
+  frequencyBucket: 'frequent' | 'occasional' | 'rare';
+}
+
+export interface TrapStats {
+  used: TrapStat[];
+  fellInto: TrapStat[];
+  /** Number of games scanned to produce these stats. */
+  gamesScanned: number;
+}
+
 /* -- Skill Radar (FIFA-style) -- */
 
 export type SkillDimensionId =

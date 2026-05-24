@@ -1,5 +1,6 @@
 {
   "name": "AIPrompt",
+  "description": "An admin-editable prompt template used by Chess DNA's AI features (lesson generation, exercise generation, audio script, insights). Versioned and feature-keyed so prompts can be tuned without redeploying.",
   "type": "object",
   "properties": {
     "label": { "type": "string" },

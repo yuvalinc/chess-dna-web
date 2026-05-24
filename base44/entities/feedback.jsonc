@@ -1,5 +1,6 @@
 {
   "name": "Feedback",
+  "description": "Free-form user feedback captured by the floating FeedbackButton: bug reports, feature requests, and beta impressions. Reviewed by admins through the /feedbacks page.",
   "type": "object",
   "properties": {
     "name": { "type": "string" },

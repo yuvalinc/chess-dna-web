@@ -12,8 +12,8 @@ interface TimeWindowTabsProps {
 }
 
 const TAB_LABEL_KEYS: Record<TimeWindowId, TranslationKey> = {
-  today: 'tab_today',
   week: 'tab_week',
+  month: 'tab_month',
   all: 'tab_all_time',
 };
 

@@ -4,7 +4,9 @@ import { useChessData } from '@/contexts/ChessDataContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTutorial } from '@/contexts/TutorialContext';
 import { useTheme } from '@/components/ThemeContext';
+import { useToast } from '@/components/Toast';
 import ThemedChessboard from '@/components/ThemedChessboard';
+import PlayerAvatar from '@/components/PlayerAvatar';
 import { useResponsiveBoardSize } from '@/hooks/useResponsiveBoardSize';
 import { useTimeMachineChallenge } from '@/hooks/useTimeMachineChallenge';
 import { playChessSound } from '@/shared/utils/chess-sounds';
@@ -53,12 +55,25 @@ function patternLabel(theme: string, t?: (key: TranslationKey) => string): strin
 type SkillCategory = 'all' | 'Tactics' | 'Defense' | 'Endgame' | 'Opening' | 'Positional';
 
 /** Map a pattern theme to its matching position category.
- *  MUST stay consistent with categoryFromMove() + themeFromMove(). */
+ *  MUST stay consistent with categoryFromMove() + themeFromMove().
+ *  Also handles every WeaknessTheme enum value emitted by the pattern
+ *  engine so retro-CTA preselection can land on the right category
+ *  even when themeFromMove doesn't produce that exact theme. */
 function getCategory(theme: string): SkillCategory {
-  if (['missed_fork', 'missed_pin', 'missed_skewer', 'missed_tactic_other'].includes(theme)) return 'Tactics';
-  if (['hanging_piece', 'back_rank_weakness', 'king_safety'].includes(theme)) return 'Defense';
-  if (['endgame_technique', 'endgame_pawn_play'].includes(theme)) return 'Endgame';
-  if (['opening_inaccuracy', 'opening_specific'].includes(theme)) return 'Opening';
+  if ([
+    'missed_fork', 'missed_pin', 'missed_skewer', 'missed_tactic_other',
+    'middlegame_tactics',
+  ].includes(theme)) return 'Tactics';
+  if ([
+    'hanging_piece', 'back_rank_weakness', 'king_safety',
+    'time_pressure_blunder',
+  ].includes(theme)) return 'Defense';
+  if ([
+    'endgame_technique', 'endgame_pawn_play',
+  ].includes(theme)) return 'Endgame';
+  if ([
+    'opening_inaccuracy', 'opening_specific',
+  ].includes(theme)) return 'Opening';
   return 'Positional';
 }
 
@@ -460,6 +475,7 @@ function RankingTable({ title, moves, loading, playerMoveUci, originalMoveUci, s
     </div>
   );
 }
+void RankingTable;
 
 /* ── Challenge persistence ── */
 
@@ -469,19 +485,40 @@ function getChallengeKey(item: PositionItem): string {
   return `${item.gameId}:${item.moveIndex}`;
 }
 
-function getCheckedKeys(): Set<string> {
+/* Per-challenge play counts. Stored as { plays: { [key]: count } } so we
+ * know how many times each challenge was completed. Legacy `checked` map
+ * (boolean per key) is migrated to plays = 1 on read. */
+function getPlayCounts(): Map<string, number> {
   try {
     const data = localStorage.getItem(TM_STORAGE_KEY);
-    if (!data) return new Set();
+    if (!data) return new Map();
     const parsed = JSON.parse(data);
-    return new Set(Object.keys(parsed.checked ?? {}));
-  } catch { return new Set(); }
+    const m = new Map<string, number>();
+    if (parsed.plays) {
+      for (const [k, v] of Object.entries(parsed.plays)) {
+        const n = typeof v === 'number' ? v : 0;
+        if (n > 0) m.set(k, n);
+      }
+    }
+    // Migrate any legacy `checked` entries into plays as count 1.
+    if (parsed.checked) {
+      for (const k of Object.keys(parsed.checked)) {
+        if (!m.has(k)) m.set(k, 1);
+      }
+    }
+    return m;
+  } catch { return new Map(); }
 }
 
 function markChallengeChecked(key: string): void {
   try {
     const data = localStorage.getItem(TM_STORAGE_KEY);
-    const parsed = data ? JSON.parse(data) : { checked: {} };
+    const parsed = data ? JSON.parse(data) : { plays: {}, checked: {} };
+    parsed.plays = parsed.plays ?? {};
+    parsed.plays[key] = (parsed.plays[key] ?? 0) + 1;
+    // Keep legacy `checked` field in sync for any old code paths still
+    // reading it; safe to drop later once nothing else relies on it.
+    parsed.checked = parsed.checked ?? {};
     parsed.checked[key] = Date.now();
     localStorage.setItem(TM_STORAGE_KEY, JSON.stringify(parsed));
   } catch { /* ignore */ }
@@ -508,13 +545,14 @@ export default function TimeMachine() {
   const { isGuest } = useAuth();
   const { settings, updateSettings } = useTheme();
   const { t } = useT();
+  const { toast } = useToast();
 
   // Source tab: which population of games drives the patterns + challenge
-  // list. Yours = the user's analyzed games; Friends = imported last-games
-  // from added chess.com usernames; Top players = same, for the curated
-  // top-player list.
-  const [sourceTab, _setSourceTab] = useState<'yours' | 'friends' | 'top'>('yours');
-  const setSourceTab = useCallback((s: 'yours' | 'friends' | 'top') => {
+  // list.
+  //   yours  → the user's own analyzed games (a.k.a. "For you")
+  //   following → friends + top players merged into one feed
+  const [sourceTab, _setSourceTab] = useState<'yours' | 'following'>('yours');
+  const setSourceTab = useCallback((s: 'yours' | 'following') => {
     _setSourceTab(s);
     // Each tab has its own population of games — drop any pattern/category
     // filter from the previous tab so the user lands on the full list.
@@ -527,6 +565,11 @@ export default function TimeMachine() {
   // (and whose Stockfish analysis hasn't completed). Used to render a
   // loading indicator on the friend / top-player card.
   const [pendingNonSelfImports, setPendingNonSelfImports] = useState<Set<string>>(() => new Set());
+  // username → game IDs that were imported but not yet analyzed. We
+  // hold the spinner until at least one of those analyses lands so the
+  // user sees "loading" until the replays are actually playable.
+  const pendingGameIdsRef = useRef<Map<string, string[]>>(new Map());
+
   const markPendingImport = useCallback((username: string) => {
     setPendingNonSelfImports((prev) => {
       const next = new Set(prev);
@@ -535,6 +578,7 @@ export default function TimeMachine() {
     });
   }, []);
   const clearPendingImport = useCallback((username: string) => {
+    pendingGameIdsRef.current.delete(username.toLowerCase());
     setPendingNonSelfImports((prev) => {
       if (!prev.has(username.toLowerCase())) return prev;
       const next = new Set(prev);
@@ -542,15 +586,33 @@ export default function TimeMachine() {
       return next;
     });
   }, []);
+  const rememberPendingGameIds = useCallback((username: string, ids: string[]) => {
+    pendingGameIdsRef.current.set(username.toLowerCase(), ids);
+  }, []);
+
+  // When fresh analyses arrive, clear pending state for any username
+  // whose imported games are now analyzed — keeps the spinner alive
+  // until the replays are actually available, not just imported.
+  useEffect(() => {
+    if (pendingGameIdsRef.current.size === 0) return;
+    const analyzedIds = new Set(dataSrc.allAnalyses.map((a) => a.gameId));
+    for (const [username, ids] of Array.from(pendingGameIdsRef.current.entries())) {
+      const anyAnalyzed = ids.some((id) => analyzedIds.has(id));
+      if (anyAnalyzed) clearPendingImport(username);
+    }
+  }, [dataSrc.allAnalyses, clearPendingImport]);
 
   // Reconcile followed/friended usernames against actual imported games.
-  // Two responsibilities:
-  //   1. If any friend/top-player has no Game in storage → import their
-  //      latest chess.com game and queue it for analysis.
-  //   2. If a friend/top-player game is already imported but analysis is
-  //      pending or analyzing (or there's no Analysis record yet), re-queue
-  //      it so the Stockfish pipeline picks it up. This catches games that
-  //      were imported in a previous session with the queue stalled.
+  // Three responsibilities:
+  //   1. New follow → import their last 10 chess.com games + queue for
+  //      analysis so a meaningful pool of mistakes shows up.
+  //   2. Already-imported games still pending analysis → re-queue.
+  //   3. Daily refresh: if it's been > 24h since we last imported games
+  //      for a followed player, fetch the latest 10 again so the feed
+  //      stays fresh. Per-username TTL is tracked in localStorage.
+  const TM_FOLLOW_REFRESH_KEY = 'tm-follow-last-fetch';
+  const FOLLOW_REFRESH_TTL_MS = 24 * 60 * 60 * 1000;
+  const FOLLOW_GAMES_PER_USER = 10;
   const reconciledRef = useRef(false);
   useEffect(() => {
     if (reconciledRef.current) return;
@@ -561,22 +623,45 @@ export default function TimeMachine() {
       ...(settings.friendUsernames ?? []),
       ...(settings.topPlayerUsernames ?? []),
     ];
+    // Read per-username last-fetch timestamps from localStorage.
+    let lastFetch: Record<string, number> = {};
+    try {
+      const raw = localStorage.getItem(TM_FOLLOW_REFRESH_KEY);
+      if (raw) lastFetch = JSON.parse(raw);
+    } catch { /* ignore */ }
+    const now = Date.now();
     const missing = targets.filter((u) => !presentUsernames.has(u.toLowerCase()));
+    const stale = targets.filter((u) => {
+      const lower = u.toLowerCase();
+      // Has games already, but the last fetch is older than the TTL.
+      if (!presentUsernames.has(lower)) return false;
+      const ts = lastFetch[lower] ?? 0;
+      return now - ts > FOLLOW_REFRESH_TTL_MS;
+    });
     const analysisIds = new Set(dataSrc.allAnalyses.concat(dataSrc.friendAnalyses, dataSrc.topPlayerAnalyses).map((a) => a.gameId));
     const stalled = allNonSelf.filter((g) => g.analysisStatus !== 'complete' || !analysisIds.has(g.id));
-    if (missing.length === 0 && stalled.length === 0) return;
+    if (missing.length === 0 && stale.length === 0 && stalled.length === 0) return;
     reconciledRef.current = true;
     (async () => {
-      for (const u of missing) {
+      for (const u of [...missing, ...stale]) {
         try {
-          const ids = await importChessComGames(u, { maxGames: 1, guest: isGuest });
-          if (ids.length > 0) queueForAnalysis(ids);
+          const ids = await importChessComGames(u, { maxGames: FOLLOW_GAMES_PER_USER, guest: isGuest });
+          // Prepend to the analysis queue so the user sees challenges from
+          // their newly-followed player within seconds, not minutes.
+          if (ids.length > 0) queueForAnalysis(ids, { priority: 'high' });
+          lastFetch[u.toLowerCase()] = now;
+          // Per-followed-user 10-game cap was wired here, but it depends on
+          // a server-side `playerUsername` filter that Base44 silently drops
+          // (unknown field on the entity schema). Until the schema is
+          // updated, the trim is a noisy no-op at best — re-enable after
+          // adding playerUsername to the Game/Analysis schemas in Base44.
         } catch (err) {
-          console.warn('[TM] failed to import latest game for', u, err);
+          console.warn('[TM] failed to import games for', u, err);
         }
       }
+      try { localStorage.setItem(TM_FOLLOW_REFRESH_KEY, JSON.stringify(lastFetch)); } catch { /* ignore */ }
       if (stalled.length > 0) {
-        queueForAnalysis(stalled.map((g) => g.id));
+        queueForAnalysis(stalled.map((g) => g.id), { priority: 'high' });
       }
       refetchGames();
     })();
@@ -600,19 +685,33 @@ export default function TimeMachine() {
       .map(([u]) => u);
   }, [dataSrc.allGames]);
 
-  // Pick the right data source for the active tab. Each non-self tab also
-  // has its own per-username last-game so the patterns view stays scoped
-  // to that group.
-  const allAnalyses = sourceTab === 'yours'
-    ? dataSrc.allAnalyses
-    : sourceTab === 'friends'
-      ? dataSrc.friendAnalyses
-      : dataSrc.topPlayerAnalyses;
-  const allGames = sourceTab === 'yours'
-    ? dataSrc.allGames
-    : sourceTab === 'friends'
-      ? dataSrc.friendGames
-      : dataSrc.topPlayerGames;
+  // Following = friends + top-players merged into one feed for the
+  // unified "Following" tab. Dedup not strictly necessary since friends
+  // and top-players are mutually exclusive sets, but kept defensively.
+  const followingGames = useMemo(() => {
+    const seen = new Set<string>();
+    const out: typeof dataSrc.friendGames = [];
+    for (const g of [...dataSrc.friendGames, ...dataSrc.topPlayerGames]) {
+      if (seen.has(g.id)) continue;
+      seen.add(g.id);
+      out.push(g);
+    }
+    return out;
+  }, [dataSrc.friendGames, dataSrc.topPlayerGames]);
+  const followingAnalyses = useMemo(() => {
+    const seen = new Set<string>();
+    const out: typeof dataSrc.friendAnalyses = [];
+    for (const a of [...dataSrc.friendAnalyses, ...dataSrc.topPlayerAnalyses]) {
+      if (seen.has(a.gameId)) continue;
+      seen.add(a.gameId);
+      out.push(a);
+    }
+    return out;
+  }, [dataSrc.friendAnalyses, dataSrc.topPlayerAnalyses]);
+
+  // Pick the right data source for the active tab.
+  const allAnalyses = sourceTab === 'yours' ? dataSrc.allAnalyses : followingAnalyses;
+  const allGames = sourceTab === 'yours' ? dataSrc.allGames : followingGames;
   const { buildPrompt } = useActivePrompt();
   const { containerRef: tmBoardRef, boardSize } = useResponsiveBoardSize(700);
   // Track viewport height so the challenge board can be height-constrained
@@ -625,7 +724,7 @@ export default function TimeMachine() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
-  const tmHeightCappedBoardSize = Math.max(viewportH - 460, 240);
+  void viewportH;
 
   // The logged-in user's chess.com username (ground truth for color derivation)
   const myUsername = (settings.chesscomUsername ?? '').toLowerCase();
@@ -690,10 +789,45 @@ export default function TimeMachine() {
     if (gridRef.current) ro.observe(gridRef.current);
     return () => { window.removeEventListener('resize', update); ro.disconnect(); };
   }, []);
-  const [checkedKeys, setCheckedKeys] = useState<Set<string>>(() => getCheckedKeys());
+  const [playCounts, setPlayCounts] = useState<Map<string, number>>(() => getPlayCounts());
   const [challengeItem, setChallengeItem] = useState<PositionItem | null>(null);
   const [challengeConfig, setChallengeConfig] = useState<ChallengeConfig | null>(null);
-  const [challengeQueueIdx, setChallengeQueueIdx] = useState(-1); // -1 = not in queue mode
+
+  // Page-level default for how the bot plays during the continuation phase.
+  // Persisted to localStorage so the user's choice carries across sessions.
+  const [botMode, setBotModeState] = useState<'opponent' | 'engine'>(() => {
+    try {
+      const v = typeof window !== 'undefined' ? localStorage.getItem('chess-dna-tm-bot-mode') : null;
+      return v === 'opponent' ? 'opponent' : 'engine';
+    } catch { return 'engine'; }
+  });
+  const setBotMode = useCallback((m: 'opponent' | 'engine') => {
+    setBotModeState(m);
+    try { localStorage.setItem('chess-dna-tm-bot-mode', m); } catch { /* noop */ }
+  }, []);
+  const [botInfoOpen, setBotInfoOpen] = useState(false);
+  // Click-outside / Escape closes the info popover.
+  useEffect(() => {
+    if (!botInfoOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const tgt = e.target as HTMLElement | null;
+      if (!tgt?.closest?.('[data-bot-info-root]')) setBotInfoOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') setBotInfoOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [botInfoOpen]);
+
+  // Hybrid Salvage (C) row tracking — a "row" = ROW_SIZE consecutive replays.
+  // Results are appended on each completion. After 3 → halfway checkpoint;
+  // after 6 → row complete summary.
+  const [rowResults, setRowResults] = useState<RowResult[]>([]);
+  const [rowEntries, setRowEntries] = useState<Array<{ item: PositionItem; result: RowResult; firstScore: number }>>([]);
+  const [rowMilestone, setRowMilestone] = useState<'halfway' | 'complete' | null>(null);
 
   // Handle navigation state
   const navState = location.state as { preselectedTheme?: string; directChallenge?: { gameId: string; moveIndex: number }; returnTo?: { path: string; moveIndex: number }; gameFilter?: string; autoStart?: boolean; tutorial?: string } | null;
@@ -838,19 +972,53 @@ export default function TimeMachine() {
   }, [allGames, allAnalyses, timeClassFilter, gameFilter, sourceTab]);
 
   useEffect(() => {
-    if (preselectedTheme && allPositions.some(p => p.patternTheme === preselectedTheme)) {
+    if (!preselectedTheme || allPositions.length === 0) return;
+    // Exact theme match — best case, both filters set.
+    if (allPositions.some(p => p.patternTheme === preselectedTheme)) {
       setPatternFilter(preselectedTheme);
       setCategoryFilter(getCategory(preselectedTheme));
+      return;
+    }
+    // Fallback — themeFromMove only emits a subset of WeaknessTheme values,
+    // so retro-CTA themes like `middlegame_tactics`, `pawn_structure`,
+    // `time_pressure_blunder` etc. won't have direct position matches.
+    // Land the user on the right CATEGORY at minimum so the filter still
+    // narrows the list to relevant positions.
+    const targetCategory = getCategory(preselectedTheme);
+    if (targetCategory !== 'all' && allPositions.some(p => p.category === targetCategory)) {
+      setCategoryFilter(targetCategory);
+      // Pick the most-frequent theme inside the target category as a
+      // secondary heuristic — better than no theme filter at all.
+      const themeCounts = new Map<string, number>();
+      for (const p of allPositions) {
+        if (p.category !== targetCategory) continue;
+        themeCounts.set(p.patternTheme, (themeCounts.get(p.patternTheme) ?? 0) + 1);
+      }
+      const topTheme = [...themeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      setPatternFilter(topTheme ?? null);
     }
   }, [preselectedTheme, allPositions]);
 
-  // Filter by category and pattern
+  // People filter — Following tab only. Narrows the challenge grid to a
+  // single follower (one of friends + top-players) so the user can binge
+  // their replays. null = all followed.
+  const [peopleFilter, setPeopleFilter] = useState<string | null>(null);
+
+  // Filter by category, pattern, and (Following tab only) people.
   const filteredPositions = useMemo(() => {
     let list = allPositions;
     if (categoryFilter !== 'all') list = list.filter(p => p.category === categoryFilter);
     if (patternFilter) list = list.filter(p => p.patternTheme === patternFilter);
+    if (peopleFilter && sourceTab === 'following') {
+      const target = peopleFilter.toLowerCase();
+      const gameById = new Map(allGames.map((g) => [g.id, g] as const));
+      list = list.filter((p) => {
+        const game = gameById.get(p.gameId);
+        return (game?.player?.username ?? '').toLowerCase() === target;
+      });
+    }
     return list;
-  }, [allPositions, categoryFilter, patternFilter]);
+  }, [allPositions, allGames, categoryFilter, patternFilter, peopleFilter, sourceTab]);
 
   // Category counts removed alongside the category-filter row.
 
@@ -858,8 +1026,9 @@ export default function TimeMachine() {
 
   const loadMore = useCallback(() => setVisibleCount(c => c + PAGE_SIZE), []);
 
-  // Start an interactive challenge (optionally with queue index)
-  const startChallenge = useCallback((item: PositionItem, queueIdx?: number) => {
+  // Start an interactive challenge. Queue advancement is now key-driven
+  // (see `pickNextChallenge`), so callers no longer need to pass an index.
+  const startChallenge = useCallback((item: PositionItem) => {
     const analysis = allAnalyses.find(a => a.gameId === item.gameId);
     if (!analysis) return;
     const startIdx = Math.max(0, item.moveIndex - 3);
@@ -891,12 +1060,12 @@ export default function TimeMachine() {
       bestMoveSan: item.bestMoveSan,
       originalMoveUci: originalMove?.moveUci ?? '',
       originalMoveSan: originalMove?.moveSan ?? '',
+      botMode,
     });
-    if (queueIdx !== undefined) setChallengeQueueIdx(queueIdx);
 
     // Push sub-URL so each challenge is shareable/bookmarkable
     setSearchParams({ game: item.gameId, move: String(item.moveIndex) }, { replace: false });
-  }, [allAnalyses, setSearchParams]);
+  }, [allAnalyses, setSearchParams, botMode]);
 
   // startNextChallenge defined after uncheckedPositions below
 
@@ -939,7 +1108,16 @@ export default function TimeMachine() {
     if (allPositions.length === 0 || challengeItem) return;
     const gameIdToMatch = navState?.gameFilter;
     if (!gameIdToMatch) return;
-    const candidate = allPositions.find(p => p.gameId === gameIdToMatch) ?? allPositions[0];
+    // Pick the least-played position for this game so the user starts
+    // on a fresh challenge whenever one exists. Fallback to least-played
+    // overall if the gameId has no positions.
+    const sortByPlayCount = (a: PositionItem, b: PositionItem) => {
+      const ca = playCounts.get(getChallengeKey(a)) ?? 0;
+      const cb = playCounts.get(getChallengeKey(b)) ?? 0;
+      return ca - cb;
+    };
+    const matches = allPositions.filter(p => p.gameId === gameIdToMatch).sort(sortByPlayCount);
+    const candidate = matches[0] ?? [...allPositions].sort(sortByPlayCount)[0];
     if (!candidate) return;
     autoStartedRef.current = true;
     // Strip the autoStart flag from history so a back-and-forward doesn't
@@ -950,10 +1128,10 @@ export default function TimeMachine() {
       window.history.replaceState(cleared, '');
     } catch { /* ignore */ }
     startChallenge(candidate);
-  }, [autoStartFlag, allPositions, challengeItem, navState?.gameFilter, startChallenge]);
+  }, [autoStartFlag, allPositions, challengeItem, navState?.gameFilter, startChallenge, playCounts]);
 
   // Use the challenge hook
-  const { state: challengeState, advanceLeadup, undoMistake, onSquareClick, onPieceDrop, completePromotion, cancelPromotion, retry, replayLeadup, continueAfterScore, revealWithExplanation } = useTimeMachineChallenge(challengeConfig, settings ?? undefined, buildPrompt);
+  const { state: challengeState, advanceLeadup, stepBackLeadup, undoMistake, onSquareClick, onPieceDrop, completePromotion, cancelPromotion, retry, replayLeadup, continueAfterScore, revealWithExplanation, requestHint, dismissHint } = useTimeMachineChallenge(challengeConfig, settings ?? undefined, buildPrompt);
 
   // Auto-dismiss the Step 5 "Your turn" coachmark as soon as the player
   // has actually made a move — keying on `playerMoveSan` (only set after
@@ -969,16 +1147,27 @@ export default function TimeMachine() {
 
   // Track highlighted square from clicking square refs in explanation text
   const [highlightedSquare, setHighlightedSquare] = useState<string | null>(null);
+  // Tracks whether the user is viewing the "Best move" tab in the AI
+  // explanation. When true we draw a green arrow on the board pointing at
+  // the best move so the user can see it visually, not just read about it.
+  const [aiBestTabActive, setAiBestTabActive] = useState(false);
 
   // Ranked-move preview state (must be top-level, not inside conditional block)
   const [previewUci, setPreviewUci] = useState<string | null>(null);
   const [previewFen, setPreviewFenState] = useState<string | null>(null);
   const [selectedRowUci, setSelectedRowUci] = useState<string | null>(null); // which row is selected
   const [pvStep, setPvStep] = useState<number>(-1);
+  void pvStep;
   const [pvChainData, setPvChainData] = useState<{ fens: string[]; ucis: string[] } | null>(null);
   const [expandedContIdx, setExpandedContIdx] = useState<number | null>(null);
+  void expandedContIdx;
+  // Whether the user has clicked "Show best move" — starts false, gets cleared on phase change.
+  const [revealedBest, setRevealedBest] = useState(false);
 
-  // Clear highlight and preview when challenge or phase changes
+  // Clear highlight, preview, and Best-move tab state when the challenge or
+  // phase changes. `aiBestTabActive` is otherwise only reset by the MoveStack
+  // unmount cleanup, which fires too late — the green Best-move arrow can
+  // bleed into the next position's leadup/critical phase.
   useEffect(() => {
     setHighlightedSquare(null);
     setPreviewUci(null);
@@ -987,14 +1176,43 @@ export default function TimeMachine() {
     setPvChainData(null);
     setPreviewFenState(null);
     setExpandedContIdx(null);
+    setRevealedBest(false);
+    setAiBestTabActive(false);
   }, [challengeConfig, challengeState.phase]);
 
-  // Auto-advance leadup moves
+  // Once the user touches the leadup scrubber (◀ / ▶) we hand them full
+  // control — auto-advance shuts off until they hit the Replay button or a
+  // new challenge starts. Reset whenever the active challenge changes.
+  const userTookLeadupControlRef = useRef(false);
+  useEffect(() => { userTookLeadupControlRef.current = false; }, [challengeConfig]);
+
+  const onLeadupForward = useCallback(() => {
+    userTookLeadupControlRef.current = true;
+    advanceLeadup();
+    // Move sound is fired inside advanceLeadup itself, with the correct
+    // variant (capture / castle / move / move-opponent) per move flags.
+  }, [advanceLeadup]);
+
+  const onLeadupBack = useCallback(() => {
+    userTookLeadupControlRef.current = true;
+    stepBackLeadup();
+    // Sound is fired inside stepBackLeadup for the un-played move (player /
+    // opponent variant, plus capture/castle flags) so rewinding feels as
+    // tactile as the forward animation.
+  }, [stepBackLeadup]);
+
+  const onLeadupReplay = useCallback(() => {
+    userTookLeadupControlRef.current = false;
+    replayLeadup();
+  }, [replayLeadup]);
+
+  // Auto-advance leadup moves — disabled once the user takes manual control.
   useEffect(() => {
     if (!challengeConfig || challengeState.phase !== 'leadup') return;
+    if (userTookLeadupControlRef.current) return;
     const timer = setTimeout(() => {
       advanceLeadup();
-      playChessSound('move');
+      // advanceLeadup plays its own per-move sound (capture/castle/normal).
     }, 800);
     return () => clearTimeout(timer);
   }, [challengeConfig, challengeState.phase, challengeState.moveIndex, advanceLeadup]);
@@ -1008,6 +1226,17 @@ export default function TimeMachine() {
     }, 1200);
     return () => clearTimeout(timer);
   }, [challengeConfig, challengeState.phase, undoMistake]);
+
+  // Hide the bottom nav (DNA / Analyze / Replays tabs) and the time-class
+  // filter pill while a challenge is active — the replay flow needs every
+  // pixel for the board + AI explanation. Same body-attr mechanism
+  // GameDetail uses for its focus mode (CSS rule lives in src/index.css).
+  useEffect(() => {
+    const inChallenge = !!challengeItem && !!challengeConfig;
+    if (inChallenge) document.body.setAttribute('data-focus-mode', 'true');
+    else document.body.removeAttribute('data-focus-mode');
+    return () => document.body.removeAttribute('data-focus-mode');
+  }, [challengeItem, challengeConfig]);
 
   // Play sounds on score reveal:
   // - Skip sound entirely when user clicked "Reveal answer" (showAnswer + score 0)
@@ -1046,68 +1275,167 @@ export default function TimeMachine() {
     }
   }, [challengeState.phase, challengeState.moveScore, challengeState.showAnswer, challengeItem]);
 
-  // Mark challenge as checked on completion
+  // Mark challenge as checked on completion — but only when the user
+  // actually solved EVERY move of the challenge (all 3 moves played AND
+  // each scored >= 50, with no retries). Rows that ended early (checkmate,
+  // game ran out of ply) or had any weak score do not earn the ✓ — the
+  // user needs a clean sweep across the entire challenge.
   useEffect(() => {
     if (challengeState.phase === 'complete' && challengeItem) {
+      // ANY completion (pass or fail) bumps the play count so the
+      // challenge moves to the back of the list and won't be replayed
+      // before the user has cycled through everything else.
       const key = getChallengeKey(challengeItem);
       markChallengeChecked(key);
-      setCheckedKeys(prev => new Set([...prev, key]));
-      playChessSound('complete');
+      setPlayCounts(prev => {
+        const next = new Map(prev);
+        next.set(key, (next.get(key) ?? 0) + 1);
+        return next;
+      });
+      // NO sound here — the per-move scoring effect above already played
+      // 'complete' / 'correct' / 'incorrect' for the final move. Firing
+      // another 'complete' on phase change made the celebration sound
+      // play twice on a perfect finish (and clashed with 'incorrect' on
+      // a failed finish).
     }
-  }, [challengeState.phase, challengeItem]);
+  }, [challengeState.phase, challengeItem, challengeState.moveScores, challengeState.attempts]);
 
-  // Split positions into checked/unchecked
-  const uncheckedPositions = useMemo(() => filteredPositions.filter(p => !checkedKeys.has(getChallengeKey(p))), [filteredPositions, checkedKeys]);
-  const checkedPositions = useMemo(() => filteredPositions.filter(p => checkedKeys.has(getChallengeKey(p))), [filteredPositions, checkedKeys]);
+  // Auto-advance from scored → next move (no manual Continue button).
+  // Short delay so the score number registers visually, but we DON'T wait
+  // for the AI explanation to load — the explanation panel persists into
+  // the continuation phase, so the player can keep reading it while making
+  // the next move. The 3rd (last) move does NOT auto-advance — the user
+  // must click "Next →" on the scored panel to load the next challenge.
+  useEffect(() => {
+    if (challengeState.phase !== 'scored') return;
+    if (challengeState.error) return;
+    if (challengeState.moveScores.length >= 3) return;
+    const timer = setTimeout(() => {
+      continueAfterScore();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [challengeState.phase, challengeState.error, challengeState.moveScores.length, continueAfterScore]);
 
-  // Start next challenge in the queue (continuous flow)
-  const startNextChallenge = useCallback(() => {
-    const nextIdx = challengeQueueIdx + 1;
-    if (nextIdx < uncheckedPositions.length) {
-      startChallenge(uncheckedPositions[nextIdx], nextIdx);
+  // Resolve a challenge result from the move scores. Win = every move scored
+  // ≥90 ("excellent" — within ~10% win-chance loss of the engine's #1) on the
+  // first attempt. Demanding an exact-100 on every move marked good moves as
+  // failures whenever Stockfish picked a nearby line over the player's
+  // equally-strong alternative.
+  const resolveChallengeResult = useCallback((moveScores: number[] | null | undefined, attempts = 0): RowResult => {
+    if (!moveScores || moveScores.length === 0) return 'loss';
+    if (attempts > 0) return 'loss';
+    if (moveScores.some(s => s < 90)) return 'loss';
+    return 'win';
+  }, []);
+
+  // Combined list, ordered so the user always plays the LEAST-played
+  // challenges first. New (count = 0) come first, then 1×, 2×, etc.
+  // Once everything has been played at least once, replays kick in but
+  // still ordered by lowest play count. This guarantees no challenge is
+  // repeated before the user has cycled through every available one.
+  const displayPositions = useMemo(() => {
+    return [...filteredPositions].sort((a, b) => {
+      const ca = playCounts.get(getChallengeKey(a)) ?? 0;
+      const cb = playCounts.get(getChallengeKey(b)) ?? 0;
+      return ca - cb;
+    });
+  }, [filteredPositions, playCounts]);
+
+  // Picks the next challenge to serve in least-played order. Skips the
+  // just-finished challenge so it never repeats back-to-back, and skips
+  // anything already played in the current row to keep variety. Falls
+  // back through the preferences if no candidate matches, and finally
+  // returns null only when the filter has zero positions.
+  const pickNextChallenge = useCallback((excludeKey: string | null, sessionKeys: Set<string>): PositionItem | null => {
+    if (displayPositions.length === 0) return null;
+    const preferred = displayPositions.find(p => {
+      const k = getChallengeKey(p);
+      return k !== excludeKey && !sessionKeys.has(k);
+    });
+    if (preferred) return preferred;
+    const skipCurrent = displayPositions.find(p => getChallengeKey(p) !== excludeKey);
+    if (skipCurrent) return skipCurrent;
+    return displayPositions[0] ?? null;
+  }, [displayPositions]);
+
+  // Advance flow:
+  //  1. Append the just-completed challenge's result to rowResults.
+  //  2. If the row hits 3 (halfway) or ROW_SIZE (complete), pause on a
+  //     milestone screen instead of starting the next challenge directly.
+  //  3. Otherwise, jump straight to the next least-played position.
+  const advanceAfterChallenge = useCallback((completedScores: number[] | null | undefined) => {
+    const result = resolveChallengeResult(completedScores, challengeState.attempts);
+    const firstScore = completedScores && completedScores.length > 0 ? completedScores[0] : 0;
+    const completedKey = challengeItem ? getChallengeKey(challengeItem) : null;
+    if (challengeItem) {
+      setRowEntries(prev => [...prev, { item: challengeItem, result, firstScore }].slice(0, ROW_SIZE));
+    }
+    setRowResults(prev => {
+      const next = [...prev, result].slice(0, ROW_SIZE);
+      if (next.length === ROW_SIZE) {
+        setRowMilestone('complete');
+      } else if (next.length === 3) {
+        setRowMilestone('halfway');
+      } else {
+        const sessionKeys = new Set(rowEntries.map(e => getChallengeKey(e.item)));
+        if (completedKey) sessionKeys.add(completedKey);
+        const nextChallenge = pickNextChallenge(completedKey, sessionKeys);
+        if (nextChallenge) {
+          startChallenge(nextChallenge);
+        } else {
+          setChallengeItem(null);
+          setChallengeConfig(null);
+        }
+      }
+      return next;
+    });
+  }, [pickNextChallenge, startChallenge, resolveChallengeResult, challengeItem, rowEntries, challengeState.attempts]);
+
+  // Continue from a milestone screen → start the next least-played replay.
+  const continueFromMilestone = useCallback(() => {
+    setRowMilestone(null);
+    const completing = rowResults.length >= ROW_SIZE;
+    if (completing) {
+      setRowResults([]);
+      setRowEntries([]);
+    }
+    const completedKey = challengeItem ? getChallengeKey(challengeItem) : null;
+    // After a complete row we reset variety tracking; after halfway we
+    // keep the row's keys so the second half stays varied.
+    const sessionKeys = completing
+      ? new Set<string>()
+      : new Set(rowEntries.map(e => getChallengeKey(e.item)));
+    if (completedKey && !completing) sessionKeys.add(completedKey);
+    const nextChallenge = pickNextChallenge(completedKey, sessionKeys);
+    if (nextChallenge) {
+      startChallenge(nextChallenge);
     } else {
-      // No more challenges — go back to list
       setChallengeItem(null);
       setChallengeConfig(null);
-      setChallengeQueueIdx(-1);
     }
-  }, [challengeQueueIdx, uncheckedPositions, startChallenge]);
+  }, [rowResults.length, pickNextChallenge, startChallenge, challengeItem, rowEntries]);
 
-  // Auto-advance to the next challenge 7s after the current one completes,
-  // ONLY if the user is fully passive — any click within the window cancels
-  // the auto-nav so users who are exploring the post-game review (Back,
-  // expanding ranking tables, switching tabs, etc.) aren't yanked away
-  // mid-thought. The phase-change cleanup also clears the timer when the
-  // user clicks Next themselves or navigates away.
-  useEffect(() => {
-    if (challengeState.phase !== 'complete') return;
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (cancelled) return;
-      // On the first auto-advance after the tutorial, also fire the
-      // celebration coachmark — same UX as if the user clicked Next.
-      tutorialTriggerStep(6);
-      startNextChallenge();
-    }, 7000);
-    const onClick = () => {
-      cancelled = true;
-      clearTimeout(timer);
-      document.removeEventListener('click', onClick, true);
-    };
-    document.addEventListener('click', onClick, true);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      document.removeEventListener('click', onClick, true);
-    };
-  }, [challengeState.phase, startNextChallenge, tutorialTriggerStep]);
+  // Legacy entry point — still used by the list/grid "Start next" affordances.
+  // Inside an active challenge, prefer advanceAfterChallenge so row results
+  // get tracked and milestone screens fire correctly.
+  const startNextChallenge = useCallback(() => {
+    const completedKey = challengeItem ? getChallengeKey(challengeItem) : null;
+    const sessionKeys = new Set(rowEntries.map(e => getChallengeKey(e.item)));
+    if (completedKey) sessionKeys.add(completedKey);
+    const nextChallenge = pickNextChallenge(completedKey, sessionKeys);
+    if (nextChallenge) {
+      startChallenge(nextChallenge);
+    } else {
+      setChallengeItem(null);
+      setChallengeConfig(null);
+    }
+  }, [pickNextChallenge, startChallenge, challengeItem, rowEntries]);
+  void startNextChallenge;
 
-  // Combined list: unchecked challenges first, then completed (with checkmark).
-  // Replaces the separate Challenges / Completed tabs.
-  const displayPositions = useMemo(
-    () => [...uncheckedPositions, ...checkedPositions],
-    [uncheckedPositions, checkedPositions],
-  );
+  // Note: no auto-advance from the complete phase — the user explicitly
+  // controls when to move on (via the Next button on the last scored panel,
+  // or the Next/Back buttons in the complete review).
+
   const visiblePositionsSlice = displayPositions.slice(0, visibleCount);
   const hasMore = visibleCount < displayPositions.length;
 
@@ -1118,7 +1446,12 @@ export default function TimeMachine() {
   if (allPositions.length === 0 && sourceTab === 'yours') {
     return (
       <div className="text-center py-16">
-        <div className="text-5xl mb-4 opacity-60">{'\u23F3'}</div>
+        <div className="mb-4 opacity-60 flex justify-center text-chess-accent" style={{ width: 56, height: 56, margin: '0 auto 16px' }}>
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="9" />
+            <polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none" />
+          </svg>
+        </div>
         <div className="flex items-center justify-center gap-2 max-w-xs mx-auto">
           <p className="text-gray-400 text-sm">
             {t('tm_tagline')}
@@ -1130,19 +1463,314 @@ export default function TimeMachine() {
     );
   }
 
+  /* ── Hybrid Salvage milestones — render between challenges, replacing the
+       challenge view until the user dismisses with Continue / Next row. ── */
+  if (rowMilestone === 'halfway') {
+    const wins = rowResults.filter(r => r === 'win').length;
+    const losses = rowResults.filter(r => r === 'loss').length;
+    const remaining = ROW_SIZE - rowResults.length;
+    return (
+      <div className="max-w-[640px] mx-auto px-4 py-6 relative">
+        <div className="absolute inset-0 pointer-events-none" style={{
+          background: 'radial-gradient(circle at 50% 20%, rgba(74,222,128,0.13), transparent 55%)',
+        }} />
+        <div className="relative">
+          <RunProgress results={rowResults} current={rowResults.length} />
+
+          <div className="text-center mt-6 mb-5">
+            <div className="text-[12px] font-extrabold tracking-[1.4px] text-chess-accent">
+              HALFWAY · {rowResults.length} OF {ROW_SIZE}
+            </div>
+            <h2 className="text-[28px] md:text-[34px] font-black text-chess-text mt-2 leading-tight tracking-tight">
+              {wins === rowResults.length ? `${wins} saves in a row.` :
+               wins > losses ? `${wins} of ${rowResults.length} saved.` :
+               `${rowResults.length} positions down.`}
+            </h2>
+            <div className="text-sm text-chess-text-secondary mt-1.5 font-medium">
+              {remaining} more {remaining === 1 ? 'position' : 'positions'} to go.
+            </div>
+          </div>
+
+          {/* Three mini-board highlights — one per completed position. Tag is
+              the pattern label, framed in the win/loss accent colour. The
+              board renders into a fixed-height wrapper with overflow-hidden
+              so it never bleeds into the label below on narrow viewports. */}
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {rowEntries.slice(0, 3).map((entry, i) => {
+              const accent = entry.result === 'win' ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)';
+              const pattern = patternLabel(entry.item.patternTheme, t).toUpperCase();
+              return (
+                <div key={i} className="rounded-lg p-2" style={{
+                  background: 'rgba(17,24,39,0.6)',
+                  border: `1px solid ${accent}`,
+                }}>
+                  <div className="flex justify-center pointer-events-none rounded overflow-hidden" style={{ height: 80 }}>
+                    <ThemedChessboard
+                      position={entry.item.fen}
+                      boardOrientation={entry.item.playerColor === 'black' ? 'black' : 'white'}
+                      arePiecesDraggable={false}
+                      boardWidth={80}
+                    />
+                  </div>
+                  <div className="text-[9px] font-extrabold tracking-[0.4px] text-chess-text mt-2 text-center truncate uppercase">
+                    #{i+1} · {pattern}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* AI nudge — proud tone if winning, info otherwise */}
+          <div className="mb-4">
+            <AISays tone={wins >= 2 ? 'proud' : 'info'}>
+              {wins >= 2
+                ? 'A clean half. Stay focused — keep this rhythm into the second half.'
+                : 'Halftime reset. The patterns from the misses tend to repeat — watch for them.'}
+            </AISays>
+          </div>
+
+          <button
+            onClick={continueFromMilestone}
+            className="w-full py-3.5 rounded-xl font-black text-[15px] text-chess-bg transition-all active:scale-[0.98]"
+            style={{
+              background: 'linear-gradient(135deg, rgb(74,222,128), rgb(74,222,128) 60%, rgba(74,222,128,0.85))',
+              boxShadow: '0 8px 22px rgba(74,222,128,0.35)',
+            }}
+          >
+            Continue · {remaining} to go →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (rowMilestone === 'complete') {
+    const wins = rowResults.filter(r => r === 'win').length;
+    const heroLine = wins === ROW_SIZE
+      ? 'Six of six saved.'
+      : wins >= ROW_SIZE - 1
+        ? `${wins} of ${ROW_SIZE} saved.`
+        : wins >= 3
+          ? `${wins} of ${ROW_SIZE} held.`
+          : `Row complete · ${wins} saved.`;
+    const earnedAchievement = wins >= ROW_SIZE - 1; // 5 of 6 unlocks achievement
+    return (
+      <div className="max-w-[640px] mx-auto px-4 py-5 relative">
+        <div className="absolute inset-0 pointer-events-none" style={{
+          background: 'radial-gradient(circle at 50% 20%, rgba(74,222,128,0.18), transparent 50%), radial-gradient(circle at 80% 60%, rgba(251,191,36,0.10), transparent 45%)',
+        }} />
+        <div className="relative">
+          {/* Header with close → back to list */}
+          <div className="flex items-center gap-2 mb-4">
+            <button
+              onClick={() => {
+                setRowMilestone(null);
+                setRowResults([]);
+                setRowEntries([]);
+                setChallengeItem(null);
+                setChallengeConfig(null);
+                setSearchParams({});
+              }}
+              className="w-8 h-8 rounded-lg bg-chess-surface border border-chess-border/40 text-chess-text inline-flex items-center justify-center text-lg leading-none hover:bg-chess-surface/80 transition-all"
+              aria-label="Back to list"
+            >×</button>
+            <span className="text-[12px] font-extrabold tracking-[0.8px] text-chess-text-tertiary">
+              ROW COMPLETE
+            </span>
+          </div>
+
+          {/* Hero */}
+          <div className="text-center mb-4">
+            <div className="text-[12px] font-extrabold tracking-[1.4px]" style={{ color: 'rgb(251,191,36)' }}>
+              {challengeItem ? patternLabel(challengeItem.patternTheme, t).toUpperCase() : 'REPLAY ROW'}
+            </div>
+            <h2 className="text-[34px] md:text-[40px] font-black text-chess-text mt-2 leading-[1.05] tracking-tight">
+              {heroLine}
+            </h2>
+          </div>
+
+          {/* Full progress bar */}
+          <div className="mb-4">
+            <RunProgress results={rowResults} current={ROW_SIZE - 1} />
+          </div>
+
+          {/* Achievement card — only when 5 of 6 or better */}
+          {earnedAchievement && (
+            <div
+              className="rounded-xl p-3.5 mb-3 relative overflow-hidden"
+              style={{
+                background: 'linear-gradient(135deg, rgba(251,191,36,0.13), transparent 70%)',
+                border: '1px solid rgba(251,191,36,0.4)',
+              }}
+            >
+              <div className="absolute -right-5 -top-5 w-20 h-20 rounded-full" style={{
+                background: 'rgba(251,191,36,0.10)', filter: 'blur(20px)',
+              }} />
+              <div className="flex gap-3 items-center relative">
+                <div
+                  className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+                  style={{
+                    background: 'rgb(251,191,36)',
+                    color: 'rgb(10,15,26)',
+                    boxShadow: '0 0 18px rgba(251,191,36,0.4)',
+                  }}
+                >
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 3h12v5a6 6 0 0 1-12 0z" />
+                    <path d="M6 5H3v2a3 3 0 0 0 3 3" />
+                    <path d="M18 5h3v2a3 3 0 0 1-3 3" />
+                    <path d="M10 14h4v3l1 3H9l1-3z" />
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10px] font-extrabold tracking-[0.8px]" style={{ color: 'rgb(251,191,36)' }}>
+                    ACHIEVEMENT UNLOCKED
+                  </div>
+                  <div className="text-[16px] font-black text-chess-text mt-0.5">
+                    Replay Row Cleared
+                  </div>
+                  <div className="text-[12px] text-chess-text-secondary mt-0.5 leading-snug">
+                    Save {ROW_SIZE - 1}+ of {ROW_SIZE} positions in one row.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Highlight card — pick the highest-scoring win to feature. */}
+          {(() => {
+            const candidates = rowEntries.filter(e => e.result === 'win');
+            if (candidates.length === 0) return null;
+            const highlight = candidates.reduce((a, b) => b.firstScore > a.firstScore ? b : a, candidates[0]);
+            const positionIdx = rowEntries.indexOf(highlight) + 1;
+            const pattern = patternLabel(highlight.item.patternTheme, t);
+            return (
+              <div className="rounded-xl p-3 mb-3" style={{
+                background: 'rgba(17,24,39,0.6)',
+                border: '1px solid rgba(30,58,95,0.4)',
+              }}>
+                <div className="text-[10px] font-extrabold tracking-[0.7px] text-chess-text-tertiary mb-2">
+                  HIGHLIGHT
+                </div>
+                <div className="flex gap-3 items-center">
+                  <div className="shrink-0 pointer-events-none" style={{ width: 76, height: 76 }}>
+                    <ThemedChessboard
+                      position={highlight.item.fen}
+                      boardOrientation={highlight.item.playerColor === 'black' ? 'black' : 'white'}
+                      arePiecesDraggable={false}
+                      boardWidth={76}
+                    />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-extrabold text-chess-text">
+                      Position {positionIdx} · {pattern}
+                    </div>
+                    <div className="text-[12px] text-chess-text-secondary mt-1 leading-snug">
+                      You found <span className="font-mono font-bold text-chess-accent">{highlight.item.bestMoveSan}</span> — exactly the pattern AI flagged.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Actions pinned bottom */}
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={() => {
+                setRowMilestone(null);
+                setRowResults([]);
+                setRowEntries([]);
+                setChallengeItem(null);
+                setChallengeConfig(null);
+                setSearchParams({});
+              }}
+              className="px-4 py-3.5 rounded-xl bg-chess-surface text-chess-text border border-chess-border/40 text-sm font-extrabold inline-flex items-center gap-2 hover:bg-chess-surface/80 transition-all"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                <line x1="8.6" y1="13.5" x2="15.4" y2="17.5" />
+                <line x1="15.4" y1="6.5" x2="8.6" y2="10.5" />
+              </svg>
+              Share row
+            </button>
+            <button
+              onClick={continueFromMilestone}
+              className="flex-1 py-3.5 rounded-xl font-black text-[15px] text-chess-bg transition-all active:scale-[0.98]"
+              style={{
+                background: 'linear-gradient(135deg, rgb(74,222,128), rgb(52,211,153))',
+                boxShadow: '0 8px 22px rgba(74,222,128,0.35)',
+              }}
+            >
+              {(() => {
+                // After a row, fresh = positions not yet played in this
+                // session row. With the new key-based picker we always
+                // have something to serve as long as displayPositions
+                // is non-empty, so count all remaining unique positions.
+                const sessionKeys = new Set(rowEntries.map(e => getChallengeKey(e.item)));
+                const remaining = displayPositions.filter(p => !sessionKeys.has(getChallengeKey(p))).length;
+                const ready = Math.max(0, Math.min(ROW_SIZE, remaining));
+                return ready > 0 ? `Next row · ${ready} ready →` : 'Done';
+              })()}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   /* ── Interactive Challenge View ── */
   if (challengeItem && challengeConfig) {
     const item = challengeItem;
     const catColor = CATEGORY_COLORS[item.category] ?? CATEGORY_COLORS.Positional;
     const { phase, currentFen, criticalFen, fenAfterCritical: _fac, fenForContinuation: _ffc, opponentResponseSan: _ors, playerTurn, selectedSquare, legalMoves, opponentThinking, evaluating, lastMoveFrom, lastMoveTo, moveScore, moveScores, playerMoveSan: _pms, showAnswer, attempts, error: challengeError, aiExplanation, aiExplanationLoading, criticalRanking, continuationRanking: _cr, continuationMoves, continuationRankings, rankingLoading, pendingPromotion } = challengeState;
+    void catColor;
     void _pms;
-    void _fac; void _ffc; void _ors; void _cr;
+    void _fac; void _ffc; void _ors; void _cr; void rankingLoading;
 
     // Use live ranking's top move as the authoritative "best" when available,
     // falling back to the stored analysis best move while ranking loads.
-    const liveBest = criticalRanking.length > 0 ? criticalRanking.find(m => m.rank === 1) ?? criticalRanking[0] : null;
+    // For continuation moves we score each move on its own FEN, so the
+    // "best" comes from the latest continuationRankings entry.
+    const isInContinuationScored = phase === 'scored' && moveScores.length > 1;
+    const activeRankingForArrows = isInContinuationScored
+      ? (continuationRankings[continuationRankings.length - 1] ?? [])
+      : criticalRanking;
+    const liveBest = activeRankingForArrows.length > 0
+      ? activeRankingForArrows.find(m => m.rank === 1) ?? activeRankingForArrows[0]
+      : null;
     const bestMoveUci = liveBest?.uci ?? item.bestMoveUci;
     const bestMoveSan = liveBest?.san ?? item.bestMoveSan;
+
+    // Pre-move FEN + best-move UCI for whichever move the AI explanation is
+    // describing. Used for the "Best Move" tab arrow so it works
+    // identically across the critical move and every continuation move,
+    // even after the live board has advanced past them.
+    //
+    // CRITICAL move: use the STORED `item.bestMoveUci` — that's the same
+    // UCI the scoring path passes to the AI as "best move" (see
+    // useTimeMachineChallenge.ts: `bestUci = isCritical ? config.bestMoveUci`).
+    // If we used liveBest here the tab arrow would sometimes point at a
+    // different (equal-best) alternative than the move the AI is naming
+    // in its sentence, which reads as inconsistent.
+    //
+    // CONTINUATION move: use the live ranking — the AI prompt for
+    // continuation moves also uses `ranking[0].san` so they stay in sync.
+    let explanationFenBefore: string | null = null;
+    let explanationBestUci: string | null = null;
+    if (moveScores.length === 1) {
+      explanationFenBefore = item.fen;
+      explanationBestUci = item.bestMoveUci ?? liveBest?.uci ?? null;
+    } else if (moveScores.length > 1) {
+      const idx = moveScores.length - 2; // continuationMoves[idx] = the just-scored continuation move
+      const lastContMove = continuationMoves[idx];
+      const ranking = continuationRankings[idx];
+      if (lastContMove && Array.isArray(ranking) && ranking.length > 0) {
+        explanationFenBefore = lastContMove.fenBefore;
+        const top = ranking.find(m => m.rank === 1) ?? ranking[0];
+        explanationBestUci = top?.uci ?? null;
+      }
+    }
 
     const boardOrientationColor = item.playerColor === 'black' ? 'black' : 'white';
 
@@ -1212,12 +1840,43 @@ export default function TimeMachine() {
       setPreviewFenState(pvChainData.fens[step]);
       playChessSound('move');
     };
+    void handleRankSelect; void handlePvStepClick;
 
-    // In scored phase: always show the critical position (item.fen) so arrows reference real pieces.
-    // Otherwise show the live game position (currentFen).
-    const showArrows = phase === 'scored' && showAnswer;
-    const baseFen = phase === 'scored' ? (criticalFen || item.fen) : currentFen;
-    const displayFen = previewFen ?? baseFen;
+    // In scored phase: hide arrows by default — only show when the user explicitly
+    // reveals the best move (Show best move button) or when they tap a ranked-move row.
+    // The "Reveal answer" path (giving up before moving) auto-reveals so the user
+    // sees the answer they asked for.
+    const isRevealAnswerPath = phase === 'scored' && showAnswer && challengeState.moveScore === 0 && !challengeState.playerMoveUci;
+    // Auto-show arrows during scored phase AND through the subsequent
+    // continuation phase, until the user starts their next move. The hook
+    // keeps `showAnswer` true across both phases and flips it to false in
+    // the move handlers, so the gate is just "showAnswer is set and we're
+    // not back in leadup".
+    const showArrows = (phase === 'scored' || phase === 'continuation') && showAnswer;
+    void revealedBest; void isRevealAnswerPath;
+    // Board always sits on the post-move FEN — the piece stays where the
+    // player dropped it, no snap-back, no flicker between 'scored' and
+    // 'continuation'. The pre-move FEN is still needed for ARROW legality
+    // (to validate that the source square holds the right piece BEFORE the
+    // move was played), so we compute it separately as `arrowFen`.
+    const baseFen = currentFen;
+    const lastContMoveForArrows = continuationMoves[continuationMoves.length - 1];
+    // True whenever the most-recently-scored move is a continuation move
+    // (i.e. we've scored more than just the critical move). Used to pick
+    // the correct ranking for arrow rendering — regardless of whether
+    // we're still on the 'scored' frame or have auto-advanced into
+    // 'continuation' while keeping the previous arrows visible.
+    const isContinuationScored = moveScores.length > 1;
+    const arrowFen = isContinuationScored
+      ? (lastContMoveForArrows?.fenBefore ?? currentFen)
+      : (criticalFen || item.fen);
+    // When the user opens the "Best move" tab in the AI explanation, rewind
+    // the board to the position the explanation is talking about so the
+    // green arrow visually anchors to the right pieces. Without this, the
+    // live board (already past the move) draws the arrow from squares
+    // whose pieces have moved, which read as "voodoo" arrows.
+    const bestTabFen = aiBestTabActive && explanationFenBefore ? explanationFenBefore : null;
+    const displayFen = previewFen ?? bestTabFen ?? baseFen;
 
     // Helper: a UCI is renderable only when its source square holds a piece
     // of the player's colour on the FEN we're about to display. Without
@@ -1261,50 +1920,130 @@ export default function TimeMachine() {
     // Arrows — during scored phase (normal answer arrows) OR when previewing a ranked move
     const arrows: [Square, Square, string][] = [];
 
+    // Best-move tab arrow — when the user opens the "Best move" tab in the
+    // AI explanation, draw a bright green arrow for the move the
+    // explanation is talking about. Uses the SAME source FEN the user is
+    // looking at (board is rewound above), so the arrow is always
+    // legal/visible regardless of phase. Identical behaviour for the
+    // critical move and every continuation move.
+    if (aiBestTabActive && explanationBestUci && explanationBestUci.length >= 4 && isLegalUciOn(explanationBestUci, displayFen)) {
+      arrows.push(...expandArrow(explanationBestUci, displayFen, 'rgba(74,222,128,0.95)'));
+    }
+
     if (previewUci && isLegalUciOn(previewUci, displayFen)) {
       // Preview arrow: blue — shows the selected ranked move on the critical/continuation FEN.
       // Guarded by isLegalUciOn so we never draw a voodoo arrow from an empty square if the
       // displayed FEN drifts out of sync with the UCI.
       arrows.push(...expandArrow(previewUci, displayFen, 'rgba(96,165,250,0.85)'));
+    } else if (phase === 'leadup') {
+      // C1 design: subtle gray arrow showing the NEXT leadup move that's
+      // about to play, so the player knows what they're watching.
+      const nextMove = challengeConfig.gameMoves[challengeState.moveIndex];
+      const nextUci = nextMove?.moveUci;
+      if (nextUci && nextUci.length >= 4 && isLegalUciOn(nextUci, displayFen)) {
+        arrows.push(...expandArrow(nextUci, displayFen, 'rgba(148,163,184,0.55)'));
+      }
     } else if (showArrows) {
-      const arrowFen = baseFen;
-      // When the player's move is itself top-rank (multiple 100s, or
-      // identical match), draw a single GREEN arrow for what they did.
-      // Otherwise: green = best, red = attempt, orange = original mistake.
+      // Arrows are validated against the PRE-move FEN (arrowFen) — the board
+      // itself is on the post-move FEN, but the arrow's source square needs
+      // to have held the right piece BEFORE the move for the path to make
+      // visual sense.
+      //
+      // The GREEN best-move arrow does NOT auto-show here when the player
+      // got the move wrong — it only appears when the user explicitly opens
+      // the "Best move" tab in the AI explanation (handled higher up via
+      // the `aiBestTabActive && explanationBestUci` branch). This avoids
+      // (1) spoiling the answer the moment they submit and (2) the
+      // inconsistency we used to have between the always-on arrow (live
+      // ranking) and the on-tab arrow (stored analysis) sometimes pointing
+      // at different equal-best moves.
       if (playerScored100 || sameAsBest) {
+        // Player nailed it — single GREEN arrow celebrates the move they
+        // played (or the best move if they gave up but it matches).
         if (attemptUci && isLegalUciOn(attemptUci, arrowFen)) {
           arrows.push(...expandArrow(attemptUci, arrowFen, 'rgba(74,222,128,0.85)'));
         } else if (isLegalUciOn(bestMoveUci, arrowFen)) {
           arrows.push(...expandArrow(bestMoveUci, arrowFen, 'rgba(74,222,128,0.85)'));
         }
       } else {
-        // Green: best move (from live ranking when available, else stored analysis)
-        if (isLegalUciOn(bestMoveUci, arrowFen)) {
-          arrows.push(...expandArrow(bestMoveUci, arrowFen, 'rgba(74,222,128,0.85)'));
+        // Wrong move: only the RED attempt arrow (or ORANGE original
+        // mistake if they didn't attempt). The best move stays hidden
+        // until the user opens the Best move tab.
+        if (attemptUci && isLegalUciOn(attemptUci, arrowFen)) {
+          arrows.push(...expandArrow(attemptUci, arrowFen, 'rgba(239,68,68,0.7)'));
         }
-        // Red: what the player tried in this attempt (if different from best)
-        if (attemptUci && attemptUci !== bestMoveUci && isLegalUciOn(attemptUci, arrowFen)) {
-          arrows.push(...expandArrow(attemptUci, arrowFen, 'rgba(239,68,68,0.55)'));
-        }
-        // Orange: the original game mistake (if no attempt was made, i.e. player gave up)
         if (!attemptUci && item.playedMoveSan !== bestMoveSan) {
           const origUci = challengeConfig!.originalMoveUci;
-          if (origUci && origUci !== bestMoveUci && isLegalUciOn(origUci, arrowFen)) {
+          if (origUci && isLegalUciOn(origUci, arrowFen)) {
             arrows.push(...expandArrow(origUci, arrowFen, 'rgba(251,146,60,0.6)'));
           }
         }
       }
     }
 
-    // Square highlights — only when player can interact
+    // Square highlights. Selection + legal-move dots only render when the
+    // player can interact (no arrows up). The yellow last-move "tracks" stay
+    // visible across all phases — including Reveal Answer — so the user sees
+    // a consistent move trail like in standard chess UIs.
+    //
+    // IMPORTANT: highlights MUST be expressed as `backgroundImage` (gradients)
+    // — never `background` shorthand or `backgroundColor`. react-chessboard
+    // applies `customSquareStyles[sq]` after `customDarkSquareStyle` /
+    // `customLightSquareStyle` and merges as a plain object, so any of those
+    // two would replace the base square color and reveal the dark page
+    // surface beneath the board (the "greyish squares" bug). Layered
+    // gradients sit ON TOP of the base color and look correct on both
+    // dark and light squares.
+    const tint = (color: string): React.CSSProperties => ({
+      backgroundImage: `linear-gradient(${color}, ${color})`,
+    });
+    const dot = (color: string): React.CSSProperties => ({
+      backgroundImage: `radial-gradient(circle, ${color} 22%, transparent 22%)`,
+    });
     const squareStyles: Record<string, React.CSSProperties> = {};
-    if (!showArrows) {
-      if (selectedSquare) squareStyles[selectedSquare] = { backgroundColor: 'rgba(74,222,128,0.35)' };
-      for (const sq of legalMoves) squareStyles[sq] = { background: 'radial-gradient(circle, rgba(74,222,128,0.25) 25%, transparent 25%)', borderRadius: '50%' };
-      if (lastMoveFrom) squareStyles[lastMoveFrom] = { ...squareStyles[lastMoveFrom], backgroundColor: 'rgba(255,255,100,0.15)' };
-      if (lastMoveTo) squareStyles[lastMoveTo] = { ...squareStyles[lastMoveTo], backgroundColor: 'rgba(255,255,100,0.25)' };
+    // Show selection + legal-move dots whenever the player has selected a
+    // piece — including during the continuation phase while previous-move
+    // arrows are still on the board. The dots use a low-opacity GREY so
+    // they read clearly without competing with the colored arrows or
+    // yellow last-move tracks. Suppressing them when arrows were up made
+    // the board feel unresponsive after a wrong move on the previous turn.
+    if (selectedSquare) squareStyles[selectedSquare] = tint('rgba(148,163,184,0.28)');
+    for (const sq of legalMoves) squareStyles[sq] = dot('rgba(148,163,184,0.45)');
+    // Derive the user's own move squares from attemptUci so the colored glow
+    // can persist past 'scored' into 'continuation' (when lastMoveTo gets
+    // overwritten by the opponent's reply). The glow stays on the user's
+    // destination until they make their NEXT move (which overwrites
+    // playerMoveUci + moveScore in the hook).
+    const userMoveFrom = attemptUci ? (attemptUci.slice(0, 2) as Square) : null;
+    const userMoveTo = attemptUci ? (attemptUci.slice(2, 4) as Square) : null;
+    const userMoveScored = userMoveTo !== null && moveScore !== null;
+
+    // Last-move yellow track (any move, user or opponent). Skip the
+    // destination if it's the user's TO — the green/red glow below owns
+    // that square and we don't want yellow bleeding through.
+    if (lastMoveFrom) squareStyles[lastMoveFrom] = { ...squareStyles[lastMoveFrom], ...tint('rgba(255,210,80,0.22)') };
+    if (lastMoveTo && lastMoveTo !== userMoveTo) {
+      squareStyles[lastMoveTo] = { ...squareStyles[lastMoveTo], ...tint('rgba(255,200,60,0.5)'), boxShadow: 'inset 0 0 0 3px rgba(255,200,60,0.7)' };
     }
-    if (highlightedSquare) squareStyles[highlightedSquare] = { ...squareStyles[highlightedSquare], backgroundColor: 'rgba(59,130,246,0.5)', boxShadow: 'inset 0 0 0 2px rgba(59,130,246,0.8)' };
+
+    // User's own source square — faint yellow regardless of phase, so the
+    // "where I picked the piece up" is always visible while the glow is on
+    // the destination.
+    if (userMoveFrom) {
+      squareStyles[userMoveFrom] = { ...squareStyles[userMoveFrom], ...tint('rgba(255,210,80,0.22)') };
+    }
+    // User's destination — green (≥90, "excellent") or red (<90, "wrong")
+    // glow that persists until the user makes their next move.
+    if (userMoveTo && userMoveScored) {
+      const isGood = (moveScore ?? 0) >= 90;
+      const baseRgb = isGood ? '74,222,128' : '239,68,68';
+      squareStyles[userMoveTo] = {
+        ...squareStyles[userMoveTo],
+        ...tint(`rgba(${baseRgb},0.22)`),
+        boxShadow: `inset 0 0 14px rgba(${baseRgb},0.85), inset 0 0 0 3px rgba(${baseRgb},0.7)`,
+      };
+    }
+    if (highlightedSquare) squareStyles[highlightedSquare] = { ...squareStyles[highlightedSquare], ...tint('rgba(59,130,246,0.5)'), boxShadow: 'inset 0 0 0 2px rgba(59,130,246,0.8)' };
 
     // Score color helper
     const scoreColor = (s: number | null) => {
@@ -1323,65 +2062,117 @@ export default function TimeMachine() {
       if (s >= 50) return t('tm_okay');
       return t('tm_keep_trying');
     };
+    void scoreLabel; void scoreColor;
 
-    // Status panel content (reused in both layouts)
+    // Status panel content (reused in both layouts). No outer border — each
+    // inner panel (AI Says, etc.) carries its own toned border.
+    // Detect terminal positions (mate / stalemate / draw) so we can surface
+    // a "Checkmate — game over" badge on the board itself when the row had
+    // to end early. Computed once per render from the displayed FEN so the
+    // overlay updates in lock-step with the board.
+    let gameOverLabel: string | null = null;
+    if (phase === 'complete' && moveScores.length < 3) {
+      try {
+        const c = new Chess(currentFen ?? item.fen);
+        if (c.isCheckmate()) gameOverLabel = t('tm_checkmate') || 'Checkmate — game over';
+        else if (c.isStalemate()) gameOverLabel = t('tm_stalemate') || 'Stalemate — game over';
+        else if (c.isDraw()) gameOverLabel = t('tm_draw') || 'Draw — game over';
+        else if (c.isGameOver()) gameOverLabel = t('tm_game_over') || 'Game over';
+      } catch { /* ignore */ }
+    }
+
+    const isWhitePlayer = item.playerColor === 'white';
+    const playerSidePill = (
+      <span
+        className="inline-flex items-center gap-1 rounded-full border px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wide whitespace-nowrap shrink-0"
+        style={{
+          background: isWhitePlayer ? 'rgba(255,255,255,0.92)' : 'rgba(20,20,24,0.9)',
+          color: isWhitePlayer ? '#0b0b0d' : '#f8fafc',
+          borderColor: isWhitePlayer ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.18)',
+        }}
+        title={isWhitePlayer ? 'You are playing White' : 'You are playing Black'}
+      >
+        <span
+          className="inline-block rounded-full"
+          style={{
+            width: 7,
+            height: 7,
+            background: isWhitePlayer ? '#ffffff' : '#0b0b0d',
+            border: `1px solid ${isWhitePlayer ? '#0b0b0d' : '#ffffff'}`,
+          }}
+        />
+        {isWhitePlayer ? 'You · White' : 'You · Black'}
+      </span>
+    );
+
     const statusPanel = (
-      <div className="rounded-xl overflow-hidden border border-chess-border/20 bg-chess-surface/20">
-        {phase === 'leadup' && (
-          <div className="px-4 py-3 md:text-left text-center">
-            <div className="text-sm text-gray-400">{t('tm_replaying')}</div>
-            <div className="mt-2 flex items-center md:justify-start justify-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-chess-accent animate-pulse" />
-              <span className="text-xs text-chess-accent">{t('tm_watch')}</span>
+      <div className="rounded-xl overflow-hidden">
+        {/* Player-color marker now lives in the top game chip (replaces
+            the old "MV N" badge), reclaiming the vertical space here so
+            the action buttons stay above the fold. */}
+        {phase === 'leadup' && (() => {
+          const moveNumber = challengeConfig.criticalIndex + 1;
+          // Split on {move} so the bold styling lands inside the translated
+          // sentence wherever the target language places the number.
+          const [before, ...rest] = t('tm_leadup_rewinding').split('{move}');
+          const after = rest.join('{move}');
+          return (
+            <div className="px-4 py-3 md:text-left text-center">
+              <div className="text-[14px] leading-relaxed text-chess-text-secondary">
+                {before}
+                <b style={{ color: 'rgb(251,191,36)' }}>{moveNumber}</b>
+                {after}
+              </div>
             </div>
-          </div>
-        )}
-        {phase === 'showMistake' && (
-          <div className="px-4 py-3 md:text-left text-center bg-chess-blunder/10">
-            <div className="text-sm font-bold text-chess-blunder">{t('tm_this_is_what')}</div>
-            <div className="text-xs text-gray-500 mt-1">{t('tm_rewinding')}</div>
-          </div>
-        )}
+          );
+        })()}
+        {/* showMistake is a brief transitional phase — the new design uses
+            the same AI Says cautious panel as critical, no separate red box. */}
         {phase === 'critical' && (
           <div className="px-4 py-3 md:text-left text-center">
-            {/* Headline — biggest, clearest action prompt. */}
-            <div className="text-base md:text-lg font-black text-chess-accent leading-tight">
-              {t('tm_find_better_move')}
-            </div>
+            {/* When a hint is active (or loading) the AI Says panel itself
+                becomes the hint surface — yellow tone, dismissible × — so
+                we don't stack two cards. Otherwise show the standard
+                cautious instruction. */}
+            {(challengeState.hint || challengeState.hintLoading) ? (
+              <AISays tone="hint" onDismiss={dismissHint}>
+                {challengeState.hintLoading ? (
+                  <span className="inline-flex items-center gap-2 text-chess-text-secondary">
+                    <span className="w-3 h-3 border-[1.5px] rounded-full animate-spin" style={{ borderColor: 'rgb(251,191,36)', borderTopColor: 'transparent' }} />
+                    <span>{t('tm_hint_thinking')}</span>
+                  </span>
+                ) : challengeState.hint ? (
+                  <ExplanationText
+                    text={challengeState.hint}
+                    onSquareClick={(sq) => setHighlightedSquare(prev => prev === sq ? null : sq)}
+                  />
+                ) : null}
+              </AISays>
+            ) : (
+              <AISays tone="cautious">
+                <span className="font-black text-chess-text">{t('tm_find_better_move')} </span>
+                <span className="text-chess-text-secondary">
+                  {(() => {
+                    if (sourceTab === 'yours') {
+                      return t('tm_originally_played', { move: item.playedMoveSan });
+                    }
+                    const game = allGames.find((g) => g.id === item.gameId);
+                    const name = game?.player?.username ?? '';
+                    return name
+                      ? t('tm_originally_played_by', { name, move: item.playedMoveSan })
+                      : t('tm_originally_played', { move: item.playedMoveSan });
+                  })()}
+                </span>
+              </AISays>
+            )}
 
-            {/* Context — who played the move (you, or the friend / top
-                player whose game you're replaying). */}
-            <div className="text-[13px] text-chess-text/70 mt-1 leading-snug">
-              {(() => {
-                if (sourceTab === 'yours') {
-                  return t('tm_originally_played', { move: item.playedMoveSan });
-                }
-                const game = allGames.find((g) => g.id === item.gameId);
-                const name = game?.player?.username ?? '';
-                return name
-                  ? t('tm_originally_played_by', { name, move: item.playedMoveSan })
-                  : t('tm_originally_played', { move: item.playedMoveSan });
-              })()}
-            </div>
-
-            {/* Subtle action row — escape hatch + attempt counter. */}
-            <div className="flex items-center md:justify-start justify-center gap-3 mt-2">
-              <button
-                onClick={() => {
-                  setHighlightedSquare(null);
-                  revealWithExplanation();
-                }}
-                className="text-xs text-gray-400 hover:text-chess-text underline decoration-dotted underline-offset-4 transition-colors"
-              >
-                {t('tm_reveal_answer')}
-              </button>
-              {attempts > 0 && (
-                <>
-                  <span className="text-gray-600 text-xs">·</span>
-                  <span className="text-xs text-gray-500">Attempt {attempts + 1}</span>
-                </>
-              )}
-            </div>
+            {/* Attempt counter — Hint and Reveal answer moved into the
+                bottom action row (above the tab bar) per Hybrid Salvage (C). */}
+            {attempts > 0 && (
+              <div className="text-[11px] text-gray-500 mt-2 md:text-left text-center">
+                Attempt {attempts + 1}
+              </div>
+            )}
           </div>
         )}
         {phase === 'evaluating' && (
@@ -1392,12 +2183,20 @@ export default function TimeMachine() {
             </div>
           </div>
         )}
-        {phase === 'scored' && (
-          <div className={`px-4 py-4 md:text-left text-center ${
-            moveScore !== null && moveScore >= 90 ? 'bg-chess-accent/10' :
-            moveScore !== null && moveScore < 50  ? 'bg-chess-blunder/10' :
-            'bg-amber-500/[0.06]'
-          }`}>
+        {/* During continuation, only show the "Opponent thinking" status —
+            the verbose "Keep playing — N moves left" text was removed per
+            UX request. The player-color pill above the panel and the move
+            counter in the scored card communicate progress instead. */}
+        {phase === 'continuation' && opponentThinking && (
+          <div className="px-4 py-2 md:text-left text-center border-b border-chess-border/20">
+            <span className="text-xs text-gray-400">{t('tm_opponent_thinking')}</span>
+          </div>
+        )}
+        {/* Scored panel — persists into continuation and complete phases so
+            the user keeps the previous move's explanation visible while the
+            next move plays out, and after the row is done. */}
+        {(phase === 'scored' || phase === 'complete' || (phase === 'continuation' && moveScores.length > 0) || (phase === 'evaluating' && moveScores.length > 0)) && (
+          <div className="px-4 py-3 md:text-left text-center">
             {challengeError ? (
               <>
                 <div className="text-sm text-red-400 mb-2">{challengeError}</div>
@@ -1405,266 +2204,204 @@ export default function TimeMachine() {
               </>
             ) : (
               <>
-                {/* Score header + CTAs in a single row. The row never
-                    wraps — the score block can shrink (truncating long
-                    locale strings) so the CTAs stay pinned to the end. */}
+                {/* Game-over banner moved to a board-anchored overlay (see
+                    BoardGameOverBadge below the board container). Keeping it
+                    here would duplicate the message. */}
                 <div className="flex items-center gap-2 flex-nowrap mb-1.5">
-                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                    <div className={`text-2xl font-black tabular-nums leading-none shrink-0 ${scoreColor(moveScore)}`}>{moveScore}</div>
-                    <div className="min-w-0">
-                      <div className={`text-xs font-bold leading-tight truncate ${scoreColor(moveScore)}`}>{scoreLabel(moveScore)}</div>
-                      <div className="text-[10px] text-gray-500 leading-tight truncate">{t('tm_out_of')}</div>
+                  <div className="min-w-0 flex-1 md:text-left text-center">
+                    <div className="text-[10px] font-extrabold tracking-[0.6px] text-chess-text-tertiary uppercase">
+                      {(() => {
+                        // Total moves can be < 3 when the game ends early
+                        // (mate / stalemate, or original game ran out of
+                        // ply) and can exceed 3 if retries / reveal-answer
+                        // appended extra scores. Either way, the displayed
+                        // total must be ≥ the count, so n / total stays
+                        // sane (no "MOVE 8 OF 3").
+                        const total = Math.max(moveScores.length, phase === 'complete' ? 1 : 3);
+                        return t('tm_move_progress', { n: moveScores.length, total });
+                      })()}
                     </div>
                   </div>
-
-                  <div className="flex gap-1.5 shrink-0">
-                    {moveScore !== null && moveScore < 100 && (
-                      <button onClick={retry} className="px-2.5 py-1.5 bg-chess-accent text-chess-bg rounded-lg text-xs font-bold hover:brightness-110 transition-all whitespace-nowrap">
-                        {t('tm_try_again')}
-                      </button>
-                    )}
-                    <button onClick={continueAfterScore} className="px-2.5 py-1.5 bg-chess-surface border border-chess-border/30 rounded-lg text-xs font-bold hover:bg-chess-surface/80 transition-all whitespace-nowrap">
-                      {t('tm_continue')}
-                    </button>
-                  </div>
                 </div>
 
-                {/* AI explanation — below buttons, collapsible feel */}
-                {(aiExplanation || aiExplanationLoading) && (
-                  <div className="text-[12px] leading-relaxed text-gray-400 mb-2">
-                    {aiExplanationLoading ? (
-                      <div className="flex items-center md:justify-start justify-center gap-2 text-gray-500">
-                        <span className="w-3 h-3 border-[1.5px] border-chess-accent border-t-transparent rounded-full animate-spin" />
-                        <span className="text-xs">Analyzing...</span>
-                      </div>
-                    ) : (
-                      <ExplanationText text={aiExplanation!} onSquareClick={(sq) => setHighlightedSquare(prev => prev === sq ? null : sq)} />
-                    )}
-                  </div>
-                )}
+                {/* AI explanation — persists through continuation so the user
+                    can keep reading. While loading, show a tabs+card skeleton
+                    (same pattern as GameDetail) so the structure is visible
+                    immediately and only the text fills in.
 
-                {/* Top-5 move ranking table */}
-                <RankingTable
-                  title={t('tm_top_moves')}
-                  moves={criticalRanking}
-                  loading={rankingLoading && criticalRanking.length === 0}
-                  playerMoveUci={challengeState.playerMoveUci ?? challengeConfig!.originalMoveUci}
-                  originalMoveUci={challengeConfig!.originalMoveUci}
-                  bestMoveUci={bestMoveUci}
-                  selectedUci={selectedRowUci}
-                  onSelect={(move) => handleRankSelect(move, criticalFen || item.fen)}
-                  activePvStep={pvStep}
-                  onPvStepClick={handlePvStepClick}
-                />
+                    During continuation, when the user requests a hint we
+                    swap this slot for the same yellow AI Says hint surface
+                    used in the move-1 critical phase. That keeps the hint
+                    UI consistent across moves and avoids stacking two
+                    cards. */}
+                {phase === 'continuation' && (challengeState.hint || challengeState.hintLoading) ? (
+                  <div className="mb-2">
+                    <AISays tone="hint" onDismiss={dismissHint}>
+                      {challengeState.hintLoading ? (
+                        <span className="inline-flex items-center gap-2 text-chess-text-secondary">
+                          <span className="w-3 h-3 border-[1.5px] rounded-full animate-spin" style={{ borderColor: 'rgb(251,191,36)', borderTopColor: 'transparent' }} />
+                          <span>{t('tm_hint_thinking')}</span>
+                        </span>
+                      ) : challengeState.hint ? (
+                        <ExplanationText
+                          text={challengeState.hint}
+                          onSquareClick={(sq) => setHighlightedSquare(prev => prev === sq ? null : sq)}
+                        />
+                      ) : null}
+                    </AISays>
+                  </div>
+                ) : (
+                  <>
+                    {aiExplanationLoading && !aiExplanation && (
+                      <div aria-busy="true" aria-live="polite" className="mb-2">
+                        <div className="flex items-end relative z-10" style={{ marginBottom: -1 }}>
+                          <div className="px-3 py-1.5 rounded-t-md border border-red-500/40 bg-red-500/10 me-1">
+                            <div className="h-2 w-12 rounded bg-red-500/30 animate-pulse" />
+                          </div>
+                          <div className="px-3 py-1.5 rounded-t-md border border-white/[0.06] bg-white/[0.02]">
+                            <div className="h-2 w-12 rounded bg-white/[0.10] animate-pulse" />
+                          </div>
+                        </div>
+                        <div className="border border-red-500/40 bg-red-500/[0.04] rounded-md px-3 py-2 space-y-1.5">
+                          <div className="h-2 w-full rounded bg-white/[0.07] animate-pulse" />
+                          <div className="h-2 w-[92%] rounded bg-white/[0.07] animate-pulse" />
+                          <div className="h-2 w-[60%] rounded bg-white/[0.07] animate-pulse" />
+                        </div>
+                      </div>
+                    )}
+                    {aiExplanation && (
+                      <div className="text-[12px] leading-relaxed text-gray-400 mb-2">
+                        <ExplanationText
+                          text={aiExplanation}
+                          onSquareClick={(sq) => setHighlightedSquare(prev => prev === sq ? null : sq)}
+                          isBestMove={playerScored100 || sameAsBest}
+                          onTabChange={(t) => setAiBestTabActive(t === 1)}
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
               </>
             )}
-          </div>
-        )}
-        {phase === 'continuation' && (
-          <div className="px-4 py-3 md:text-left text-center">
-            <div className="text-sm text-gray-400">
-              {opponentThinking ? t('tm_opponent_thinking') : playerTurn ? t('tm_keep_playing', { moves: challengeState.continuationMovesLeft }) : ''}
-            </div>
-          </div>
-        )}
-        {phase === 'complete' && (
-          <div className="px-3 py-2 bg-chess-accent/10 md:text-left text-center">
-            {/* Compact header row: just the title + Back/Next. Per-move scores
-                live on each tab below. */}
-            <div className="flex items-center gap-2 mb-2 flex-wrap">
-              <span className="text-[11px] font-bold text-chess-accent shrink-0">{t('tm_challenge_complete')}</span>
-              <div className="flex items-center gap-2 ms-auto shrink-0">
-                <button data-tutorial-target="tm-challenge-back" onClick={() => { setChallengeItem(null); setChallengeConfig(null); setChallengeQueueIdx(-1); setSearchParams({}); }} className="px-2.5 py-1 text-gray-500 hover:text-gray-300 text-[11px] transition-all flex items-center gap-1">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="rtl:rotate-180"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                  {t('tm_back')}
-                </button>
-                <button onClick={() => { tutorialTriggerStep(6); startNextChallenge(); }} className="px-3 py-1 bg-chess-accent text-chess-bg rounded-lg text-[12px] font-bold hover:brightness-110 transition-all">
-                  {t('tm_next')}
-                </button>
-              </div>
-            </div>
-
-            {/* Continuation review — tab to switch between moves, RankingTable
-                shows the top-5 alternatives for the selected move (mirrors how
-                the critical move is displayed). */}
-            {continuationMoves.length > 0 && (() => {
-              const activeIdx = expandedContIdx ?? 0;
-              const activeMove = continuationMoves[activeIdx];
-              const activeRanking = continuationRankings[activeIdx] ?? [];
-              return (
-                <div>
-                  {/* Move tabs — each tab shows the move number, SAN, and the
-                      score the user got for that move. */}
-                  <div className="flex items-center gap-1 mb-1.5 overflow-x-auto scrollbar-hide">
-                    {continuationMoves.map((cm, idx) => {
-                      const ranking = continuationRankings[idx];
-                      const userInRanking = ranking?.find(m => m.uci === cm.uci);
-                      const userRank = userInRanking?.rank ?? null;
-                      const isBest = userRank === 1;
-                      const isMiss = ranking && !userRank;
-                      const isActive = idx === activeIdx;
-                      const moveScore = moveScores[idx];
-                      return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            setExpandedContIdx(idx);
-                            if (cm.uci && cm.fenBefore) {
-                              setPreviewUci(cm.uci);
-                              setPreviewFenState(cm.fenBefore);
-                            }
-                            setSelectedRowUci(null);
-                            setPvStep(-1);
-                            setPvChainData(null);
-                          }}
-                          className={`shrink-0 flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] transition-all ${
-                            isActive
-                              ? 'bg-chess-accent/15 border-chess-accent/40 text-chess-text'
-                              : 'bg-white/[0.03] border-white/[0.06] text-gray-400 hover:bg-white/[0.06]'
-                          }`}
-                        >
-                          <span className="font-bold tabular-nums">{idx + 1}</span>
-                          <span className="font-mono font-bold">{cm.san}</span>
-                          {isBest && <span className="text-[9px] text-chess-accent">★</span>}
-                          {isMiss && <span className="text-[9px] text-chess-blunder font-bold">×</span>}
-                          {moveScore != null && (
-                            <span className={`font-black tabular-nums ${scoreColor(moveScore)}`}>{moveScore}</span>
-                          )}
-                        </button>
-                      );
-                    })}
-                    {rankingLoading && continuationRankings.length === 0 && (
-                      <span className="inline-block w-3 h-3 border-[1.5px] border-chess-accent border-t-transparent rounded-full animate-spin shrink-0 ms-1" />
-                    )}
-                  </div>
-
-                  {/* Top 5 horizontal gallery for the selected move */}
-                  {activeMove && (
-                    <RankingTable
-                      title={t('tm_top_moves')}
-                      moves={activeRanking}
-                      loading={rankingLoading && activeRanking.length === 0}
-                      playerMoveUci={activeMove.uci}
-                      originalMoveUci={null}
-                      bestMoveUci={activeRanking[0]?.uci}
-                      selectedUci={selectedRowUci}
-                      onSelect={(move) => handleRankSelect(move, activeMove.fenBefore)}
-                      activePvStep={pvStep}
-                      onPvStepClick={handlePvStepClick}
-                    />
-                  )}
-                </div>
-              );
-            })()}
           </div>
         )}
       </div>
     );
 
     return (
-      <div className="max-w-[1200px] mx-auto md:block">
+      <div className="max-w-[1200px] mx-auto md:block pt-4 md:pt-6">
         {/* Header — back button + pattern title hero, with category/severity
             and the game context (player vs opponent · date · timeClass) on a
             tight secondary row. Visual hierarchy: pattern name reads as the
             heading, everything else is supporting metadata. */}
-        {(() => {
-          const sev = severityLabel(item.cpLoss, t);
-          const game = allGames.find((g) => g.id === item.gameId);
-          const playerUsername = game?.player?.username ?? '';
-          const playedAtMs = game?.playedAt ?? 0;
-          const dateStr = playedAtMs > 0
-            ? new Date(playedAtMs).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-            : '';
-          return (
-            <div className="shrink-0 mb-2">
-              {/* Top row: back button + the two classification chips
-                  (category + severity) pinned together on the right. */}
-              <div className="flex items-center justify-between gap-3">
-                <button onClick={() => {
-                  setSearchParams({});
-                  if (returnTo) {
-                    navigate(returnTo.path, { state: { moveIndex: returnTo.moveIndex } });
-                  } else {
-                    setChallengeItem(null); setChallengeConfig(null);
-                  }
-                }} className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-chess-text transition-colors">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="rtl:rotate-180"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                  {t('tm_back')}
-                </button>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <span className={`text-[10px] font-extrabold uppercase tracking-[1.4px] px-2 py-0.5 rounded-md ${catColor.bg} ${catColor.text}`}>
-                    {CATEGORY_KEYS[item.category] ? t(CATEGORY_KEYS[item.category]) : item.category}
-                  </span>
-                  <span className={`text-[10px] font-extrabold uppercase tracking-[1.4px] px-2 py-0.5 rounded-md ${sev.bg} ${sev.color}`}>
-                    {sev.text}
-                  </span>
-                </div>
-              </div>
-
-              {/* Hero block — centered, with breathing room from the back row
-                  above. Generous spacing inside so the title, players, and
-                  date each have their own visual breath. The bottom-of-board
-                  elements stay tight so everything still fits above the fold. */}
-              <div className="mt-4 flex flex-col items-center text-center gap-2">
-                <div className="flex items-center gap-2">
-                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${catColor.bg}`}>
-                    <span className={catColor.text}><PatternIcon theme={item.patternTheme} /></span>
-                  </span>
-                  <h2 className="text-[16px] font-extrabold text-chess-text leading-tight truncate">
-                    {patternLabel(item.patternTheme, t)}
-                  </h2>
-                </div>
-                {/* Player vs opponent — bigger, both ratings shown. */}
-                <div className="text-[12px] text-gray-300 font-medium">
-                  {sourceTab !== 'yours' && playerUsername && (
-                    <>
-                      <span className="text-white font-semibold">{playerUsername}</span>
-                      {game?.player?.rating ? <span className="text-gray-500"> ({game.player.rating})</span> : null}
-                      <span className="text-gray-500"> vs </span>
-                    </>
-                  )}
-                  {sourceTab === 'yours' && <span className="text-gray-500">vs </span>}
-                  <span className="text-white font-semibold">{item.gameOpponent}</span>
-                  <span className="text-gray-500"> ({item.gameRating})</span>
-                </div>
-                <div className="text-[10px] text-chess-text-tertiary">
-                  {dateStr ? `${dateStr} · ` : ''}{item.gameTimeClass}
-                </div>
-              </div>
+        {/* Hybrid Salvage (C) chrome — RunProgress at top, then a compact
+            one-line game chip. The verbose pattern hero / category / severity
+            chips / date row are intentionally dropped per the design. The
+            small ← back arrow is preserved on the left for navigation. */}
+        <div className="shrink-0 mb-2">
+          <div className="flex items-start gap-2 mb-2">
+            <button onClick={() => {
+              // Always exit the replay challenge back to wherever the user
+              // arrived from. If we tracked a `returnTo` (e.g. came from a
+              // game's "Practice" CTA), navigate back to that exact spot.
+              // Otherwise: clear challenge state AND step the browser back
+              // one entry — falling back to the TimeMachine list if there
+              // is no prior history.
+              setSearchParams({});
+              if (returnTo) {
+                navigate(returnTo.path, { state: { moveIndex: returnTo.moveIndex } });
+                return;
+              }
+              setChallengeItem(null); setChallengeConfig(null);
+              setRowResults([]); setRowEntries([]); setRowMilestone(null);
+              if (window.history.length > 1) navigate(-1);
+            }} className="shrink-0 w-11 h-11 rounded-xl bg-chess-surface/40 border border-chess-border/30 inline-flex items-center justify-center text-gray-400 hover:text-chess-text hover:bg-chess-surface/60 transition-all"
+              aria-label={t('tm_back')}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="rtl:rotate-180"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            </button>
+            <div className="flex-1 min-w-0">
+              {(() => {
+                // Live preview: once the critical move is scored we already
+                // know whether this position was saved or missed (the result
+                // is determined by moveScores[0]). Surface that on the row
+                // bar without waiting for the user to click "Next" through
+                // the continuation moves.
+                const hasInProgressResult =
+                  (phase === 'scored' || phase === 'continuation' || phase === 'evaluating' || phase === 'complete') &&
+                  moveScores.length > 0 &&
+                  rowResults.length < ROW_SIZE;
+                const previewResults = hasInProgressResult
+                  ? [...rowResults, resolveChallengeResult(moveScores, attempts)]
+                  : rowResults;
+                return <RunProgress results={previewResults} current={rowResults.length} />;
+              })()}
             </div>
-          );
-        })()}
+          </div>
+
+          {/* Compact game chip — pulsing red dot + pattern label + opponent
+              + move number. Visible across the whole challenge flow as a
+              persistent header (Hybrid Salvage C design language). */}
+          {(() => {
+            const game = allGames.find((g) => g.id === item.gameId);
+            const playerUsername = game?.player?.username ?? '';
+            return (
+              <div className="rounded-xl px-3 py-2 flex items-center gap-2.5 mb-2" style={{
+                background: 'rgba(17,24,39,0.6)',
+                border: '1px solid rgba(30,58,95,0.34)',
+              }}>
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{
+                  background: 'rgb(74,222,128)',
+                  boxShadow: '0 0 6px rgb(74,222,128)',
+                  animation: 'cBlink 1.4s infinite',
+                }} />
+                <span className="text-[12px] font-bold text-chess-text truncate">
+                  {patternLabel(item.patternTheme, t)}
+                </span>
+                {(() => {
+                  // Replay indicator — shows ×N where N is how many times the
+                  // user has *finished* this position before. The in-progress
+                  // attempt does NOT pre-increment the badge; it only ticks
+                  // up once the current play completes. Matches the ×N chip
+                  // used on the position list card so both views agree.
+                  const c = playCounts.get(getChallengeKey(item)) ?? 0;
+                  if (c < 1) return null;
+                  return (
+                    <span
+                      className="text-[10px] font-extrabold tabular-nums px-1.5 py-0.5 rounded-md leading-none shrink-0 border"
+                      style={{
+                        color: 'rgb(134, 239, 172)',
+                        borderColor: 'rgba(74, 222, 128, 0.45)',
+                        background: 'rgba(74, 222, 128, 0.08)',
+                      }}
+                      title={`You've played this position ${c}× before`}
+                    >
+                      ×{c}
+                    </span>
+                  );
+                })()}
+                <span className="text-[11px] text-chess-text-tertiary truncate">
+                  · vs {sourceTab !== 'yours' && playerUsername ? `${playerUsername}` : item.gameOpponent} ({item.gameRating})
+                </span>
+                {/* Player color pill replaces the old "MV N" badge in the
+                    top-right of the chip — frees up the vertical space below
+                    the board and keeps the side indicator persistently
+                    visible without pushing buttons below the fold. */}
+                <span className="ms-auto shrink-0">
+                  {playerSidePill}
+                </span>
+                <style>{`@keyframes cBlink { 50% { opacity: .25; } }`}</style>
+              </div>
+            );
+          })()}
+        </div>
 
         {/* Desktop: board left, sidebar right | Mobile: vertically centered */}
         <div className="flex flex-col md:flex-row md:gap-4 md:items-start">
           {/* Left: board area (~60%) */}
-          <div className="md:flex-[3] md:min-w-0">
-            {/* Phase indicator (replay button moved below the board, see after-board section) */}
-            <div data-tutorial-target="tm-challenge-board" className="flex items-center gap-3 mb-2">
-              <div className="flex-1 flex items-center justify-center gap-3">
-                {(['leadup', 'critical', 'continuation'] as const).map((p, i) => {
-                  // Map showMistake to the critical dot
-                  const effectivePhase = phase === 'showMistake' ? 'critical' : phase === 'evaluating' || phase === 'scored' ? 'critical' : phase;
-                  const phaseOrder = ['leadup', 'critical', 'continuation', 'complete'];
-                  const isActive = effectivePhase === p;
-                  const isPast = phaseOrder.indexOf(effectivePhase) > phaseOrder.indexOf(p);
-                  return (
-                    <div key={p} className="flex items-center gap-1.5">
-                      {i > 0 && <div className="w-6 h-px bg-chess-border/30" />}
-                      <div className={`w-2 h-2 rounded-full transition-all ${
-                        isActive ? (phase === 'showMistake' ? 'bg-chess-blunder scale-125' : 'bg-chess-accent scale-125') :
-                        isPast ? 'bg-chess-accent/50' : 'bg-chess-border/40'
-                      }`} />
-                      <span className={`text-xs ${isActive ? (phase === 'showMistake' ? 'text-chess-blunder font-bold' : 'text-chess-accent font-bold') : 'text-gray-600'}`}>
-                        {p === 'leadup' ? t('detail_review') : p === 'critical' ? t('detail_your_move') : t('detail_continue')}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
+          <div
+            data-tutorial-target="tm-challenge-board"
+            className="md:flex-[3] md:min-w-0 flex flex-col md:block h-[calc(100dvh-134px-env(safe-area-inset-bottom))] md:h-auto"
+          >
             {/* Tap-to-move promotion picker — appears when the user tapped a
                 pawn onto the last rank. The drag-to-move flow uses
                 react-chessboard's built-in popup; this picker covers taps. */}
@@ -1701,20 +2438,68 @@ export default function TimeMachine() {
               );
             })()}
 
-            {/* Board — overflow-visible so the promotion popup can extend past
-                the rounded wrapper without being clipped. The board itself is
-                still rounded via customBoardStyle. */}
-            <div ref={tmBoardRef} className="flex justify-center w-full max-w-full px-1">
-              <div className={`rounded-xl shadow-lg shadow-black/20 ${
-                phase === 'showMistake' ? 'ring-2 ring-chess-blunder/50' :
-                phase === 'complete' ? 'ring-2 ring-chess-accent/50' :
-                (phase === 'scored' && moveScore !== null && moveScore < 50) ? 'ring-2 ring-chess-blunder/50' :
-                (phase === 'scored' && moveScore !== null && moveScore >= 90) ? 'ring-2 ring-chess-accent/50' : ''
-              }`}>
+            {/* Board — full-bleed on mobile so it spans the entire viewport
+                width, ignoring the page's px-4 / sm:px-6 padding. The
+                full-bleed pattern (100vw + relative + -50vw margins) is
+                needed because the parent <main> uses overflow-y: auto,
+                which clips simple negative margins. Reverts to in-flow on
+                md+ where the sidebar layout reasserts itself. */}
+            <div
+              ref={tmBoardRef}
+              className="flex justify-center relative mx-[calc(50%-50vw)] w-screen md:mx-0 md:w-full"
+            >
+              {/* No phase-specific ring — the new design conveys state via
+                  the SAVED/MISS stamp overlay and the AI Says panel below,
+                  not a coloured halo around the board. */}
+              <div className="rounded-xl shadow-lg shadow-black/20 relative">
+                {/* SAVED / MISS stamp — overlays the board top-right corner
+                    after a player's move is scored. Hybrid Salvage (C). */}
+                {phase === 'scored' && moveScore !== null && challengeState.playerMoveUci && moveScores.length === 1 && (
+                  moveScore >= 50 ? (
+                    <div className="absolute top-2.5 right-2.5 z-20 px-2.5 py-1 rounded-lg text-[12px] font-black tracking-[1px] pointer-events-none" style={{
+                      background: 'rgb(74,222,128)',
+                      color: 'rgb(10,15,26)',
+                      boxShadow: '0 6px 18px rgba(74,222,128,0.4)',
+                      transform: 'rotate(-6deg)',
+                    }}>✓ SAVED</div>
+                  ) : (
+                    <div className="absolute top-2.5 right-2.5 z-20 px-2.5 py-1 rounded-lg text-[12px] font-black tracking-[1px] pointer-events-none" style={{
+                      background: 'rgb(248,113,113)',
+                      color: 'rgb(10,15,26)',
+                      boxShadow: '0 6px 18px rgba(248,113,113,0.4)',
+                      transform: 'rotate(-6deg)',
+                    }}>✗ MISS</div>
+                  )
+                )}
+                {/* Game-over badge — anchored to the board's bottom edge with
+                    a small inset, so the user can see at a glance that the
+                    position is terminal (checkmate / stalemate / draw). Sits
+                    inside the board's relative wrapper so it tracks the
+                    board's exact dimensions on every viewport. */}
+                {gameOverLabel && (
+                  <div
+                    className="absolute left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-lg inline-flex items-center gap-2 text-[12px] font-bold pointer-events-none whitespace-nowrap"
+                    style={{
+                      bottom: 10,
+                      background: 'rgba(15,23,42,0.92)',
+                      border: '1px solid rgba(248,113,113,0.55)',
+                      color: 'rgb(248,113,113)',
+                      boxShadow: '0 8px 22px rgba(0,0,0,0.45)',
+                      backdropFilter: 'blur(6px)',
+                    }}
+                  >
+                    <span aria-hidden>⚑</span>
+                    <span>{gameOverLabel}</span>
+                  </div>
+                )}
                 <ThemedChessboard
                   position={displayFen}
                   boardOrientation={boardOrientationColor}
-                  boardWidth={Math.max(Math.min(boardSize - 16, window.innerWidth - 40, tmHeightCappedBoardSize), 200)}
+                  // Width-first sizing: take the smaller of the container
+                  // and the viewport so the board claims every available
+                  // pixel. The old height-cap kept the page above-the-fold
+                  // at the cost of a smaller board — width wins now.
+                  boardWidth={Math.max(Math.min(boardSize, typeof window !== 'undefined' ? window.innerWidth : 700), 200)}
                   arePiecesDraggable={playerTurn && !evaluating && (phase === 'critical' || phase === 'continuation')}
                   autoPromoteToQueen={false}
                   onPromotionCheck={(_from, to, piece) => {
@@ -1723,15 +2508,11 @@ export default function TimeMachine() {
                   onPromotionPieceSelect={(piece, fromSq, toSq) => {
                     if (!piece || !fromSq || !toSq) return false;
                     const code = piece[1].toLowerCase() as 'q' | 'r' | 'b' | 'n';
-                    const ok = onPieceDrop(fromSq, toSq, code);
-                    if (ok) playChessSound('move');
-                    return ok;
+                    return onPieceDrop(fromSq, toSq, code);
+                    // Sound (capture/castle/move) is fired by the hook on
+                    // the successful chess.move() call inside onPieceDrop.
                   }}
-                  onPieceDrop={(from, to) => {
-                    const ok = onPieceDrop(from, to);
-                    if (ok) playChessSound('move');
-                    return ok;
-                  }}
+                  onPieceDrop={(from, to) => onPieceDrop(from, to)}
                   onSquareClick={(sq) => { onSquareClick(sq as Square); }}
                   customSquareStyles={squareStyles}
                   customArrows={arrows}
@@ -1740,28 +2521,230 @@ export default function TimeMachine() {
               </div>
             </div>
 
-            {/* Replay button — below the board during the critical phase only:
-                visible after the leadup has played and before the player picks
-                a move. Sized as a real button so it's easy to spot and tap. */}
-            {phase === 'critical' && (
-              <div className="mt-1.5 flex justify-center">
+            {/* Status panel — mobile only (below board). Sits in the flex
+                column with `mt-auto`, which absorbs any leftover vertical
+                space ABOVE the panel and parks the panel + action row at the
+                bottom of the column. Result: the explanation card hugs the
+                action row regardless of how short its content is (no strict
+                empty box). When the AI explanation is long, `min-h-0` lets
+                the flex item shrink and `overflow-y-auto` scrolls inside. */}
+            <div className="md:hidden mt-auto min-h-0 overflow-y-auto">
+              {statusPanel}
+            </div>
+
+            {/* Action row — sits at the end of the board column's flex
+                stack, directly below the status panel (which is pushed down
+                by `mt-auto`). The column itself reserves space for the iOS
+                safe-area + a small breathing buffer via its calc'd height,
+                so the buttons end up `16px + safe-area` above the viewport
+                floor without needing fixed positioning. `shrink-0` keeps the
+                row at its content height even if the status panel above
+                competes for space (it scrolls instead). Per phase:
+                 • leadup / showMistake → Replay (full-width pill) + ◀ ▶ pills
+                 • critical → Hint + Reveal answer (both styled like Replay)
+                 • scored → Show best move toggle (styled like Replay) */}
+            <div className="shrink-0 -mx-4 sm:-mx-6 md:mx-0 px-4 sm:px-6 md:px-0 pt-1.5 md:pt-0 pb-1 md:pb-0">
+            {phase === 'leadup' || phase === 'showMistake' ? (
+              (() => {
+                const startIdx = challengeConfig.startIndex;
+                const critIdx = challengeConfig.criticalIndex;
+                const backDisabled = phase === 'leadup' && challengeState.moveIndex <= startIdx;
+                const fwdDisabled = phase === 'showMistake' || (phase === 'leadup' && challengeState.moveIndex > critIdx);
+                return (
+                <div className="mt-2 flex items-center gap-2 px-2">
+                  <button
+                    onClick={onLeadupReplay}
+                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98]"
+                    style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(30,58,95,0.4)' }}
+                    title={t('detail_replay')}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/>
+                    </svg>
+                    {t('detail_replay')}
+                  </button>
+                  <div dir="ltr" style={{ direction: 'ltr' }} className="flex items-center gap-2">
+                    <button
+                      onClick={onLeadupBack}
+                      disabled={backDisabled}
+                      aria-label={t('tm_step_back')}
+                      className="w-11 h-11 rounded-xl border bg-chess-surface/60 inline-flex items-center justify-center text-chess-text hover:bg-chess-surface transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-chess-surface/60"
+                      style={{ borderColor: 'rgba(30,58,95,0.4)' }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                    </button>
+                    <button
+                      onClick={onLeadupForward}
+                      disabled={fwdDisabled}
+                      aria-label={t('tm_step_forward')}
+                      className="w-11 h-11 rounded-xl border bg-chess-surface/60 inline-flex items-center justify-center text-chess-text hover:bg-chess-surface transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-chess-surface/60"
+                      style={{ borderColor: 'rgba(30,58,95,0.4)' }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                    </button>
+                  </div>
+                </div>
+                );
+              })()
+            ) : phase === 'critical' ? (
+              <div className="mt-2 flex flex-col gap-2 px-2">
+                {/* Row 1 — matches the leadup row exactly: Replay (neutral
+                    border) + ◀ ▶ scrubber pills. All 44px tall. Forward is
+                    always greyed in critical (animation finished). */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={onLeadupReplay}
+                    className="flex-1 h-11 inline-flex items-center justify-center gap-2 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98]"
+                    style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(30,58,95,0.4)' }}
+                    title={t('detail_replay')}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/>
+                    </svg>
+                    {t('detail_replay')}
+                  </button>
+                  <div dir="ltr" style={{ direction: 'ltr' }} className="flex items-center gap-2">
+                    <button
+                      onClick={onLeadupBack}
+                      disabled={challengeConfig.criticalIndex <= challengeConfig.startIndex}
+                      aria-label={t('tm_step_back')}
+                      className="w-11 h-11 rounded-xl border bg-chess-surface/60 inline-flex items-center justify-center text-chess-text hover:bg-chess-surface transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-chess-surface/60"
+                      style={{ borderColor: 'rgba(30,58,95,0.4)' }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                    </button>
+                    <button
+                      disabled
+                      aria-label={t('tm_step_forward')}
+                      className="w-11 h-11 rounded-xl border bg-chess-surface/60 inline-flex items-center justify-center text-chess-text transition-all opacity-30 cursor-not-allowed"
+                      style={{ borderColor: 'rgba(30,58,95,0.4)' }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Row 2 — Hint (yellow) + Reveal answer (green), both
+                    full-width pills, same 44px height, single-line text. */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={requestHint}
+                    disabled={!!challengeState.hint || challengeState.hintLoading}
+                    className="flex-1 h-11 inline-flex items-center justify-center gap-2 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98] disabled:opacity-50 whitespace-nowrap"
+                    style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(251,191,36,0.55)' }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 18h6"/><path d="M10 22h4"/>
+                      <path d="M12 2a7 7 0 0 0-4 12.7c.5.4.9 1 1 1.7V18h6v-1.6c.1-.7.5-1.3 1-1.7A7 7 0 0 0 12 2z"/>
+                    </svg>
+                    {t('tm_hint')}
+                  </button>
+                  <button
+                    onClick={() => { setHighlightedSquare(null); revealWithExplanation(); }}
+                    className="flex-1 h-11 inline-flex items-center justify-center gap-2 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98] whitespace-nowrap"
+                    style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(248,113,113,0.55)' }}
+                  >
+                    {t('tm_skip')}
+                  </button>
+                </div>
+              </div>
+            ) : phase === 'continuation' && playerTurn && !opponentThinking && !evaluating ? (
+              /* Continuation phase — player's turn for move 2 or 3. Adds a
+                 ↺ retry pill so the user can rewind to the critical move
+                 and try the row again from the start; mirrors the scored
+                 phase's "Try again" affordance so going back is always
+                 one tap away. */
+              <div className="mt-2 flex items-center gap-2 px-2">
                 <button
-                  onClick={replayLeadup}
-                  className="flex items-center gap-2 text-[13px] font-semibold text-chess-text/90 hover:text-chess-accent border border-chess-border/40 hover:border-chess-accent/50 transition-all px-4 py-1.5 rounded-lg bg-chess-surface/50 hover:bg-chess-surface/80 active:scale-[0.98]"
-                  title={t('detail_replay')}
+                  onClick={retry}
+                  aria-label={t('tm_try_again')}
+                  title={t('tm_try_again')}
+                  className="w-11 h-11 rounded-xl border-2 inline-flex items-center justify-center text-chess-text transition-all active:scale-[0.98] shrink-0"
+                  style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(251,191,36,0.55)' }}
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                    <path d="M1 4v6h6"/>
-                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/>
                   </svg>
-                  {t('detail_replay')}
+                </button>
+                <button
+                  onClick={requestHint}
+                  disabled={!!challengeState.hint || challengeState.hintLoading}
+                  className="flex-1 h-11 inline-flex items-center justify-center gap-2 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98] disabled:opacity-50 whitespace-nowrap"
+                  style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(251,191,36,0.55)' }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 18h6"/><path d="M10 22h4"/>
+                    <path d="M12 2a7 7 0 0 0-4 12.7c.5.4.9 1 1 1.7V18h6v-1.6c.1-.7.5-1.3 1-1.7A7 7 0 0 0 12 2z"/>
+                  </svg>
+                  {t('tm_hint')}
+                </button>
+                <button
+                  onClick={() => { setHighlightedSquare(null); revealWithExplanation(); }}
+                  className="flex-1 h-11 inline-flex items-center justify-center gap-2 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98] whitespace-nowrap"
+                  style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(248,113,113,0.55)' }}
+                >
+                  {t('tm_skip')}
                 </button>
               </div>
-            )}
-
-            {/* Status panel — mobile only (below board) */}
-            <div className="mt-1.5 md:hidden">
-              {statusPanel}
+            ) : phase === 'scored' && !challengeError ? (
+              /* Scored-phase action row — Try Again rewinds to the critical
+                 position (counts as a wrong attempt), so users can re-do
+                 the move. On the last move (3rd) we also surface a Next
+                 pill; otherwise auto-advance handles progression. */
+              <div className="mt-2 flex items-center gap-2 px-2">
+                <button
+                  onClick={retry}
+                  className="flex-1 h-11 inline-flex items-center justify-center gap-2 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98] whitespace-nowrap"
+                  style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(251,191,36,0.55)' }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/>
+                  </svg>
+                  {t('tm_try_again')}
+                </button>
+                {moveScores.length >= 3 && (
+                  <button
+                    onClick={() => { tutorialTriggerStep(6); advanceAfterChallenge(moveScores); }}
+                    className="flex-1 h-11 px-4 rounded-xl text-[14px] font-extrabold text-chess-bg transition-all active:scale-[0.98] whitespace-nowrap"
+                    style={{
+                      background: 'linear-gradient(135deg, rgb(74,222,128), rgb(52,211,153))',
+                      boxShadow: '0 6px 18px rgba(74,222,128,0.35)',
+                    }}
+                  >
+                    {t('tm_next')}
+                  </button>
+                )}
+              </div>
+            ) : phase === 'complete' ? (
+              /* Complete phase — Try Again rewinds the same position so the
+                 user can re-attempt it (works whether the row ended cleanly
+                 after 3 moves or early via checkmate / stalemate). Next
+                 advances to the next position or triggers a milestone. */
+              <div className="mt-2 flex items-center gap-2 px-2">
+                <button
+                  onClick={retry}
+                  aria-label={t('tm_try_again')}
+                  className="h-11 px-4 inline-flex items-center justify-center gap-2 rounded-xl text-[14px] font-extrabold text-chess-text border-2 transition-all active:scale-[0.98] whitespace-nowrap"
+                  style={{ background: 'rgba(17,24,39,0.5)', borderColor: 'rgba(251,191,36,0.55)' }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/>
+                  </svg>
+                  {t('tm_try_again')}
+                </button>
+                <button
+                  data-tutorial-target="tm-challenge-back"
+                  onClick={() => { tutorialTriggerStep(6); advanceAfterChallenge(challengeState.moveScores); }}
+                  className="flex-1 h-11 px-4 rounded-xl text-[14px] font-extrabold text-chess-bg transition-all active:scale-[0.98] whitespace-nowrap"
+                  style={{
+                    background: 'linear-gradient(135deg, rgb(74,222,128), rgb(52,211,153))',
+                    boxShadow: '0 6px 18px rgba(74,222,128,0.35)',
+                  }}
+                >
+                  {t('tm_next')}
+                </button>
+              </div>
+            ) : null}
             </div>
           </div>
 
@@ -1790,8 +2773,16 @@ export default function TimeMachine() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      {/* Header — title removed; tagline + info icon are the only chrome. */}
+      {/* Header — Replays brand row (icon + title) above the tagline. */}
       <div className="mb-3">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-chess-accent">
+            <ReplayBrandIcon />
+          </span>
+          <h1 className="text-[22px] font-extrabold text-chess-text leading-none">
+            {t('nav_timemachine')}
+          </h1>
+        </div>
         <div className="flex items-center gap-2">
           <p className="text-sm text-gray-400 leading-relaxed">
             {t('tm_tagline')}
@@ -1801,42 +2792,66 @@ export default function TimeMachine() {
       </div>
       {infoOpen && <InfoPopup title={t('tm_title')} body={t('tm_desc')} onClose={() => setInfoOpen(false)} />}
 
-      {/* Source filter — Yours / Friends / Top Players */}
-      <SourceTabs active={sourceTab} onChange={setSourceTab} />
+      {/* Source filter — For you / Following.
+       *  Following count = number of followed people, not analyses. Using
+       *  analyses caused the badge to creep up while a follow's games were
+       *  being imported, which read as a bug. */}
+      <SourceTabs
+        active={sourceTab}
+        onChange={setSourceTab}
+        forYouCount={dataSrc.allAnalyses.length}
+        followingCount={(settings.friendUsernames ?? []).length + (settings.topPlayerUsernames ?? []).length}
+      />
 
-      {sourceTab === 'friends' && (
-        <FriendsManager
+      {/* Following manager — combined friends + top-players picker. */}
+      {sourceTab === 'following' && (
+        <FollowingManager
           friends={settings.friendUsernames ?? []}
+          followedTop={settings.topPlayerUsernames ?? []}
           pendingUsernames={pendingNonSelfImports}
           suggestions={topOpponents}
-          onAdd={async (u) => {
+          onAddFriend={async (u) => {
             const list = settings.friendUsernames ?? [];
             if (list.length >= MAX_FRIENDS) return;
             if (list.some((x) => x.toLowerCase() === u.toLowerCase())) return;
             await updateSettings({ friendUsernames: [...list, u] });
             markPendingImport(u);
+            let importError: string | undefined;
             try {
-              const ids = await importChessComGames(u, { maxGames: 1, guest: isGuest });
-              if (ids.length > 0) queueForAnalysis(ids);
+              let ids = await importChessComGames(u, {
+                maxGames: 3,
+                guest: isGuest,
+                skipCrossUserDedup: true,
+                onProgress: (p) => { if (p.error) importError = p.error; },
+              });
+              // importChessComGames returns [] when every fetched game was
+              // already in storage (dedup). Fall back to whatever's stored
+              // for this user — using the ref-backed accessor since
+              // dataSrc.friendGames was captured before the settings update
+              // and excludes the username we just added.
+              if (ids.length === 0) {
+                ids = dataSrc.getStoredGameIdsByUsername(u);
+              }
+              if (ids.length > 0) {
+                queueForAnalysis(ids);
+                rememberPendingGameIds(u, ids);
+              } else {
+                toast(importError ? `Couldn't add ${u}: ${importError}` : `No games found for ${u}`, 'error');
+                clearPendingImport(u);
+              }
               refetchGames();
-            } finally {
+            } catch (err) {
+              toast(`Couldn't add ${u}: ${err instanceof Error ? err.message : String(err)}`, 'error');
               clearPendingImport(u);
             }
           }}
-          onRemove={async (u) => {
+          onRemoveFriend={async (u) => {
             const list = settings.friendUsernames ?? [];
             await updateSettings({
               friendUsernames: list.filter((x) => x.toLowerCase() !== u.toLowerCase()),
             });
           }}
-        />
-      )}
-
-      {sourceTab === 'top' && (
-        <TopPlayersManager
-          followed={settings.topPlayerUsernames ?? []}
-          pendingUsernames={pendingNonSelfImports}
-          onToggle={async (u) => {
+          onToggleTop={async (u) => {
             const list = settings.topPlayerUsernames ?? [];
             const isFollowed = list.some((x) => x.toLowerCase() === u.toLowerCase());
             if (isFollowed) {
@@ -1847,17 +2862,124 @@ export default function TimeMachine() {
               if (list.length >= MAX_TOP_PLAYERS) return;
               await updateSettings({ topPlayerUsernames: [...list, u] });
               markPendingImport(u);
+              let importError: string | undefined;
               try {
-                const ids = await importChessComGames(u, { maxGames: 1, guest: isGuest });
-                if (ids.length > 0) queueForAnalysis(ids);
+                let ids = await importChessComGames(u, {
+                  maxGames: 3,
+                  guest: isGuest,
+                  skipCrossUserDedup: true,
+                  onProgress: (p) => { if (p.error) importError = p.error; },
+                });
+                // importChessComGames returns [] when every fetched game
+                // was already in storage (dedup). Fall back to whatever's
+                // stored for this user — using the ref-backed accessor
+                // since dataSrc.topPlayerGames was captured before the
+                // settings update and excludes the username we just added.
+                if (ids.length === 0) {
+                  ids = dataSrc.getStoredGameIdsByUsername(u);
+                }
+                if (ids.length > 0) {
+                  queueForAnalysis(ids);
+                  rememberPendingGameIds(u, ids);
+                } else {
+                  toast(importError ? `Couldn't add ${u}: ${importError}` : `No games found for ${u}`, 'error');
+                  clearPendingImport(u);
+                }
                 refetchGames();
-              } finally {
+              } catch (err) {
+                toast(`Couldn't add ${u}: ${err instanceof Error ? err.message : String(err)}`, 'error');
                 clearPendingImport(u);
               }
             }
           }}
         />
       )}
+
+      {/* Following filter chips — People · Pattern · Skill */}
+      {sourceTab === 'following' && (() => {
+        const followedAll = [...(settings.friendUsernames ?? []), ...(settings.topPlayerUsernames ?? [])];
+        if (followedAll.length === 0 && allPositions.length === 0) return null;
+        const themesInScope = Array.from(new Set(allPositions.map((p) => p.patternTheme))).sort();
+        const categoriesInScope = Array.from(new Set(allPositions.map((p) => p.category))) as SkillCategory[];
+        // No overflow-x-auto on the wrapper: it would clip the FilterChip
+        // dropdown when it opens below. The 3 chips fit on common widths;
+        // they wrap at very narrow widths instead.
+        return (
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <FilterChip
+              label="People"
+              value={peopleFilter ?? ''}
+              icon={<svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /></svg>}
+              options={followedAll.map((u) => ({ value: u, label: u }))}
+              onChange={(v) => setPeopleFilter(v || null)}
+            />
+            <FilterChip
+              label="Pattern"
+              value={patternFilter ?? ''}
+              icon={<svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>}
+              options={themesInScope.map((th) => ({ value: th, label: patternLabel(th, t) }))}
+              onChange={(v) => { setPatternFilter(v || null); setVisibleCount(PAGE_SIZE); }}
+            />
+            <FilterChip
+              label="Skill"
+              value={categoryFilter !== 'all' ? categoryFilter : ''}
+              icon={<svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l9 4-9 4-9-4 9-4z" /><path d="M3 10l9 4 9-4" /><path d="M3 16l9 4 9-4" /></svg>}
+              options={categoriesInScope.map((c) => ({ value: c, label: CATEGORY_KEYS[c] ? t(CATEGORY_KEYS[c]) : c }))}
+              onChange={(v) => { setCategoryFilter((v as SkillCategory) || 'all'); setVisibleCount(PAGE_SIZE); }}
+            />
+          </div>
+        );
+      })()}
+
+      {/* Bot-mode toggle — page-level default for how the continuation phase
+          plays. 'Opponent' replays the actual opponent's move when the user
+          stays on-script, then falls back to Stockfish throttled to roughly
+          opponent rating. 'Engine' is full-strength Stockfish for every
+          reply. Persisted to localStorage so the choice carries between
+          sessions. Shown on both 'yours' and 'following' tabs. */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-[11px] font-bold text-chess-text-tertiary">Vs</span>
+        <div
+          className="inline-flex items-stretch rounded-full overflow-hidden border border-chess-border/30 text-[11px] font-bold"
+          role="group"
+          aria-label="Replay opponent"
+        >
+          <button
+            type="button"
+            onClick={() => setBotMode('engine')}
+            className={`px-3.5 py-1 transition-colors inline-flex items-center gap-1.5 ${botMode === 'engine' ? 'bg-chess-accent/20 text-chess-accent' : 'text-chess-text-tertiary hover:text-chess-text'}`}
+          >
+            <RobotIconSm />
+            Engine
+          </button>
+          <button
+            type="button"
+            onClick={() => setBotMode('opponent')}
+            className={`px-3.5 py-1 transition-colors inline-flex items-center gap-1.5 ${botMode === 'opponent' ? 'bg-chess-accent/20 text-chess-accent' : 'text-chess-text-tertiary hover:text-chess-text'}`}
+          >
+            <PersonIconSm />
+            Opponent
+          </button>
+        </div>
+        <div className="relative" data-bot-info-root>
+          <button
+            type="button"
+            onClick={() => setBotInfoOpen((v) => !v)}
+            className={`w-5 h-5 inline-flex items-center justify-center rounded-full border transition-colors ${botInfoOpen ? 'border-chess-accent/60 text-chess-accent' : 'border-chess-border/30 text-chess-text-tertiary hover:text-chess-text hover:border-chess-border/50'}`}
+            aria-label="Bot mode info"
+            aria-expanded={botInfoOpen}
+          >
+            <InfoIconSm />
+          </button>
+          {botInfoOpen && (
+            <div className="absolute z-30 mt-1.5 top-full end-0 w-[240px] max-w-[calc(100vw-32px)] rounded-lg bg-chess-surface border border-chess-border/40 shadow-xl px-3 py-2 text-[11px] leading-snug text-chess-text">
+              <div className="font-extrabold text-chess-text-tertiary mb-1 uppercase tracking-[1.2px] text-[10px]">Bot mode</div>
+              <p className="mb-1"><span className="font-bold text-chess-text">Engine</span> — full-strength Stockfish on every move.</p>
+              <p><span className="font-bold text-chess-text">Opponent</span> — replays the actual opponent’s move when you stay on-script, then Stockfish at their rating once you deviate.</p>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Game filter chip — shown when filtering to a specific game */}
       {gameFilter && (() => {
@@ -1883,8 +3005,9 @@ export default function TimeMachine() {
       })()}
 
 
-      {/* Pattern impact filter \u2014 Yours tab only. Tapping a row narrows the
-          challenge list to that pattern; tapping again clears the filter. */}
+      {/* Pattern impact filter \u2014 Yours tab only. Renders the worst-pattern
+          hero card on top, then a list of pattern rows. Tapping a row
+          narrows the challenge grid to that pattern. */}
       {sourceTab === 'yours' && (() => {
         const positions = allPositions;
         if (positions.length === 0) return null;
@@ -1899,73 +3022,162 @@ export default function TimeMachine() {
           stats.set(p.patternTheme, e);
         }
         const median = (arr: number[]) => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)] ?? 0; };
-        const sorted = [...stats.entries()].sort(([, a], [, b]) => median(b.cps) * b.cps.length - median(a.cps) * a.cps.length);
+        // \u2500\u2500 Impact score (single source of truth for sort + tier badge) \u2500\u2500
+        //
+        //   impactScore = totalCpLost \u00d7 lossRate
+        //
+        //     totalCpLost = median(cp) \u00d7 occurrences  \u2192 total damage in cp
+        //     lossRate    = lostGames / totalGames   \u2192 how often you actually lose
+        //
+        // This weights three things together: how big each mistake is (median cp),
+        // how often this pattern shows up (occurrences), and how strongly it
+        // correlates with losing the game (lossRate). The same formula drives
+        // both the rank order in this list and the HIGH/MEDIUM/LOW pill on
+        // each card, so they always agree.
+        const computeImpact = (cps: number[], lossRate: number) => median(cps) * cps.length * (lossRate / 100);
+        const sorted = [...stats.entries()].sort(([, a], [, b]) => {
+          const aLossRate = a.total.size > 0 ? (a.lost.size / a.total.size) * 100 : 0;
+          const bLossRate = b.total.size > 0 ? (b.lost.size / b.total.size) * 100 : 0;
+          return computeImpact(b.cps, bLossRate) - computeImpact(a.cps, aLossRate);
+        });
+
+        // Worst-pattern hero \u2014 only when no pattern is selected (otherwise
+        // the user is already drilled in and the hero would be redundant).
+        const worst = sorted[0];
+        const worstPositions = worst ? positions.filter((p) => p.patternTheme === worst[0]).length : 0;
+
         return (
-          <div className="mb-3 space-y-1.5">
-            <p className="text-[12px] text-gray-400 px-0.5">
-              Based on your games, your patterns that affect you most:
-            </p>
-            {(patternFilter ? sorted.filter(([t2]) => t2 === patternFilter) : sorted).map(([theme, s], idx) => {
-              const isActive = patternFilter === theme;
+          <>
+            {!patternFilter && worst && worstPositions > 0 && (() => {
+              const [theme, s] = worst;
               const med = median(s.cps);
-              const lossRate = s.total.size > 0 ? Math.round((s.lost.size / s.total.size) * 100) : 0;
+              // Rough "rating points lost" estimate: 100cp ≈ 1 rating
+              // point of expected outcome on average.
+              const ratingPointsLost = Math.max(1, Math.round((med * s.cps.length) / 100));
+              const gamesAffected = s.total.size;
               const cat = getCategory(theme);
               const catColor = cat !== 'all' ? (CATEGORY_COLORS[cat] ?? CATEGORY_COLORS.Positional) : null;
-              const catLabel = cat !== 'all' && CATEGORY_KEYS[cat] ? t(CATEGORY_KEYS[cat]) : '';
-              const sevColor = med >= 200 ? 'text-chess-blunder' : med >= 100 ? 'text-orange-400' : med >= 50 ? 'text-amber-400' : 'text-chess-accent';
-              const lossColor = lossRate >= 60 ? 'text-chess-blunder' : lossRate >= 45 ? 'text-amber-400' : 'text-chess-accent';
               return (
-                <div
-                  key={theme}
-                  onClick={() => {
-                    setPatternFilter(isActive ? null : theme);
-                    setVisibleCount(PAGE_SIZE);
-                  }}
-                  className={`relative bg-chess-surface rounded-xl px-3.5 pt-3 pb-3 border cursor-pointer transition-all ${
-                    isActive
-                      ? 'border-chess-accent/50 shadow-[0_0_18px_rgba(74,222,128,0.1)]'
-                      : 'border-transparent hover:border-chess-border/40'
-                  }`}
-                >
-                  <span className="absolute top-2 left-2 z-10 inline-flex items-center justify-center w-6 h-6 rounded-full bg-chess-bg/80 border border-chess-border/40 text-[11px] font-black text-chess-text-tertiary tabular-nums">
-                    {idx + 1}
-                  </span>
-                  <div className="flex items-start gap-3 ps-7">
-                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isActive ? 'bg-chess-accent/15' : 'bg-chess-bg/50'}`}>
-                      <PatternIcon theme={theme} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="block text-[20px] font-extrabold text-chess-text leading-tight break-words">
-                        {patternLabel(theme, t)}
-                      </span>
-                      {catColor && catLabel && (
-                        <span className={`inline-block mt-1.5 px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-[1.3px] ${catColor.bg} ${catColor.text}`}>
-                          {catLabel}
-                        </span>
-                      )}
-                    </div>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 text-chess-text-tertiary transition-transform mt-2 ${isActive ? 'rotate-90 text-chess-accent' : ''}`}>
-                      <polyline points="9 18 15 12 9 6" />
+                <div className="mb-3 rounded-xl bg-chess-surface/60 border border-chess-accent/40 shadow-[0_0_24px_rgba(74,222,128,0.1)] p-3.5">
+                  {catColor && (
+                    <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-[1.3px] ${catColor.bg} ${catColor.text} mb-2`}>
+                      {t('tm_worst_pattern_label')}
+                    </span>
+                  )}
+                  <div className="text-[18px] font-extrabold text-chess-text leading-tight">
+                    {t('tm_start_with', { pattern: patternLabel(theme, t) })}
+                  </div>
+                  <p className="text-[12px] text-chess-text-tertiary leading-snug mt-1">
+                    {t(gamesAffected === 1 ? 'tm_worst_pattern_desc_one' : 'tm_worst_pattern_desc_other', {
+                      points: ratingPointsLost,
+                      count: gamesAffected,
+                      positions: worstPositions,
+                    })}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPatternFilter(theme);
+                      setVisibleCount(PAGE_SIZE);
+                      // Pick the LEAST-played position for this theme so the
+                      // CTA respects the same "no replay before the rest"
+                      // ordering the list uses. New (count = 0) come first;
+                      // ties broken by original order.
+                      const candidates = positions.filter((p) => p.patternTheme === theme);
+                      candidates.sort((a, b) => {
+                        const ca = playCounts.get(getChallengeKey(a)) ?? 0;
+                        const cb = playCounts.get(getChallengeKey(b)) ?? 0;
+                        return ca - cb;
+                      });
+                      const firstPos = candidates[0];
+                      if (firstPos) startChallenge(firstPos);
+                    }}
+                    className="w-full mt-3 flex items-center justify-center gap-2 rounded-xl bg-chess-accent text-black py-3 font-extrabold text-[14px] transition-all hover:brightness-110 hover:shadow-[inset_0_2px_0_rgba(255,255,255,0.28),inset_0_-3px_0_rgba(0,0,0,0.18),0_6px_14px_rgba(74,222,128,0.35),0_2px_4px_rgba(0,0,0,0.25)] active:translate-y-px active:shadow-[inset_0_2px_4px_rgba(0,0,0,0.18),0_2px_6px_rgba(74,222,128,0.25)]"
+                  >
+                    <svg viewBox="0 0 24 24" width={18} height={18} fill="currentColor" aria-hidden>
+                      <polygon points="6 4 20 12 6 20" />
                     </svg>
-                  </div>
-                  <div onClick={(e) => e.stopPropagation()} className="grid grid-cols-3 gap-2 mt-3">
-                    <div className="bg-white/[0.03] rounded-xl py-2 px-2 text-center border border-white/[0.04]">
-                      <div className={`text-[16px] leading-none font-black tabular-nums ${sevColor}`}>{'\u2212'}{med}</div>
-                      <div className="text-[8px] uppercase tracking-[1.2px] font-bold text-chess-text-tertiary mt-1">Rating pts</div>
-                    </div>
-                    <div className="bg-white/[0.03] rounded-xl py-2 px-2 text-center border border-white/[0.04]">
-                      <div className={`text-[16px] leading-none font-black tabular-nums ${lossColor}`}>{lossRate}%</div>
-                      <div className="text-[8px] uppercase tracking-[1.2px] font-bold text-chess-text-tertiary mt-1">{t('common_lost')}</div>
-                    </div>
-                    <div className="bg-white/[0.03] rounded-xl py-2 px-2 text-center border border-white/[0.04]">
-                      <div className="text-[16px] leading-none font-black tabular-nums text-chess-text">{s.cps.length}</div>
-                      <div className="text-[8px] uppercase tracking-[1.2px] font-bold text-chess-text-tertiary mt-1">{t('common_occurrences')}</div>
-                    </div>
-                  </div>
+                    {t('tm_start_playing')}
+                    <span className="px-2 py-0.5 rounded-full bg-black/15 text-[11px] font-extrabold tabular-nums">
+                      {t('tm_replays_count', { count: worstPositions })}
+                    </span>
+                  </button>
                 </div>
               );
-            })}
-          </div>
+            })()}
+
+            <div className="mb-3 space-y-1.5">
+              {patternFilter ? (
+                <button
+                  type="button"
+                  onClick={() => { setPatternFilter(null); setVisibleCount(PAGE_SIZE); }}
+                  className="inline-flex items-center gap-1.5 text-[12px] font-bold text-chess-accent hover:text-chess-accent/80 px-0.5"
+                >
+                  <svg viewBox="0 0 24 24" width={12} height={12} fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                  {t('tm_show_all_patterns')}
+                </button>
+              ) : (
+                <p className="text-[12px] text-gray-400 px-0.5">
+                  {t('tm_patterns_intro', { category: '' })}
+                </p>
+              )}
+              {(patternFilter ? sorted.filter(([t2]) => t2 === patternFilter) : sorted).map(([theme, s], idx) => {
+                const isActive = patternFilter === theme;
+                const lossRate = s.total.size > 0 ? Math.round((s.lost.size / s.total.size) * 100) : 0;
+                const cat = getCategory(theme);
+                const catColor = cat !== 'all' ? (CATEGORY_COLORS[cat] ?? CATEGORY_COLORS.Positional) : null;
+                const catLabel = cat !== 'all' && CATEGORY_KEYS[cat] ? t(CATEGORY_KEYS[cat]) : '';
+                // Single impact tier — same formula as the list sort above
+                // (totalCp × lossRate), so the badge always matches the rank.
+                // Thresholds calibrated empirically on typical user data:
+                //   HIGH ≥ 4000  (e.g. 200cp × 20 occurrences × 100% loss)
+                //   MEDIUM ≥ 1200
+                //   LOW < 1200
+                const impactScore = computeImpact(s.cps, lossRate);
+                const impactTier: 'high' | 'medium' | 'low' = impactScore >= 4000 ? 'high' : impactScore >= 1200 ? 'medium' : 'low';
+                return (
+                  <div
+                    key={theme}
+                    onClick={() => {
+                      setPatternFilter(isActive ? null : theme);
+                      setVisibleCount(PAGE_SIZE);
+                    }}
+                    className={`relative bg-chess-surface rounded-xl px-3.5 py-3 border cursor-pointer transition-all ${
+                      isActive
+                        ? 'border-chess-accent/50 shadow-[0_0_18px_rgba(74,222,128,0.1)]'
+                        : 'border-transparent hover:border-chess-border/40'
+                    }`}
+                  >
+                    <span className="absolute top-2 left-2 z-10 inline-flex items-center justify-center w-6 h-6 rounded-full bg-chess-bg/80 border border-chess-border/40 text-[11px] font-black text-chess-text-tertiary tabular-nums">
+                      {idx + 1}
+                    </span>
+                    <div className="flex items-center gap-3 ps-7">
+                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isActive ? 'bg-chess-accent/15' : 'bg-chess-bg/50'}`}>
+                        <PatternIcon theme={theme} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="block text-[18px] font-extrabold text-chess-text leading-tight break-words">
+                          {patternLabel(theme, t)}
+                        </span>
+                        {catColor && catLabel && (
+                          <span className={`inline-block mt-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-[1.3px] ${catColor.bg} ${catColor.text}`}>
+                            {catLabel}
+                          </span>
+                        )}
+                      </div>
+                      <ImpactRing tier={impactTier} />
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 text-chess-text-tertiary transition-transform ${isActive ? 'rotate-90 text-chess-accent' : ''}`}>
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         );
       })()}
 
@@ -1988,16 +3200,12 @@ export default function TimeMachine() {
         {visiblePositionsSlice.map((item, idx) => {
           const sev = severityLabel(item.cpLoss, t);
           const catColor = CATEGORY_COLORS[item.category] ?? CATEGORY_COLORS.Positional;
-          const isCompleted = checkedKeys.has(getChallengeKey(item));
+          const playCount = playCounts.get(getChallengeKey(item)) ?? 0;
+          const isCompleted = playCount > 0;
           return (
             <button
               key={`${item.gameId}-${item.moveIndex}-${idx}`}
-              onClick={() => {
-                // Resume queue from this item if it's still unchecked; for
-                // already-completed (re-replay), don't push the queue forward.
-                const qIdx = uncheckedPositions.indexOf(item);
-                startChallenge(item, qIdx >= 0 ? qIdx : undefined);
-              }}
+              onClick={() => startChallenge(item)}
               className={`w-full rounded-xl bg-chess-surface/15 border overflow-hidden transition-all text-left group ${
                 isCompleted
                   ? 'border-chess-accent/25 opacity-70 hover:opacity-100 hover:border-chess-accent/50'
@@ -2020,12 +3228,21 @@ export default function TimeMachine() {
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="white" className="ml-1 drop-shadow-md"><polygon points="6,3 20,12 6,21" /></svg>
                   </div>
                 </div>
-                {/* Completed checkmark badge — top-right corner of the board */}
+                {/* Completed checkmark badge — top-right corner of the board.
+                    On replays (count > 1) a tiny `×N` chip sits next to the
+                    ✓ so the user knows it's their nth attempt. */}
                 {isCompleted && (
-                  <div className="absolute top-2 end-2 w-8 h-8 rounded-full bg-chess-accent flex items-center justify-center shadow-lg shadow-black/30 pointer-events-none">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
+                  <div className="absolute top-2 end-2 flex items-center gap-1 pointer-events-none">
+                    {playCount > 1 && (
+                      <span className="text-[10px] font-extrabold tabular-nums px-1.5 py-0.5 rounded-md bg-black/65 text-chess-accent border border-chess-accent/40 leading-none">
+                        ×{playCount}
+                      </span>
+                    )}
+                    <div className="w-8 h-8 rounded-full bg-chess-accent flex items-center justify-center shadow-lg shadow-black/30">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2136,6 +3353,142 @@ function InfoButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/* ── Hybrid Salvage (C) design components ──
+ *  Implementing the design from time-machine-c.jsx in the existing flow.
+ *  Concept: a "row" is 6 consecutive replays. Progress bar at top, AI SAYS
+ *  panel for guidance, halfway checkpoint after 3, row complete summary after 6. */
+
+const ROW_SIZE = 6;
+
+type RowResult = 'win' | 'loss';
+type AITone = 'neutral' | 'cautious' | 'proud' | 'info' | 'hint';
+
+const TONE_COLORS: Record<AITone, string> = {
+  neutral: 'rgb(148,163,184)',  // gray
+  cautious: 'rgb(248,113,113)', // red
+  proud: 'rgb(74,222,128)',     // accent green
+  info: 'rgb(167,139,250)',     // purple
+  hint: 'rgb(251,191,36)',      // amber/yellow — for active-hint mode
+};
+
+/** ROW progress bar — 6 dots showing ✓/✗ for past positions, current highlighted. */
+function RunProgress({ results, current, total = ROW_SIZE }: { results: RowResult[]; current: number; total?: number }) {
+  const { t } = useT();
+  const wins = results.filter(r => r === 'win').length;
+  const losses = results.filter(r => r === 'loss').length;
+  return (
+    <div className="pb-2">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] font-extrabold tracking-[0.9px] text-chess-text-tertiary">
+          {t('tm_row_position', { current: current + 1, total })}
+        </span>
+        <span className="inline-flex items-center gap-1.5 text-[12px] font-extrabold tabular-nums text-gray-300">
+          <span className="text-chess-accent">{wins} ✓</span>
+          <span className="text-chess-text-tertiary">·</span>
+          <span className="text-red-400">{losses} ✗</span>
+        </span>
+      </div>
+      <div className="flex gap-1">
+        {Array.from({ length: total }).map((_, i) => {
+          const r = results[i];
+          const isCurrent = i === current;
+          let bg = 'rgba(30,58,95,0.25)';
+          let dot: string | null = null;
+          if (r === 'win') { bg = 'rgb(74,222,128)'; dot = '✓'; }
+          else if (r === 'loss') { bg = 'rgb(248,113,113)'; dot = '✗'; }
+          return (
+            <div key={i} className="flex-1 h-2.5 rounded-[5px] relative" style={{
+              background: bg,
+              boxShadow: isCurrent ? '0 0 0 2px var(--chess-bg, #0a0f1a), 0 0 0 3px rgb(74,222,128)' : 'none',
+            }}>
+              {dot && (
+                <span className="absolute inset-0 flex items-center justify-center text-[9px] font-black text-chess-bg">{dot}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** AI SAYS panel — single-line summary with the DNA mark, tone-based color.
+ *  Optional onDismiss renders a small × in the corner (used by the hint
+ *  variant so the user can clear the hint and return to the original
+ *  instruction). */
+function AISays({ tone = 'neutral', children, onDismiss }: { tone?: AITone; children: React.ReactNode; onDismiss?: () => void }) {
+  const accent = TONE_COLORS[tone];
+  return (
+    <div
+      className="rounded-xl px-3 py-2.5 flex items-center gap-3 relative"
+      style={{ background: 'rgba(17,24,39,0.6)', border: `1px solid ${accent}55` }}
+    >
+      <div
+        className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+        style={{
+          // DNA helix is the brand mark — always green regardless of the
+          // panel's tone, so it never reads as a "warning" itself.
+          background: 'linear-gradient(135deg, rgba(74,222,128,0.16), rgba(74,222,128,0.05))',
+          border: '1px solid rgba(74,222,128,0.45)',
+          color: 'rgb(74,222,128)',
+        }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <g transform="rotate(45 12 12)">
+            <path d="M8 2c0 6.5 8 12.5 8 19" />
+            <path d="M16 2c0 6.5-8 12.5-8 19" />
+            <line x1="9.2" y1="5.5" x2="14.8" y2="5.5" />
+            <line x1="11" y1="8.5" x2="13" y2="8.5" />
+            <line x1="11" y1="14.5" x2="13" y2="14.5" />
+            <line x1="9.2" y1="17.5" x2="14.8" y2="17.5" />
+          </g>
+        </svg>
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] leading-snug text-chess-text font-medium">
+          {children}
+        </div>
+      </div>
+      {onDismiss && (
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="shrink-0 w-6 h-6 rounded-full text-chess-text-tertiary hover:text-chess-text hover:bg-white/[0.06] inline-flex items-center justify-center transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Auto-advance countdown ring — replaces the silent timer with a visible signal. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function AutoAdvance({ tone = 'win', secondsLeft }: { tone?: 'win' | 'loss'; secondsLeft: number }) {
+  const accent = tone === 'win' ? 'rgb(74,222,128)' : 'rgb(251,191,36)';
+  const total = 5;
+  const progress = Math.max(0, Math.min(1, secondsLeft / total));
+  const circumference = 2 * Math.PI * 9;
+  return (
+    <div
+      className="inline-flex items-center gap-2 rounded-lg px-2.5 py-1.5"
+      style={{ background: 'rgba(17,24,39,0.85)', border: `1px solid ${accent}55` }}
+    >
+      <div className="relative w-[22px] h-[22px]">
+        <svg width="22" height="22" viewBox="0 0 22 22" style={{ transform: 'rotate(-90deg)' }}>
+          <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(30,58,95,0.4)" strokeWidth="2.5" />
+          <circle cx="11" cy="11" r="9" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round"
+                  strokeDasharray={`${circumference * progress} ${circumference}`} />
+        </svg>
+      </div>
+      <span className="text-[12px] font-extrabold text-chess-text">
+        Next in <b style={{ color: accent }}>{Math.max(0, Math.ceil(secondsLeft))}s</b>
+      </span>
+    </div>
+  );
+}
+void AutoAdvance;
+
 function InfoPopup({ title, body, onClose }: { title: string; body: string; onClose: () => void }) {
   return (
     <div
@@ -2190,87 +3543,41 @@ const TOP_PLAYERS: ReadonlyArray<{ username: string; name: string; flag: string 
 function SourceTabs({
   active,
   onChange,
+  forYouCount,
+  followingCount,
 }: {
-  active: 'yours' | 'friends' | 'top';
-  onChange: (s: 'yours' | 'friends' | 'top') => void;
+  active: 'yours' | 'following';
+  onChange: (s: 'yours' | 'following') => void;
+  forYouCount: number;
+  followingCount: number;
 }) {
-  const tabs: Array<{ id: 'yours' | 'friends' | 'top'; label: string; Icon: () => React.JSX.Element }> = [
-    { id: 'yours', label: 'Yours', Icon: DnaTabIcon },
-    { id: 'friends', label: 'Friends', Icon: PeopleTabIcon },
-    { id: 'top', label: 'Top players', Icon: GmTabIcon },
+  const tabs: Array<{ id: 'yours' | 'following'; label: string; count: number }> = [
+    { id: 'yours', label: 'For you', count: forYouCount },
+    { id: 'following', label: 'Following', count: followingCount },
   ];
   return (
-    <div className="flex gap-2 mb-3">
+    <div className="flex items-center gap-6 mb-4 border-b border-chess-border/20">
       {tabs.map((tab) => {
         const isActive = active === tab.id;
-        const Icon = tab.Icon;
         return (
           <button
             key={tab.id}
             onClick={() => onChange(tab.id)}
-            className={`flex-1 flex flex-col items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-extrabold uppercase tracking-[1.4px] transition-all border ${
-              isActive
-                ? 'bg-chess-accent/15 text-chess-accent border-chess-accent/30'
-                : 'text-gray-400 hover:text-chess-text hover:bg-white/[0.04] border-chess-border/20'
+            className={`relative flex items-center gap-2 pb-2 text-[15px] font-extrabold transition-colors ${
+              isActive ? 'text-chess-accent' : 'text-gray-500 hover:text-chess-text'
             }`}
           >
-            <Icon />
-            <span className="leading-tight text-center">{tab.label}</span>
+            <span>{tab.label}</span>
+            <span className={`inline-flex items-center justify-center min-w-6 px-1.5 py-0.5 rounded-full text-[11px] font-bold tabular-nums ${
+              isActive ? 'bg-chess-accent/15 text-chess-accent' : 'bg-chess-surface/60 text-gray-500'
+            }`}>
+              {tab.count}
+            </span>
+            {isActive && <span aria-hidden className="absolute left-0 right-0 -bottom-px h-[2px] bg-chess-accent rounded-full" />}
           </button>
         );
       })}
     </div>
-  );
-}
-
-/* ── Tab icons — match the bottom-nav icon weight (1.8 stroke). ── */
-
-function DnaTabIcon() {
-  // Same DNA glyph used by the bottom-nav "DNA" tab.
-  return (
-    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <g transform="rotate(45 12 12)">
-        <path d="M8 2c0 6.5 8 12.5 8 19" />
-        <path d="M16 2c0 6.5-8 12.5-8 19" />
-        <line x1="9.2" y1="5.5" x2="14.8" y2="5.5" />
-        <line x1="11" y1="8.5" x2="13" y2="8.5" />
-        <line x1="11" y1="14.5" x2="13" y2="14.5" />
-        <line x1="9.2" y1="17.5" x2="14.8" y2="17.5" />
-      </g>
-    </svg>
-  );
-}
-
-function PeopleTabIcon() {
-  return (
-    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-    </svg>
-  );
-}
-
-function GmTabIcon() {
-  // "GM" badge in a square — distinguishes Top Players from regular friends.
-  return (
-    <svg width={20} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
-      <rect x="3" y="5" width="18" height="14" rx="2.5" />
-      <text
-        x="12"
-        y="15.5"
-        textAnchor="middle"
-        fontSize="8"
-        fontWeight="900"
-        fill="currentColor"
-        stroke="none"
-        fontFamily="ui-sans-serif, system-ui, sans-serif"
-        letterSpacing="0.4"
-      >
-        GM
-      </text>
-    </svg>
   );
 }
 
@@ -2283,40 +3590,239 @@ function Spinner() {
   );
 }
 
-function FriendsManager({
+/* Impact ring badge — replaces the old 3-tile KPI grid on pattern cards.
+ * One glanceable circular indicator: red for high impact, amber for
+ * medium, green for low. The arc fill animates around the circle to
+ * reinforce the tier. */
+function ImpactRing({ tier }: { tier: 'high' | 'medium' | 'low' }) {
+  const size = 62;
+  const r = (size - 6) / 2;
+  const c = 2 * Math.PI * r;
+  const fillPct = tier === 'high' ? 0.85 : tier === 'medium' ? 0.55 : 0.25;
+  const colorHex = tier === 'high' ? '#f87171' : tier === 'medium' ? '#fbbf24' : '#4ade80';
+  const offset = c * (1 - fillPct);
+  const label = tier === 'high' ? 'HIGH' : tier === 'medium' ? 'MEDIUM' : 'LOW';
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={3} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke={colorHex}
+          strokeWidth={3}
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={offset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-center leading-none">
+        <span className="text-[10px] font-extrabold tracking-[0.5px]" style={{ color: colorHex }}>{label}</span>
+        <span className="text-[8px] font-bold uppercase tracking-[1.2px] text-chess-text-tertiary mt-0.5">Impact</span>
+      </div>
+    </div>
+  );
+}
+
+/* Pill-style dropdown filter chip — used on the Following tab for
+ * People / Pattern / Skill. A native <select> is layered transparently
+ * on top of the styled label so the OS picker shows up on tap (mobile
+ * gets a proper sheet, desktop gets the native menu). */
+function FilterChip({
+  label,
+  value,
+  icon,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  icon: React.ReactNode;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  const active = value !== '';
+  const selectedLabel = active ? (options.find((o) => o.value === value)?.label ?? value) : label;
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Close the menu on outside-click and Escape so the dropdown feels
+  // like a proper popover, not a stuck panel.
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapperRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => (active ? onChange('') : setOpen((o) => !o))}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={label}
+        className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-full border transition-colors ${
+          active
+            ? 'bg-chess-accent/10 border-chess-accent/40 text-chess-accent'
+            : 'bg-chess-surface/60 border-chess-border/30 text-chess-text hover:border-chess-accent/30'
+        }`}
+      >
+        <span className={active ? 'text-chess-accent' : 'text-chess-text-tertiary'}>{icon}</span>
+        <span className="text-[12px] font-bold whitespace-nowrap max-w-[120px] truncate">{selectedLabel}</span>
+        {active ? (
+          <svg viewBox="0 0 24 24" width={11} height={11} fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        ) : (
+          <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" className={`text-chess-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`}>
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        )}
+      </button>
+      {open && !active && (
+        <div
+          role="listbox"
+          aria-label={label}
+          className="absolute z-30 mt-1.5 min-w-[180px] max-h-[280px] overflow-y-auto rounded-xl border border-chess-border/40 bg-chess-surface/95 backdrop-blur-md shadow-[0_12px_32px_rgba(0,0,0,0.5)] py-1"
+        >
+          {options.length === 0 ? (
+            <div className="px-3 py-2 text-[12px] text-chess-text-tertiary">No options</div>
+          ) : (
+            options.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={value === o.value}
+                onClick={() => { onChange(o.value); setOpen(false); }}
+                className={`w-full text-left px-3 py-2 text-[13px] font-medium transition-colors ${
+                  value === o.value
+                    ? 'bg-chess-accent/15 text-chess-accent'
+                    : 'text-chess-text hover:bg-chess-overlay'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Replays brand glyph — circle with a play triangle, used in the page
+ * header next to the "Replays" title. */
+function ReplayBrandIcon() {
+  return (
+    <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="9" />
+      <polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function PersonIconSm() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function RobotIconSm() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="4" y="7" width="16" height="12" rx="2" />
+      <circle cx="9" cy="13" r="1" fill="currentColor" />
+      <circle cx="15" cy="13" r="1" fill="currentColor" />
+      <path d="M12 7V3" />
+      <path d="M8 19v2M16 19v2" />
+    </svg>
+  );
+}
+
+function InfoIconSm() {
+  return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="11" x2="12" y2="17" />
+      <circle cx="12" cy="7.5" r="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+/* ─────────────── Following manager ───────────────
+ *  Replaces the old separate Friends + Top Players panels with a single
+ *  unified picker. Suggested-to-follow cards (top players + your most-
+ *  played opponents) live in a horizontal scroller at the top; followed
+ *  usernames appear below as removable chips. */
+function FollowingManager({
   friends,
+  followedTop,
   pendingUsernames,
   suggestions,
-  onAdd,
-  onRemove,
+  onAddFriend,
+  onRemoveFriend,
+  onToggleTop,
 }: {
   friends: string[];
-  /** Lowercased usernames whose import is in flight (loading indicator). */
+  followedTop: string[];
   pendingUsernames: Set<string>;
-  /** Suggested usernames from the user's most-played opponents. Tap to add. */
+  /** Most-played opponents from the user's games — surface as friend suggestions. */
   suggestions: string[];
-  onAdd: (username: string) => Promise<void> | void;
-  onRemove: (username: string) => Promise<void> | void;
+  onAddFriend: (username: string) => Promise<void> | void;
+  /** Reserved — wired through the API for an inline "remove follow" affordance
+   *  added later (currently unused after the chip row was removed in favor of
+   *  the People filter chip). */
+  onRemoveFriend: (username: string) => Promise<void> | void;
+  onToggleTop: (username: string) => Promise<void> | void;
 }) {
+  void onRemoveFriend;
+  const followedTopSet = useMemo(() => new Set(followedTop.map((u) => u.toLowerCase())), [followedTop]);
+  const friendSet = useMemo(() => new Set(friends.map((u) => u.toLowerCase())), [friends]);
+
+  // Build the suggestion list: top players the user hasn't followed yet,
+  // followed by friend suggestions. Each row in the carousel knows whether
+  // tapping "Follow" should follow a top-player or add a friend.
+  type SuggestEntry =
+    | { kind: 'top'; username: string; name: string; flag: string; subtitle: string }
+    | { kind: 'friend'; username: string; subtitle: string };
+  const suggestionEntries = useMemo<SuggestEntry[]>(() => {
+    const out: SuggestEntry[] = [];
+    for (const p of TOP_PLAYERS) {
+      // Followed players stay in the list — the card flips to UNFOLLOW
+      // so the user can confirm the action and easily reverse it.
+      out.push({ kind: 'top', username: p.username, name: p.name, flag: p.flag, subtitle: 'Top player' });
+    }
+    for (const u of suggestions) {
+      out.push({ kind: 'friend', username: u, subtitle: 'Played you recently' });
+    }
+    return out;
+  }, [suggestions]);
+
+  const followedUsernames = useMemo(
+    () => [...friends, ...followedTop],
+    [friends, followedTop],
+  );
+
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Same picked-then-collapsed pattern as TopPlayersManager: once the user
-  // has at least one friend, the picker stays collapsed by default so it
-  // doesn't get in the way of the challenge list.
-  const STORAGE_KEY = 'tm-friends-collapsed';
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    if (friends.length > 0) return true;
-    try { return localStorage.getItem(STORAGE_KEY) === '1'; } catch { return false; }
-  });
-  const toggleCollapsed = () => {
-    setCollapsed((c) => {
-      const next = !c;
-      try { localStorage.setItem(STORAGE_KEY, next ? '1' : '0'); } catch { /* noop */ }
-      return next;
-    });
-  };
 
   const submit = async () => {
     const trimmed = input.trim();
@@ -2333,7 +3839,7 @@ function FriendsManager({
         setError('Username not found on chess.com');
         return;
       }
-      await onAdd(trimmed);
+      await onAddFriend(trimmed);
       setInput('');
     } catch {
       setError('Failed to verify username');
@@ -2343,36 +3849,69 @@ function FriendsManager({
   };
 
   return (
-    <div className="mb-3 rounded-xl bg-chess-surface/60 border border-chess-border/30 p-3">
-      <button
-        type="button"
-        onClick={toggleCollapsed}
-        className="w-full flex items-center justify-between gap-2 mb-2"
-      >
-        <span className="text-[11px] font-extrabold uppercase tracking-[1.4px] text-chess-text-tertiary">
-          Your friends · {friends.length}/{MAX_FRIENDS}
-        </span>
-        <svg
-          width="14" height="14" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
-          className={`text-chess-text-tertiary transition-transform ${collapsed ? '' : 'rotate-180'}`}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      {collapsed && friends.length > 0 && (
-        <div className="text-[11px] text-chess-text-tertiary truncate">
-          {friends.join(' · ')}
+    <div className="mb-4">
+      {/* Suggested-for-you carousel */}
+      {suggestionEntries.length > 0 && (
+        <div className="mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[12px] font-extrabold text-chess-text">
+              Suggested for you · {suggestionEntries.length}
+            </span>
+          </div>
+          <div className="-mx-1 px-1 flex gap-2 overflow-x-auto scrollbar-hide">
+            {suggestionEntries.map((s) => {
+              const lower = s.username.toLowerCase();
+              const loading = pendingUsernames.has(lower);
+              const isFollowed = s.kind === 'top'
+                ? followedTopSet.has(lower)
+                : friendSet.has(lower);
+              const accentRing = s.kind === 'top' ? 'ring-purple-400/30' : 'ring-sky-400/25';
+              const onClickFollow = () => {
+                if (loading) return;
+                if (s.kind === 'top') onToggleTop(s.username);
+                else if (isFollowed) onRemoveFriend(s.username);
+                else onAddFriend(s.username);
+              };
+              const buttonLabel = loading
+                ? (<><Spinner /><span>Adding replays</span></>)
+                : isFollowed ? 'Unfollow' : 'Follow';
+              const buttonClass = isFollowed
+                ? 'bg-chess-surface text-chess-text border border-chess-border/40 hover:border-chess-blunder/50 hover:text-chess-blunder'
+                : 'bg-chess-accent text-black';
+              return (
+                <div
+                  key={s.username}
+                  className={`shrink-0 w-[160px] rounded-2xl bg-chess-surface/60 border p-3 flex flex-col items-center text-center transition-colors ${
+                    isFollowed ? 'border-chess-accent/40' : 'border-chess-border/30'
+                  }`}
+                >
+                  <div className={`rounded-full ring-2 ${accentRing} overflow-hidden`}>
+                    <PlayerAvatar username={s.username} size={64} />
+                  </div>
+                  <div className="mt-2 flex items-center gap-1 max-w-full">
+                    {s.kind === 'top' && <span className="text-[12px] leading-none">{s.flag}</span>}
+                    <span className="text-[12px] font-extrabold text-chess-text truncate">
+                      {s.kind === 'top' ? s.name : s.username}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-chess-text-tertiary mt-0.5 leading-tight line-clamp-2 min-h-[24px]">
+                    {isFollowed && !loading ? 'Following' : s.subtitle}
+                  </div>
+                  <button
+                    onClick={onClickFollow}
+                    disabled={loading}
+                    className={`w-full mt-2 py-1.5 rounded-md text-[11px] font-extrabold uppercase tracking-[1.4px] disabled:opacity-60 flex items-center justify-center gap-1 transition-colors ${buttonClass}`}
+                  >
+                    {buttonLabel}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
-      {collapsed && friends.length === 0 && (
-        <div className="text-[11px] text-chess-text-tertiary italic">
-          Tap to add a chess.com username.
-        </div>
-      )}
-      {!collapsed && (
-      <>
-      {/* Free username input — same shape as before, kept on top so adding is fast. */}
+
+      {/* Free-form add chess.com username */}
       <div className="flex gap-2 mb-2">
         <input
           type="text"
@@ -2393,185 +3932,15 @@ function FriendsManager({
       </div>
       {error && <div className="text-[11px] text-chess-blunder mb-2">{error}</div>}
 
-      {/* Added friends — rendered as full-width cards in the same visual style
-          as the Top Players list. Click toggles "Following" off (removes). */}
-      {friends.length > 0 && (
-        <div className="grid grid-cols-1 gap-2 mb-2">
-          {friends.map((u) => {
-            const loading = pendingUsernames.has(u.toLowerCase());
-            return (
-              <button
-                key={u}
-                onClick={() => { if (!loading) onRemove(u); }}
-                disabled={loading}
-                className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border bg-chess-accent/10 border-chess-accent/40 text-chess-text text-start transition-all hover:border-chess-accent/60 disabled:opacity-80"
-              >
-                <div className="min-w-0">
-                  <div className="text-[13px] font-bold truncate">{u}</div>
-                  <div className="text-[10px] text-chess-text-tertiary truncate">
-                    {loading ? 'Importing latest game…' : 'chess.com'}
-                  </div>
-                </div>
-                {loading ? (
-                  <Spinner />
-                ) : (
-                  <span className="text-[10px] font-extrabold uppercase tracking-[1.4px] px-2 py-0.5 rounded-md shrink-0 bg-chess-accent text-black">
-                    Following
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {friends.length === 0 && (
-        <div className="text-[11px] text-chess-text-tertiary italic mb-2">
+      {/* Followed-list chips removed — the People filter chip on the
+          Following tab now exposes the same set of usernames and lets the
+          user filter / unfollow from there. */}
+      {followedUsernames.length === 0 && suggestionEntries.length === 0 && (
+        <div className="text-[11px] text-chess-text-tertiary italic mt-2">
           Add a chess.com username — their last game becomes a challenge here.
         </div>
       )}
-
-      {/* Suggested — most-played opponents from the user's games. Same
-          full-row card layout as the Top Players unfollow list. Tap to add
-          (subject to the MAX_FRIENDS cap). */}
-      {(() => {
-        const friendSet = new Set(friends.map((f) => f.toLowerCase()));
-        const fresh = suggestions.filter((u) => !friendSet.has(u.toLowerCase()));
-        if (fresh.length === 0) return null;
-        const atCap = friends.length >= MAX_FRIENDS;
-        return (
-          <div className="mt-3 pt-3 border-t border-chess-border/20">
-            <div className="grid grid-cols-1 gap-2">
-              {fresh.map((u) => (
-                <button
-                  key={u}
-                  type="button"
-                  onClick={() => { if (!atCap) onAdd(u); }}
-                  disabled={atCap}
-                  className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border bg-chess-bg/40 border-chess-border/30 text-chess-text text-start transition-all hover:border-chess-accent/30 ${
-                    atCap ? 'opacity-50 cursor-not-allowed' : ''
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-bold truncate">{u}</div>
-                    <div className="text-[10px] text-chess-text-tertiary truncate">chess.com</div>
-                  </div>
-                  <span className="text-[10px] font-extrabold uppercase tracking-[1.4px] px-2 py-0.5 rounded-md shrink-0 bg-chess-bg/60 text-chess-text-tertiary">
-                    Follow
-                  </span>
-                </button>
-              ))}
-            </div>
-            <p className="mt-2 text-[11px] text-chess-text-tertiary italic">
-              Suggested from your most-played opponents.
-            </p>
-          </div>
-        );
-      })()}
-      </>
-      )}
     </div>
   );
 }
 
-function TopPlayersManager({
-  followed,
-  pendingUsernames,
-  onToggle,
-}: {
-  followed: string[];
-  /** Lowercased usernames whose import is in flight (loading indicator). */
-  pendingUsernames: Set<string>;
-  onToggle: (username: string) => Promise<void> | void;
-}) {
-  const followedSet = useMemo(
-    () => new Set(followed.map((u) => u.toLowerCase())),
-    [followed],
-  );
-
-  // Default to collapsed once the user has followed at least one player.
-  // Persisted via localStorage so a manual toggle survives reloads, but
-  // the picked-state always wins on first mount: if you've followed
-  // anyone, the picker stays out of the way.
-  const STORAGE_KEY = 'tm-top-players-collapsed';
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    if (followed.length > 0) return true;
-    try { return localStorage.getItem(STORAGE_KEY) === '1'; } catch { return false; }
-  });
-  const toggleCollapsed = () => {
-    setCollapsed((c) => {
-      const next = !c;
-      try { localStorage.setItem(STORAGE_KEY, next ? '1' : '0'); } catch { /* noop */ }
-      return next;
-    });
-  };
-
-  return (
-    <div className="mb-3 rounded-xl bg-chess-surface/60 border border-chess-border/30 p-3">
-      <button
-        type="button"
-        onClick={toggleCollapsed}
-        className="w-full flex items-center justify-between gap-2 mb-2"
-      >
-        <span className="text-[11px] font-extrabold uppercase tracking-[1.4px] text-chess-text-tertiary">
-          Following · {followed.length}/{MAX_TOP_PLAYERS}
-        </span>
-        <svg
-          width="14" height="14" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
-          className={`text-chess-text-tertiary transition-transform ${collapsed ? '' : 'rotate-180'}`}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      {!collapsed && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {TOP_PLAYERS.map((p) => {
-            const isFollowed = followedSet.has(p.username.toLowerCase());
-            const loading = pendingUsernames.has(p.username.toLowerCase());
-            const disabled = (!isFollowed && followed.length >= MAX_TOP_PLAYERS) || loading;
-            return (
-              <button
-                key={p.username}
-                onClick={() => { if (!disabled) onToggle(p.username); }}
-                disabled={disabled}
-                className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-start transition-all ${
-                  isFollowed
-                    ? 'bg-chess-accent/10 border-chess-accent/40 text-chess-text'
-                    : 'bg-chess-bg/40 border-chess-border/30 text-chess-text hover:border-chess-accent/30'
-                } ${disabled && !loading ? 'opacity-50' : ''}`}
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[14px] leading-none">{p.flag}</span>
-                    <span className="text-[13px] font-bold truncate">{p.name}</span>
-                  </div>
-                  <div className="text-[10px] text-chess-text-tertiary truncate">
-                    {loading ? 'Importing latest game…' : p.username}
-                  </div>
-                </div>
-                {loading ? (
-                  <Spinner />
-                ) : (
-                  <span
-                    className={`text-[10px] font-extrabold uppercase tracking-[1.4px] px-2 py-0.5 rounded-md shrink-0 ${
-                      isFollowed
-                        ? 'bg-chess-accent text-black'
-                        : 'bg-chess-bg/60 text-chess-text-tertiary'
-                    }`}
-                  >
-                    {isFollowed ? 'Following' : 'Follow'}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {collapsed && followed.length > 0 && (
-        <div className="text-[11px] text-chess-text-tertiary truncate">
-          {followed.join(' · ')}
-        </div>
-      )}
-    </div>
-  );
-}

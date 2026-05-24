@@ -202,6 +202,20 @@ html {
   50% { opacity: 0.55; }
 }
 
+/* ── Streaming dots — used in empty AI-explanation tabs while the LLM
+   is still writing that section. ── */
+.streaming-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  display: inline-block;
+  animation: streaming-dot-pulse 1.1s ease-in-out infinite;
+}
+@keyframes streaming-dot-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.85); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
 /* ── Focus mode (set by GameDetail) hides bottom nav ── */
 body[data-focus-mode="true"] .app-bottom-nav {
   transform: translateY(110%);
@@ -230,6 +244,7 @@ body[data-focus-mode="true"] .app-time-filter {
       floating time-class filter — itself hidden in focus mode) so the
       board sits flush against the top of the screen. ── */
 @media (max-width: 767px) {
+  html:has(body[data-focus-mode="true"]),
   body[data-focus-mode="true"] {
     overflow: hidden;
     height: 100dvh;
@@ -237,6 +252,23 @@ body[data-focus-mode="true"] .app-time-filter {
   body[data-focus-mode="true"] main {
     padding-top: 0 !important;
     padding-bottom: 0 !important;
+    overflow: hidden !important;
+    height: 100dvh !important;
+    min-height: 0 !important;
+    flex: none !important;
+  }
+  /* Hide the inline CHESS DNA brand wordmark on GameDetail — its own
+     header already provides a back button and game context. */
+  body[data-focus-mode="true"] main > div:first-child:has(img[src="/favicon.png"]) {
+    display: none;
+  }
+  /* Hide the mobile-only Practice/Compare/Share CTAs and the
+     DataAttribution footer on GameDetail — the dock at the bottom of the
+     viewport already covers those concerns and we don't want the page
+     wrapper to be taller than the viewport (which forces a scroll). */
+  body[data-focus-mode="true"] main .grid.grid-cols-3.md\:hidden,
+  body[data-focus-mode="true"] main > div > div.text-\[10px\].text-gray-600.text-center {
+    display: none;
   }
 }
 

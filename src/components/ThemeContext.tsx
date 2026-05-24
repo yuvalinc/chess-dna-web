@@ -17,7 +17,7 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue>({
   theme: 'dark',
-  boardTheme: 'classic',
+  boardTheme: 'green',
   setTheme: () => {},
   setBoardTheme: () => {},
   settings: DEFAULT_SETTINGS,
@@ -37,15 +37,18 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     userId,
   );
 
-  // Inject fallback API keys from env vars when user has no personal key set
+  // Claude calls go through the Base44 `claude-proxy` function; the key lives
+  // server-side as a Base44 secret. The placeholder values below keep the
+  // existing UserSettings shape valid for stored records without leaking
+  // anything into the public bundle.
   const settings = useMemo(() => ({
     ...rawSettings,
-    claudeApiKey: rawSettings.claudeApiKey || import.meta.env.VITE_FALLBACK_CLAUDE_KEY || null,
-    openaiApiKey: rawSettings.openaiApiKey || import.meta.env.VITE_FALLBACK_OPENAI_KEY || null,
+    claudeApiKey: 'base44-proxy',
+    openaiApiKey: null,
   }), [rawSettings]);
 
   const theme = settings.theme ?? 'dark';
-  const boardTheme = settings.boardTheme ?? 'classic';
+  const boardTheme = settings.boardTheme ?? 'green';
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);

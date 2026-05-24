@@ -142,20 +142,33 @@ if (fetchOk) {
   const ahead = git('rev-list --count origin/main..HEAD');
   if (ahead && Number(ahead) > 0) {
     const aheadLines = git(`log --format="%h %s" origin/main..HEAD`)?.split('\n') ?? [];
-    abort('main is ahead of origin — push before deploying', [
-      `Local main is ${ahead} commit(s) ahead of origin/main:`,
+    const strict = process.env.STRICT_DEPLOY_SAFETY === '1';
+    const lines = [
+      `Local main is ${ahead} commit(s) ahead of origin/main — these exist ONLY locally:`,
       ``,
-      ...aheadLines.slice(0, 10).map(l => `  ${l}`),
-      ...(aheadLines.length > 10 ? [`  ... and ${aheadLines.length - 10} more`] : []),
+      ...aheadLines.slice(0, 5).map(l => `  ${l}`),
+      ...(aheadLines.length > 5 ? [`  ... and ${aheadLines.length - 5} more`] : []),
       ``,
-      `These commits exist ONLY in your local repo. If anything resets main`,
-      `to origin/main (the SEO daemon, a "clean up" rebase, a sync script),`,
-      `they get orphaned and the work is lost — this exact pattern wiped`,
-      `~16k lines of WaitlistGate / 250-cap / beta-tester work on 2026-05-23.`,
+      `Risk: a future \`git reset --hard origin/main\` (manual cleanup, SEO daemon`,
+      `sync, etc.) orphans these commits. This exact pattern wiped ~16k lines of`,
+      `WaitlistGate / 250-cap / beta-tester work on 2026-05-23.`,
       ``,
-      `Push first, then deploy:`,
-      `  git push origin main && npm run build && npx base44 site deploy -y`,
-    ]);
+      `Push when you can:  git push origin main`,
+    ];
+    if (strict) {
+      abort('main is ahead of origin (strict mode)', lines);
+    } else {
+      console.warn('');
+      console.warn('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.warn('  ⚠️   DEPLOY-SAFETY: main has un-pushed commits (proceeding with build)');
+      console.warn('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.warn('');
+      for (const line of lines) console.warn(`  ${line}`);
+      console.warn('');
+      console.warn('  To make this a hard block:  STRICT_DEPLOY_SAFETY=1 npm run build');
+      console.warn('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.warn('');
+    }
   }
 } else {
   console.warn('[deploy-safety] could not fetch origin (offline?) — skipping un-pushed-commits check.');

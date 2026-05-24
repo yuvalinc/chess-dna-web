@@ -270,7 +270,23 @@ function MarkdownTable({ source }: { source: string }) {
 }
 
 function getPat(): string | null {
-  try { return localStorage.getItem(PAT_STORAGE_KEY); } catch { return null; }
+  try {
+    const stored = localStorage.getItem(PAT_STORAGE_KEY);
+    if (stored) return stored;
+    // Dev-only auto-load: vite.config.ts injects VITE_SEO_GH_PAT from the
+    // local `gh auth token` at dev-server startup, so the dashboard works
+    // immediately without manual PAT entry. The `import.meta.env.DEV` gate
+    // means this branch is dead code in production builds and the env value
+    // is never bundled (define is gated to command==='serve' in vite.config).
+    if (import.meta.env.DEV) {
+      const envPat = (import.meta.env as Record<string, string | undefined>).VITE_SEO_GH_PAT;
+      if (envPat) {
+        try { localStorage.setItem(PAT_STORAGE_KEY, envPat); } catch {}
+        return envPat;
+      }
+    }
+    return null;
+  } catch { return null; }
 }
 
 function Badge({ children, cls }: { children: React.ReactNode; cls: string }) {

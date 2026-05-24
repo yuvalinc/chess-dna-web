@@ -745,9 +745,10 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, busy, onToggle, executionStatus, onMergePR, onRejectPR, onMarkReviewed, onRemove, mergeBusy, rejectBusy, reviewBusy, removeBusy,
+  task, status, busy, onToggle, executionStatus, onMergePR, onRejectPR, onMarkReviewed, onRemove, mergeBusy, rejectBusy, reviewBusy, removeBusy,
 }: {
   task: ParsedTask;
+  status: RunStatus;
   busy: boolean;
   onToggle: () => void;
   executionStatus?: TaskExecutionStatus;
@@ -764,11 +765,7 @@ function TaskRow({
   // Execution state (post-approval) comes from issue comments left by the executor.
   const executed = executionStatus?.status; // 'done' | 'failed' | 'in_progress' | undefined
   const skippedByUser = task.checked && !executed; // checked but no exec record = user skipped
-  // The toggle is locked ONLY once the executor has picked the task up
-  // (executed != undefined). Issue-level `seo-approved` label does NOT lock
-  // per-task toggling — the user can flip individual tasks at any time before
-  // the daemon claims them.
-  const toggleLocked = !!executed;
+  const lockedAfterApproval = status !== 'pending';
 
   let pillLabel: string;
   let pillCls: string;
@@ -831,8 +828,8 @@ function TaskRow({
       <div className="flex items-start gap-3">
         <button
           onClick={onToggle}
-          disabled={busy || toggleLocked}
-          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${pillCls} ${busy || toggleLocked ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
+          disabled={busy || lockedAfterApproval || !!executed}
+          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${pillCls} ${busy || lockedAfterApproval || executed ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
           title={pillTitle}
         >
           {busy ? '…' : pillLabel}
@@ -1072,6 +1069,7 @@ function IssueCard({
                 <TaskRow
                   key={task.id}
                   task={task}
+                  status={status}
                   busy={busy === 'task:' + task.id}
                   onToggle={() => onToggleTask(task)}
                   executionStatus={es}

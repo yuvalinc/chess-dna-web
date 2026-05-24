@@ -157,7 +157,7 @@ function fmtUsd(n: number): string {
 }
 
 interface TaskExecutionStatus {
-  status: 'done' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected' | 'needs_review' | 'reviewed' | 'removed';
+  status: 'done' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected' | 'needs_review' | 'reviewed';
   sha?: string;
   files?: string[];
   prNumber?: number;
@@ -207,9 +207,6 @@ function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutio
       }
     } else if (body.startsWith('👁')) {
       map.set(title, { status: 'reviewed' });
-    } else if (body.startsWith('🗑')) {
-      // User-removed: always wins (sticky removal even if other comments exist).
-      map.set(title, { status: 'removed' });
     } else if (body.startsWith('❌')) {
       map.set(title, { status: 'failed' });
     } else if (body.startsWith('🔧')) {
@@ -282,21 +279,7 @@ function MarkdownTable({ source }: { source: string }) {
 }
 
 function getPat(): string | null {
-  try {
-    const stored = localStorage.getItem(PAT_STORAGE_KEY);
-    if (stored) return stored;
-    // Dev-only fallback: read from .env.development.local (gitignored).
-    // Auto-mirrors into localStorage so subsequent loads don't need the env file.
-    // Gated by import.meta.env.DEV so the env value is never bundled into prod.
-    if (import.meta.env.DEV) {
-      const envPat = (import.meta.env as Record<string, string | undefined>).VITE_SEO_GH_PAT;
-      if (envPat) {
-        try { localStorage.setItem(PAT_STORAGE_KEY, envPat); } catch {}
-        return envPat;
-      }
-    }
-    return null;
-  } catch { return null; }
+  try { return localStorage.getItem(PAT_STORAGE_KEY); } catch { return null; }
 }
 
 function Badge({ children, cls }: { children: React.ReactNode; cls: string }) {
@@ -522,35 +505,6 @@ export default function SeoAdmin() {
     }
   };
 
-  // Permanent removal — hides the task from the dashboard AND signals to
-  // future daily runs (via seo-daily.mjs carryover logic) to NOT propose it
-  // again. Distinct from "skip", which carries forward as a candidate.
-  const onRemoveTask = async (issue: GhIssue, task: ParsedTask) => {
-    if (!confirm(`Remove "${task.title}" forever? It will disappear from the dashboard and the daily agent won't propose it again.`)) return;
-    setBusy('remove:' + task.id);
-    // Optimistic: add a synthetic 🗑 comment locally so the row hides immediately.
-    const synthetic: GhComment = {
-      id: -Date.now(),
-      body: `🗑 **${task.title}** — removed by user`,
-      created_at: new Date().toISOString(),
-    };
-    setComments(prev => [...(prev ?? []), synthetic]);
-    try {
-      await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/comments`, {
-        method: 'POST',
-        body: JSON.stringify({ body: `🗑 **${task.title}** — removed by user` }),
-      });
-      const list = await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/comments?per_page=100`);
-      setComments(list);
-    } catch (e) {
-      // Rollback the optimistic add.
-      setComments(prev => (prev ?? []).filter(c => c.id !== synthetic.id));
-      setError(`Remove failed: ${(e as Error).message}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const onRejectPR = async (prNumber: number) => {
     setBusy('reject:' + prNumber);
     try {
@@ -682,7 +636,6 @@ export default function SeoAdmin() {
         onMergePR={onMergePR}
         onRejectPR={onRejectPR}
         onMarkReviewed={(t) => onMarkReviewed(displayed, t)}
-        onRemoveTask={(t) => onRemoveTask(displayed, t)}
         showRaw={showRawId === displayed.number}
         onToggleRaw={() => setShowRawId(showRawId === displayed.number ? null : displayed.number)}
         busy={busy}
@@ -745,30 +698,25 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, busy, onToggle, executionStatus, onMergePR, onRejectPR, onMarkReviewed, onRemove, mergeBusy, rejectBusy, reviewBusy, removeBusy,
+  task, status, busy, onToggle, executionStatus, onMergePR, onRejectPR, onMarkReviewed, mergeBusy, rejectBusy, reviewBusy,
 }: {
   task: ParsedTask;
+  status: RunStatus;
   busy: boolean;
   onToggle: () => void;
   executionStatus?: TaskExecutionStatus;
   onMergePR?: (prNumber: number, taskTitle: string) => void;
   onRejectPR?: (prNumber: number) => void;
   onMarkReviewed?: () => void;
-  onRemove?: () => void;
   mergeBusy?: boolean;
   rejectBusy?: boolean;
   reviewBusy?: boolean;
-  removeBusy?: boolean;
 }) {
   // Approval state (pre-execution) comes from the markdown checkbox.
   // Execution state (post-approval) comes from issue comments left by the executor.
   const executed = executionStatus?.status; // 'done' | 'failed' | 'in_progress' | undefined
   const skippedByUser = task.checked && !executed; // checked but no exec record = user skipped
-  // The toggle is locked ONLY once the executor has picked the task up
-  // (executed != undefined). Issue-level `seo-approved` label does NOT lock
-  // per-task toggling — the user can flip individual tasks at any time before
-  // the daemon claims them.
-  const toggleLocked = !!executed;
+  const lockedAfterApproval = status !== 'pending';
 
   let pillLabel: string;
   let pillCls: string;
@@ -831,8 +779,8 @@ function TaskRow({
       <div className="flex items-start gap-3">
         <button
           onClick={onToggle}
-          disabled={busy || toggleLocked}
-          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${pillCls} ${busy || toggleLocked ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
+          disabled={busy || lockedAfterApproval || !!executed}
+          className={`shrink-0 mt-0.5 text-[11px] font-bold px-2.5 py-1 rounded-md border transition-colors ${pillCls} ${busy || lockedAfterApproval || executed ? 'cursor-default opacity-90' : 'cursor-pointer'}`}
           title={pillTitle}
         >
           {busy ? '…' : pillLabel}
@@ -841,16 +789,6 @@ function TaskRow({
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-[11px] font-bold text-chess-text-tertiary">{task.priority}</span>
             <span className="text-sm font-bold text-chess-text">{task.title}</span>
-            {onRemove && !executed && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onRemove(); }}
-                disabled={removeBusy}
-                className="ms-auto text-[11px] text-chess-text-tertiary hover:text-chess-blunder border border-transparent hover:border-chess-blunder/30 rounded px-1.5 py-0.5 disabled:opacity-40"
-                title="Remove this task forever — hides from dashboard and tells the daily agent not to propose it again"
-              >
-                {removeBusy ? '…' : '✕ Remove'}
-              </button>
-            )}
           </div>
 
           {(task.timeEstimate || task.impact || task.effort || task.lane || task.scope) && (
@@ -974,7 +912,7 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, onMergePR, onRejectPR, onMarkReviewed, onRemoveTask, showRaw, onToggleRaw, busy, execStatuses, tokens,
+  issue, isLatest, onApprove, onToggleTask, onMergePR, onRejectPR, onMarkReviewed, showRaw, onToggleRaw, busy, execStatuses, tokens,
 }: {
   issue: GhIssue;
   isLatest: boolean;
@@ -983,7 +921,6 @@ function IssueCard({
   onMergePR: (prNumber: number, taskTitle: string) => void;
   onRejectPR: (prNumber: number) => void;
   onMarkReviewed: (t: ParsedTask) => void;
-  onRemoveTask: (t: ParsedTask) => void;
   showRaw: boolean;
   onToggleRaw: () => void;
   busy: string | null;
@@ -1053,42 +990,37 @@ function IssueCard({
         </Card>
       )}
 
-      {tasks.length > 0 && (() => {
-        const visible = tasks.filter(t => execStatuses.get(t.title)?.status !== 'removed');
-        const removedCount = tasks.length - visible.length;
-        return (
-          <Card
-            title={`Tasks (${visible.length}${removedCount > 0 ? ` · ${removedCount} removed` : ''})`}
-            action={
-              <span className="text-[11px] text-chess-text-tertiary">
-                {visible.filter(t => !t.checked).length} approved · {visible.filter(t => t.checked).length} skipped
-              </span>
-            }
-          >
-            {visible.map(task => {
-              const es = execStatuses.get(task.title);
-              const prNum = es?.prNumber;
-              return (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  busy={busy === 'task:' + task.id}
-                  onToggle={() => onToggleTask(task)}
-                  executionStatus={es}
-                  onMergePR={onMergePR}
-                  onRejectPR={onRejectPR}
-                  onMarkReviewed={() => onMarkReviewed(task)}
-                  onRemove={() => onRemoveTask(task)}
-                  mergeBusy={prNum != null && busy === 'merge:' + prNum}
-                  rejectBusy={prNum != null && busy === 'reject:' + prNum}
-                  reviewBusy={busy === 'review:' + task.id}
-                  removeBusy={busy === 'remove:' + task.id}
-                />
-              );
-            })}
-          </Card>
-        );
-      })()}
+      {tasks.length > 0 && (
+        <Card
+          title={`Tasks (${tasks.length})`}
+          action={
+            <span className="text-[11px] text-chess-text-tertiary">
+              {tasks.filter(t => !t.checked).length} approved · {tasks.filter(t => t.checked).length} skipped
+            </span>
+          }
+        >
+          {tasks.map(task => {
+            const es = execStatuses.get(task.title);
+            const prNum = es?.prNumber;
+            return (
+              <TaskRow
+                key={task.id}
+                task={task}
+                status={status}
+                busy={busy === 'task:' + task.id}
+                onToggle={() => onToggleTask(task)}
+                executionStatus={es}
+                onMergePR={onMergePR}
+                onRejectPR={onRejectPR}
+                onMarkReviewed={() => onMarkReviewed(task)}
+                mergeBusy={prNum != null && busy === 'merge:' + prNum}
+                rejectBusy={prNum != null && busy === 'reject:' + prNum}
+                reviewBusy={busy === 'review:' + task.id}
+              />
+            );
+          })}
+        </Card>
+      )}
 
       {issue.body && (
         <Card

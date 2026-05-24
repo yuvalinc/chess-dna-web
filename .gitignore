@@ -27,3 +27,6 @@ dist-ssr
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# Large render outputs from video/src — regenerable, kept out of git history
+video/out/*.mov

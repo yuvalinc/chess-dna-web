@@ -69,6 +69,12 @@ const SKILL_LABEL_KEYS: Record<string, TranslationKey> = {
   time_management: 'skill_time_management', resilience: 'skill_resilience',
 };
 
+/* Short label overrides for the radar — "Time Management" is too long to
+   sit cleanly next to an axis vertex, so display it as just "Time". */
+const SHORT_LABEL_OVERRIDE: Record<string, string> = {
+  time_management: 'Time',
+};
+
 /* Lucide-style stroke icons in a 24×24 box, one per dimension. The radar
  * renders them in place of text labels around the chart. */
 export function SkillIcon({
@@ -283,10 +289,13 @@ export default function SkillRadar({
     return () => cancelAnimationFrame(raf);
   }, [animated, ratingKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* Geometry constants — all tied to `renderSize` (auto-fit to container). */
+  /* Geometry constants — all tied to `renderSize` (auto-fit to container).
+     `r` is reduced slightly (vs the prior 0.32) so the text labels around
+     each axis (icon + name + score) have room to sit outside the outer
+     ring without crowding the SVG edges on mobile. */
   const cx = renderSize / 2;
   const cy = renderSize / 2;
-  const r = renderSize * 0.32; // outer ring radius for points
+  const r = renderSize * 0.28; // outer ring radius for points
 
   const overallTier = useMemo(() => getTierForScore(profile.overallRating), [profile.overallRating]);
   const overallTierColor = getTierColor(overallTier, theme);
@@ -300,7 +309,9 @@ export default function SkillRadar({
   const SPOKE_STROKE = theme === 'light' ? 'rgba(70, 90, 130, 0.18)' : 'rgba(120, 165, 220, 0.18)';
   const SPOKE_TICK = theme === 'light' ? 'rgba(70, 90, 130, 0.30)' : 'rgba(120, 165, 220, 0.32)';
   const RING_LABEL = theme === 'light' ? 'rgba(70, 90, 130, 0.55)' : 'rgba(148, 163, 184, 0.45)';
-  const LABEL_NAME_FILL = theme === 'light' ? '#475569' : 'rgb(148, 163, 184)';
+  const LABEL_NAME_FILL = theme === 'light' ? '#0f172a' : '#e2e8f0';        // bright (dimension name)
+  const ICON_STROKE = theme === 'light' ? '#64748b' : 'rgba(148, 163, 184, 0.85)'; // muted (icon outline)
+  const SCORE_NEUTRAL = theme === 'light' ? '#475569' : 'rgba(226, 232, 240, 0.78)'; // gray (non-best/worst)
 
   /* Single, theme-aware color used for ALL vertex dots and ALL score
      numbers — replaces the previous per-tier coloring. Best/worst are still
@@ -372,6 +383,7 @@ export default function SkillRadar({
     });
 
   const gradientId = `radarFill_${uid}`;
+  const backgroundGradientId = `radarBg_${uid}`;
 
   /* Translation labels for the 8 stock dimensions. */
   const dimLabel = (id: string, fallback: string): string => {
@@ -405,12 +417,25 @@ export default function SkillRadar({
         style={{ display: 'block', margin: '0 auto', overflow: 'visible' }}
       >
         <defs>
+          {/* Polygon fill — kept very subtle since the brightness now lives
+              in the background glow. */}
           <radialGradient id={gradientId} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={primaryColor ?? overallTierColor} stopOpacity={0.7} />
-            <stop offset="70%" stopColor={primaryColor ?? overallTierColor} stopOpacity={0.4} />
-            <stop offset="100%" stopColor={primaryColor ?? overallTierColor} stopOpacity={0.25} />
+            <stop offset="0%" stopColor={primaryColor ?? overallTierColor} stopOpacity={0.18} />
+            <stop offset="70%" stopColor={primaryColor ?? overallTierColor} stopOpacity={0.10} />
+            <stop offset="100%" stopColor={primaryColor ?? overallTierColor} stopOpacity={0.04} />
+          </radialGradient>
+          {/* Background disc — strong blue glow centered in the radar that
+              fades to transparent at the outer ring. Matches the "spotlight"
+              look in the design mock. */}
+          <radialGradient id={backgroundGradientId} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity={theme === 'light' ? 0.20 : 0.55} />
+            <stop offset="55%" stopColor="#1d4ed8" stopOpacity={theme === 'light' ? 0.10 : 0.32} />
+            <stop offset="100%" stopColor="#1e3a8a" stopOpacity={theme === 'light' ? 0.02 : 0.06} />
           </radialGradient>
         </defs>
+
+        {/* Background blue glow — drawn first so rings/polygon sit on top */}
+        <circle cx={cx} cy={cy} r={r * 1.02} fill={`url(#${backgroundGradientId})`} />
 
         {/* Concentric rings — solid, theme-aware */}
         {[0.25, 0.5, 0.75, 1].map((f, i) => (
@@ -423,8 +448,10 @@ export default function SkillRadar({
           />
         ))}
 
-        {/* Ring value labels (25 / 50 / 75 / 99) along the top axis */}
-        {[0.25, 0.5, 0.75, 1].map((f, i) => (
+        {/* Ring value labels (25 / 50 / 99) along the top axis. The 75 ring
+            is intentionally unlabeled — it would sit right behind the top
+            polygon vertex and read as a score rather than a scale marker. */}
+        {[0.25, 0.5, 1].map((f, i) => (
           <text
             key={`rv-${i}`}
             x={cx + 4}
@@ -557,14 +584,27 @@ export default function SkillRadar({
           );
         })}
 
-        {/* Axis labels — icon centered at the label position. The radar
-            polygon size is unchanged; only the labels swap from text to
-            icons. Title attribute keeps the dimension name accessible. */}
+        {/* Axis labels — icon, dimension name, and score stacked vertically
+            outside each axis vertex. Layout (top to bottom in screen coords):
+              1. icon  (muted gray stroke)
+              2. name  (bright white, bold)
+              3. score (green for best, red for worst, neutral gray otherwise)
+            The whole group is clickable when `onDimensionClick` is provided. */}
         {dimensions.map((d, i) => {
           const isRevealed = i < revealUntil;
-          const [lx, ly] = labelPos(i, 1.32);
-          const labelText = dimLabel(d.id, d.label);
-          const iconSize = Math.max(20, Math.round(renderSize * 0.075));
+          const [lx, ly] = labelPos(i, 1.42);
+          const labelText = SHORT_LABEL_OVERRIDE[d.id] ?? dimLabel(d.id, d.label);
+          const iconSize = Math.max(13, Math.min(20, Math.round(renderSize * 0.026)));
+          const nameSize = Math.max(11, Math.min(15, Math.round(renderSize * 0.022)));
+          const scoreSize = Math.max(13, Math.min(18, Math.round(renderSize * 0.028)));
+          const lineGap = Math.max(3, Math.round(renderSize * 0.008));
+          const iconY = ly - nameSize / 2 - lineGap - iconSize;
+          const nameY = ly;          // baseline center
+          const scoreY = ly + nameSize / 2 + lineGap + scoreSize * 0.85;
+          const isBest = i === bestIdx;
+          const isWorst = i === worstIdx;
+          const scoreColor = isBest ? BEST_COLOR : isWorst ? WORST_COLOR : SCORE_NEUTRAL;
+          const score = Math.round(d.score);
           const handleClick = onDimensionClick ? (e: React.MouseEvent) => {
             // Don't let the browser shift focus/scroll the clicked SVG group
             // into view — that's what causes the "UI jump below" the radar.
@@ -584,19 +624,21 @@ export default function SkillRadar({
               onClick={handleClick}
             >
               <title>{labelText}</title>
-              {/* Transparent hit area — strokes alone don't capture clicks
-                  on the empty interior of an icon. This circle ensures the
-                  whole icon zone (and a small margin) opens the popup. */}
-              <circle
-                cx={lx} cy={ly}
-                r={iconSize * 1.2}
+              {/* Transparent hit area covering icon + name + score so the
+                  whole label block opens the dimension popup. */}
+              <rect
+                x={lx - 38}
+                y={iconY - 2}
+                width={76}
+                height={(scoreY - iconY) + scoreSize}
                 fill="transparent"
                 pointerEvents="all"
               />
+              {/* Icon */}
               <g
-                transform={`translate(${lx - iconSize / 2}, ${ly - iconSize / 2}) scale(${iconSize / 24})`}
+                transform={`translate(${lx - iconSize / 2}, ${iconY}) scale(${iconSize / 24})`}
                 fill="none"
-                stroke={LABEL_NAME_FILL}
+                stroke={ICON_STROKE}
                 strokeWidth={1.6}
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -604,6 +646,34 @@ export default function SkillRadar({
               >
                 <SkillIconPaths id={d.id} />
               </g>
+              {/* Dimension name */}
+              <text
+                x={lx}
+                y={nameY}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill={LABEL_NAME_FILL}
+                fontSize={nameSize}
+                fontWeight={700}
+                pointerEvents="none"
+              >
+                {labelText}
+              </text>
+              {/* Score */}
+              <text
+                x={lx}
+                y={scoreY}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill={scoreColor}
+                fontSize={scoreSize}
+                fontWeight={800}
+                fontFamily="ui-monospace, SF Mono, monospace"
+                pointerEvents="none"
+                style={isBest || isWorst ? { filter: `drop-shadow(0 0 4px ${scoreColor}66)` } : undefined}
+              >
+                {score}
+              </text>
             </g>
           );
         })}

@@ -15,6 +15,7 @@ import ShareComposer from '@/components/share/ShareComposer';
 import { captureCardAsBlob, shareImage } from '@/utils/share-image';
 import { renderAchievementShareImage } from '@/utils/share-achievement-canvas';
 import { computePatternsFromGames } from '@/patterns/windowed-profile';
+import { calculateSkillProfile } from '@/patterns/skill-calculator';
 import { getTerminationReason, type TerminationReason } from '@shared/utils/chess-utils';
 import type { TranslationKey } from '@/i18n/locales/en';
 import type { TrapStats } from '@shared/types/patterns';
@@ -817,7 +818,11 @@ function CompactStatsStrip({
   index: number;
   setIndex: (i: number) => void;
 }) {
-  const tileCount = 2;
+  // Tiles: Rating, What Changed, Phase Mastery, Combat, Game Mgmt.
+  // The 3 skill tiles only render when skill series data is available;
+  // otherwise the strip falls back to the original 2-tile layout.
+  const hasSkillsData = !!data.skillsSeries;
+  const tileCount = hasSkillsData ? 2 + SKILL_TILE_GROUPS.length : 2;
   const safeIndex = Math.max(0, Math.min(tileCount - 1, index));
   const ratingDeltaColor =
     data.ratingDelta > 0
@@ -856,8 +861,10 @@ function CompactStatsStrip({
           className="flex transition-transform duration-200 ease-out"
           style={{ width: `${tileCount * 100}%`, transform: `translateX(-${(safeIndex / tileCount) * 100}%)` }}
         >
-          {/* Tile 1 — Rating + sparkline */}
-          <div style={{ width: `${100 / tileCount}%` }} className="shrink-0 px-3 pt-1.5 pb-1.5">
+          {/* Tile 1 — Rating + sparkline. Chart sits on its own row below
+              the rating number so it can grow to ~2x the previous inline
+              height without crowding the headline. */}
+          <div style={{ width: `${100 / tileCount}%` }} className="shrink-0 px-3 pt-2 pb-2">
             <div className="flex items-baseline justify-between">
               <div className="flex items-baseline gap-2 min-w-0">
                 <span className="text-[9px] font-extrabold uppercase tracking-[1.3px] text-chess-text-tertiary truncate">
@@ -868,25 +875,25 @@ function CompactStatsStrip({
                 {data.ratingDelta > 0 ? '+' : ''}{data.ratingDelta}
               </span>
             </div>
-            <div className="flex items-center gap-3 mt-0.5">
-              <span className="text-[22px] font-black text-chess-text leading-none tabular-nums shrink-0">
+            <div className="mt-0.5">
+              <span className="text-[26px] font-black text-chess-text leading-none tabular-nums">
                 {data.currentRating}
               </span>
-              <div className="flex-1 min-w-0">
-                <RatingSparkline points={data.ratingSeries} compact />
-              </div>
+            </div>
+            <div className="mt-2">
+              <RatingSparkline points={data.ratingSeries} height={56} />
             </div>
           </div>
 
           {/* Tile 2 — What Changed (four-up grid) */}
-          <div style={{ width: `${100 / tileCount}%` }} className="shrink-0 px-3 pt-1.5 pb-1.5">
+          <div style={{ width: `${100 / tileCount}%` }} className="shrink-0 px-3 pt-2 pb-2">
             <div className="flex items-baseline justify-between">
               <span className="text-[10px] font-extrabold uppercase tracking-[1.3px] text-chess-text-tertiary">
                 What changed
               </span>
               <span className="text-[10px] text-chess-text-tertiary">vs {data.priorLabel}</span>
             </div>
-            <div className="grid grid-cols-4 gap-2 mt-1.5">
+            <div className="grid grid-cols-4 gap-2 mt-3">
               {data.deltas.map((d) => {
                 const positive = d.delta > 0;
                 const polarityGood = d.higherIsBetter === false ? !positive : positive;
@@ -900,10 +907,10 @@ function CompactStatsStrip({
                     <div className="text-[9px] uppercase tracking-[1px] text-chess-text-tertiary truncate">
                       {d.label === 'Rating change' ? 'Rating Δ' : d.label === 'Avg accuracy' ? 'Accuracy' : d.label}
                     </div>
-                    <div className="text-[13px] font-extrabold text-chess-text tabular-nums truncate leading-tight">
+                    <div className="text-[15px] font-extrabold text-chess-text tabular-nums truncate leading-tight mt-0.5">
                       {d.currentFormatted}
                     </div>
-                    <div className={`text-[10px] font-bold tabular-nums ${deltaColor}`}>
+                    <div className={`text-[10px] font-bold tabular-nums mt-0.5 ${deltaColor}`}>
                       {positive ? '▲' : d.delta < 0 ? '▼' : '–'} {d.deltaFormatted}
                     </div>
                   </div>
@@ -911,10 +918,90 @@ function CompactStatsStrip({
               })}
             </div>
           </div>
+
+          {/* Tiles 3–5 — Skills over time. Each tile renders a multi-line
+              sparkline driven by `data.skillsSeries` (rolling-window
+              smoothed). A line is considered to "move" if it has at least
+              2 score points of spread; when no line in the tile moves we
+              swap the chart for a "Not enough data" message that
+              explains why (smoothing window currently covers most of the
+              games in this period). */}
+          {hasSkillsData && data.skillsSeries && SKILL_TILE_GROUPS.map((group) => {
+            const series: SkillLineSeries[] = group.dims
+              .map((dim) => {
+                const pts = data.skillsSeries?.[dim.id] ?? [];
+                if (pts.length < 2) return null;
+                return { id: dim.id, label: dim.label, color: dim.color, points: pts };
+              })
+              .filter((s): s is SkillLineSeries => s !== null);
+
+            // "Has variation": at least one line spans ≥2 score points
+            // somewhere across its samples. Below that threshold the
+            // chart visually plateaus and a flat line is misleading.
+            const hasVariation = series.some((s) => {
+              const min = Math.min(...s.points);
+              const max = Math.max(...s.points);
+              return max - min >= 2;
+            });
+
+            return (
+              <div
+                key={`skill-tile-${group.tileLabel}`}
+                style={{ width: `${100 / tileCount}%` }}
+                className="shrink-0 px-3 pt-2 pb-2"
+              >
+                <div className="flex items-baseline justify-between">
+                  <span className="text-[9px] font-extrabold uppercase tracking-[1.3px] text-chess-text-tertiary truncate">
+                    {group.tileLabel}
+                  </span>
+                  {hasVariation && (
+                    <span className="text-[10px] text-chess-text-tertiary">over time</span>
+                  )}
+                </div>
+                {hasVariation ? (
+                  <>
+                    <div className="mt-1">
+                      <SkillsSparkline series={series} height={62} />
+                    </div>
+                    <div className="mt-1 flex items-center flex-wrap gap-x-2.5 gap-y-0.5">
+                      {series.map((s) => {
+                        const latest = s.points[s.points.length - 1];
+                        const first = s.points[0];
+                        const trend = latest - first;
+                        const trendColor =
+                          Math.abs(trend) < 0.5
+                            ? 'text-chess-text-tertiary'
+                            : trend > 0
+                              ? 'text-chess-accent'
+                              : 'text-chess-blunder';
+                        return (
+                          <span key={s.id} className="text-[10px] inline-flex items-center gap-1 leading-none">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
+                            <span className="text-chess-text-tertiary">{s.label}</span>
+                            <span className="font-extrabold text-chess-text tabular-nums">{Math.round(latest)}</span>
+                            <span className={`tabular-nums ${trendColor}`}>
+                              {trend > 0 ? '▲' : trend < 0 ? '▼' : '–'}{Math.abs(Math.round(trend))}
+                            </span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center mt-3 pb-1 px-2">
+                    <div className="text-[12px] font-bold text-chess-text">Not enough data</div>
+                    <p className="text-[10.5px] text-chess-text-tertiary mt-1 leading-snug max-w-[260px]">
+                      The smoothing window covers most of your games in this period, so the lines stay flat. Play more games — or switch to a longer timeframe — to see real movement.
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
       {/* Dot indicator — also doubles as click affordance to switch tiles. */}
-      <div className="flex justify-center gap-1.5 pb-1 pt-0.5">
+      <div className="flex justify-center gap-1.5 pb-1.5 pt-1">
         {Array.from({ length: tileCount }).map((_, i) => (
           <button
             key={i}
@@ -932,13 +1019,11 @@ function CompactStatsStrip({
 }
 
 /* Sparkline for the Rating card — small, dependency-free SVG line.
- * In compact mode (used inside the stats strip) the line shrinks to
- * 28px and the wrapper drops the top margin so it sits inline with the
- * big rating number. */
-function RatingSparkline({ points, compact = false }: { points: number[]; compact?: boolean }) {
+ * `height` is the rendered SVG height in CSS pixels. */
+function RatingSparkline({ points, height = 56 }: { points: number[]; height?: number }) {
   if (points.length < 2) return null;
   const w = 320;
-  const h = compact ? 22 : 64;
+  const h = height;
   const min = Math.min(...points);
   const max = Math.max(...points);
   const range = max - min || 1;
@@ -946,16 +1031,112 @@ function RatingSparkline({ points, compact = false }: { points: number[]; compac
   const path = points
     .map((v, i) => `${i === 0 ? 'M' : 'L'} ${(i * dx).toFixed(1)} ${(h - ((v - min) / range) * (h - 8) - 4).toFixed(1)}`)
     .join(' ');
+  // Soft fill under the line — adds visual weight now that the chart has
+  // some real height to fill (~50px+). Closes back to the baseline at
+  // the bottom of the SVG.
+  const areaPath = `${path} L ${((points.length - 1) * dx).toFixed(1)} ${h} L 0 ${h} Z`;
   const last = points[points.length - 1];
   const lastX = (points.length - 1) * dx;
   const lastY = h - ((last - min) / range) * (h - 8) - 4;
   return (
-    <svg className={`w-full ${compact ? '' : 'mt-2'}`} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ height: h }}>
+    <svg className="w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ height: h }}>
+      <path d={areaPath} fill="rgba(74, 222, 128, 0.10)" stroke="none" />
       <path d={path} fill="none" stroke="rgb(74, 222, 128)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={lastX} cy={lastY} r={compact ? 2.5 : 3.5} fill="rgb(74, 222, 128)" />
+      <circle cx={lastX} cy={lastY} r={3} fill="rgb(74, 222, 128)" />
     </svg>
   );
 }
+
+/* Multi-line sparkline for the skills-over-time tiles. Each series is
+ * one dimension's smoothed score over the rolling window. The y-axis
+ * adapts to the visible data range (with padding) so flat sections stay
+ * legible, but never expands beyond the 0–99 score range. */
+interface SkillLineSeries {
+  id: string;
+  label: string;
+  color: string;
+  points: number[];
+}
+function SkillsSparkline({ series, height = 56 }: { series: SkillLineSeries[]; height?: number }) {
+  if (series.length === 0 || series[0].points.length < 2) return null;
+  const n = series[0].points.length;
+  const w = 320;
+  const h = height;
+
+  // Dynamic y-axis: hug the data with 8-point padding, but always include
+  // a 20-point span so trivial movements don't look dramatic.
+  const allVals = series.flatMap((s) => s.points);
+  let dMin = Math.min(...allVals);
+  let dMax = Math.max(...allVals);
+  if (dMax - dMin < 20) {
+    const mid = (dMin + dMax) / 2;
+    dMin = mid - 10;
+    dMax = mid + 10;
+  }
+  const min = Math.max(0, dMin - 4);
+  const max = Math.min(99, dMax + 4);
+  const range = max - min || 1;
+  const dx = w / (n - 1);
+  const toY = (v: number) => h - ((v - min) / range) * (h - 8) - 4;
+  const midY = toY((min + max) / 2);
+
+  return (
+    <svg className="w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ height: h }}>
+      {/* Faint midline so the eye can read trend direction quickly */}
+      <line x1={0} y1={midY} x2={w} y2={midY} stroke="rgba(148,163,184,0.22)" strokeWidth={1} strokeDasharray="3 3" />
+      {series.map((s) => {
+        const path = s.points
+          .map((v, i) => `${i === 0 ? 'M' : 'L'} ${(i * dx).toFixed(1)} ${toY(v).toFixed(1)}`)
+          .join(' ');
+        const lastX = (s.points.length - 1) * dx;
+        const lastY = toY(s.points[s.points.length - 1]);
+        return (
+          <g key={s.id}>
+            <path
+              d={path}
+              fill="none"
+              stroke={s.color}
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={0.9}
+            />
+            <circle cx={lastX} cy={lastY} r={2.5} fill={s.color} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* Color + display-label mapping for the 8 skill dimensions, grouped into
+ * the three carousel tiles (Phase / Combat / Meta). Kept here next to the
+ * tile rendering so adjustments stay local. */
+const SKILL_TILE_GROUPS: { tileLabel: string; dims: { id: string; label: string; color: string }[] }[] = [
+  {
+    tileLabel: 'Phase Mastery',
+    dims: [
+      { id: 'openings',   label: 'Open',  color: '#60a5fa' }, // blue-400
+      { id: 'positional', label: 'Pos',   color: '#a78bfa' }, // violet-400
+      { id: 'endgame',    label: 'End',   color: '#4ade80' }, // green-400
+    ],
+  },
+  {
+    tileLabel: 'Combat',
+    dims: [
+      { id: 'tactics',     label: 'Tact', color: '#f87171' }, // red-400
+      { id: 'calculation', label: 'Calc', color: '#fb923c' }, // orange-400
+      { id: 'defense',     label: 'Def',  color: '#22d3ee' }, // cyan-400
+    ],
+  },
+  {
+    tileLabel: 'Game Mgmt',
+    dims: [
+      { id: 'time_management', label: 'Time',  color: '#facc15' }, // yellow-400
+      { id: 'resilience',      label: 'Resil', color: '#f472b6' }, // pink-400
+    ],
+  },
+];
 
 /* ── Country flag for an opponent's username (small inline emoji). ── */
 function OpponentFlag({ username, small }: { username: string; small?: boolean }) {
@@ -2285,6 +2466,90 @@ interface ProgressSnapshot {
   ratingDelta: number;
   ratingSeries: number[];
   timeClassLabel: string;
+  /** Smoothed per-dimension skill score over the current window — one
+   *  number per sample point. All dimensions share the same length so
+   *  they can be plotted on a shared x-axis. `null` when there aren't
+   *  enough analyzed games to compute a meaningful series. */
+  skillsSeries: Record<string, number[]> | null;
+}
+
+/* Sample N evenly-spaced points across an analyzed-games timeline and
+ * recompute the full 8-dimension skill profile at each point, using a
+ * rolling window of the most recent games. Per-game raw skill scores are
+ * very noisy (each game contributes ~50 moves and motif filters can wipe
+ * most of them out); the rolling window smooths the signal so the lines
+ * trend nicely instead of flickering.
+ *
+ * Sampling: only sample indices ≥ (window − 1) so every window is fully
+ * populated. The previous version clamped early indices via Math.max,
+ * which caused the first `window` samples to all share the same window
+ * and produce duplicate values — that's why the lines plateaued at the
+ * start of the chart. We now sample evenly across the *valid* range
+ * (idx in [window−1, length−1]), so each sample steps the window
+ * forward and the line can actually move.
+ *
+ * Insufficient-data shape: when the window covers most/all of the
+ * timeline (small dataset) we still return a 2-point series with the
+ * same value repeated. That keeps the SkillsSparkline geometry valid
+ * and lets the per-tile variation check render the "Not enough data"
+ * fallback — instead of silently hiding the tile, which used to make it
+ * unclear whether the feature existed at all. */
+function computeSmoothedSkillsSeries(
+  sortedGames: GameRecord[],
+  analyses: GameAnalysis[],
+): Record<string, number[]> | null {
+  const analysisById = new Map(analyses.map((a) => [a.gameId, a] as const));
+  const analyzed = sortedGames.filter((g) => analysisById.has(g.id));
+  if (analyzed.length < 3) return null;
+
+  // Window: ~quarter of the timeline, minimum 5 games, capped at the
+  // dataset size. Smaller than the prior games/3 so the window can
+  // actually step forward on small datasets — games/3 + 21 games left
+  // almost no room to move.
+  const window = Math.min(
+    analyzed.length,
+    Math.max(5, Math.floor(analyzed.length / 4)),
+  );
+  const validStart = window - 1;
+  const validRange = Math.max(0, analyzed.length - 1 - validStart);
+
+  const dimIds = [
+    'openings', 'tactics', 'defense', 'positional',
+    'endgame', 'calculation', 'time_management', 'resilience',
+  ];
+  const series: Record<string, number[]> = {};
+  for (const id of dimIds) series[id] = [];
+
+  // Degenerate case: window equals the full timeline. Compute the
+  // profile once and emit it twice so we still have a 2-point series.
+  if (validRange === 0) {
+    const windowAnalyses = analyzed
+      .map((g) => analysisById.get(g.id))
+      .filter((a): a is GameAnalysis => !!a);
+    const profile = calculateSkillProfile(null, analyzed, windowAnalyses);
+    const byId = new Map(profile.dimensions.map((d) => [d.id as string, d.score]));
+    for (const id of dimIds) {
+      const score = byId.get(id) ?? 50;
+      series[id] = [score, score];
+    }
+    return series;
+  }
+
+  const sampleCount = Math.min(24, validRange + 1);
+  for (let s = 0; s < sampleCount; s++) {
+    const t = sampleCount === 1 ? 0 : s / (sampleCount - 1);
+    const idx = Math.round(validStart + t * validRange);
+    const start = idx - window + 1;
+    const windowGames = analyzed.slice(start, idx + 1);
+    const windowAnalyses = windowGames
+      .map((g) => analysisById.get(g.id))
+      .filter((a): a is GameAnalysis => !!a);
+
+    const profile = calculateSkillProfile(null, windowGames, windowAnalyses);
+    const byId = new Map(profile.dimensions.map((d) => [d.id as string, d.score]));
+    for (const id of dimIds) series[id].push(byId.get(id) ?? 50);
+  }
+  return series;
 }
 
 /* Fold games into a current/prior bucket pair and compute the
@@ -2928,6 +3193,9 @@ function computeProgressSnapshot(
     ratingDelta,
     ratingSeries: ratingSeries.length >= 2 ? ratingSeries : [currentRating, currentRating],
     timeClassLabel: current[current.length - 1].timeClass.charAt(0).toUpperCase() + current[current.length - 1].timeClass.slice(1),
+    // Smoothed per-dimension skill series for the same window — drives
+    // the new 3 "skills over time" tiles in the stats strip.
+    skillsSeries: computeSmoothedSkillsSeries(current, analyses),
   };
 }
 

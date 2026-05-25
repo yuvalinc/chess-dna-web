@@ -143,6 +143,15 @@ export function LandingScreen({ settings, onSettingsChange, onGetStarted }: Land
           </div>
         ))}
       </div>
+
+      <div className="mt-5 text-center animate-fade-in-up" style={{ animationDelay: '0.3s' }}>
+        <a
+          href="/learn/how-to-improve-at-chess.html"
+          className="text-[12px] text-chess-text-secondary hover:text-chess-accent transition-colors"
+        >
+          Learn how to use Chess DNA to improve →
+        </a>
+      </div>
     </div>
   );
 }

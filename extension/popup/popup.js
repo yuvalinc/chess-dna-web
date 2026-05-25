@@ -134,7 +134,10 @@ function escapeHtml(s) {
 
 // ─── Event handlers ─────────────────────────────────────────────────────
 $('pat-save').addEventListener('click', async () => {
-  const value = $('pat-input').value.trim();
+  // Aggressively strip all whitespace + control chars — paste from Terminal
+  // or password managers often includes invisible \r or trailing newlines
+  // that crash fetch() in the service worker with TypeError.
+  const value = $('pat-input').value.replace(/[\r\n\t\s]+/g, '');
   if (!value) return;
   await STORAGE.set({ ghPat: value });
   $('pat-input').value = '';

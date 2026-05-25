@@ -62,14 +62,31 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'poll-replies') pollReplies();
 });
 
+// Strip whitespace/newlines from the PAT. The most common cause of
+// "Failed to execute 'fetch' on 'WorkerGlobalScope'" is a trailing \n or \r
+// in the Authorization header — the Headers constructor rejects any value
+// containing a control character and throws a TypeError before the network
+// request is even sent.
+function cleanPat(raw) {
+  return (raw || '').replace(/[\r\n\t\s]+/g, '');
+}
+
 // ─── Drafts queue ───────────────────────────────────────────────────────────
 async function pollDrafts() {
   console.log('[chess-dna] pollDrafts starting…');
-  const { ghPat } = await STORAGE.get(['ghPat']);
+  const { ghPat: rawPat } = await STORAGE.get(['ghPat']);
+  const ghPat = cleanPat(rawPat);
   if (!ghPat) {
     await STORAGE.set({ lastSyncError: 'No GitHub PAT saved. Connect GitHub first.' });
     console.warn('[chess-dna] pollDrafts: no PAT');
     return;
+  }
+  // Diagnostic: log shape (not value) of the PAT so we can verify it's well-formed.
+  console.log('[chess-dna] PAT:', ghPat.length, 'chars, starts with', ghPat.slice(0, 4), 'cleaned from', (rawPat || '').length);
+  if (ghPat !== rawPat) {
+    // The stored PAT had whitespace — save the cleaned version so future
+    // reads don't need to clean again.
+    await STORAGE.set({ ghPat });
   }
   try {
     // state=all so drafts still surface even if a previous run was already
@@ -300,7 +317,8 @@ function extractPostId(url) {
 }
 
 async function markComment(title, emoji, verb) {
-  const { ghPat, activeIssueNumber } = await STORAGE.get(['ghPat', 'activeIssueNumber']);
+  const { ghPat: rawPat, activeIssueNumber } = await STORAGE.get(['ghPat', 'activeIssueNumber']);
+  const ghPat = cleanPat(rawPat);
   if (!ghPat || !activeIssueNumber) return;
   await fetch(`https://api.github.com/repos/${GH_REPO}/issues/${activeIssueNumber}/comments`, {
     method: 'POST',

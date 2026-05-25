@@ -25,8 +25,7 @@ import AffiliateAdmin from './pages/AffiliateAdmin';
 import PromptsAdmin from './pages/PromptsAdmin';
 import FeedbackAdmin from './pages/FeedbackAdmin';
 import AnalyticsAdmin from './pages/AnalyticsAdmin';
-import SeoAdmin from './pages/SeoAdmin';
-import RedditAdmin from './pages/RedditAdmin';
+import SeoShell from './pages/SeoShell';
 import TimeMachine from './pages/TimeMachine';
 import Compare from './pages/Compare';
 import NavFlow from './pages/NavFlow';
@@ -78,8 +77,8 @@ export default function App() {
                               <Route path="/prompts" element={<PromptsAdmin />} />
                               <Route path="/feedbacks" element={<FeedbackAdmin />} />
                               <Route path="/analytics" element={<AnalyticsAdmin />} />
-                              <Route path="/seo" element={<SeoAdmin />} />
-                              <Route path="/reddit" element={<RedditAdmin />} />
+                              <Route path="/seo" element={<SeoShell />} />
+                              <Route path="/reddit" element={<Navigate to="/seo?tab=reddit" replace />} />
                               <Route path="/nav" element={<NavFlow />} />
                               <Route path="/graph" element={<Graph />} />
                               <Route path="*" element={<Navigate to="/" replace />} />

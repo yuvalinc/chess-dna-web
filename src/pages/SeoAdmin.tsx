@@ -474,6 +474,25 @@ export default function SeoAdmin() {
   const dailyTokens = displayed ? extractTokens(displayed.body) : 0;
   const totalTokens = (issues ?? []).reduce((sum, i) => sum + extractTokens(i.body), 0);
 
+  // Executor (Claude Code "Dev") cost — parsed from per-task comments the
+  // executor emits as "_Dev cost: $X.XXXX · N tokens_". Per-issue rather
+  // than account-wide because comments are only fetched for the displayed
+  // issue (per-issue fetch on every dashboard load would be N+1 wasteful).
+  const devCostThisIssue = useMemo(() => {
+    if (!comments) return 0;
+    return comments.reduce((sum, c) => {
+      const m = c.body?.match(/Dev cost:\s*\$([\d.]+)/);
+      return m ? sum + Number(m[1]) : sum;
+    }, 0);
+  }, [comments]);
+  const devTokensThisIssue = useMemo(() => {
+    if (!comments) return 0;
+    return comments.reduce((sum, c) => {
+      const m = c.body?.match(/Dev cost:[^·]+·\s*([\d,]+)\s+tokens/);
+      return m ? sum + Number(m[1].replace(/,/g, '')) : sum;
+    }, 0);
+  }, [comments]);
+
   const onApprove = async (issue: GhIssue) => {
     setBusy('approve');
     const prevLabels = issue.labels;
@@ -625,9 +644,26 @@ export default function SeoAdmin() {
           {issues ? `${issues.length} run${issues.length === 1 ? '' : 's'}` : 'Loading…'}
         </span>
         {issues && issues.length > 0 && (
-          <span className="text-[11px] text-chess-text-tertiary" title={`${totalTokens.toLocaleString()} tokens total · est. ${COST_PER_M_TOKENS_USD}$/M`}>
-            Today {fmtUsd(estimateCostUsd(dailyTokens))} · Total {fmtUsd(estimateCostUsd(totalTokens))}
-          </span>
+          <>
+            <span
+              className="text-[11px] text-chess-text-tertiary"
+              title={`Agent (planner) — ${totalTokens.toLocaleString()} tokens across all runs · est. $${COST_PER_M_TOKENS_USD}/M`}
+            >
+              <span className="text-chess-text-tertiary/70">Agent:</span>{' '}
+              {fmtUsd(estimateCostUsd(dailyTokens))} today · {fmtUsd(estimateCostUsd(totalTokens))} total
+            </span>
+            <span
+              className="text-[11px] text-chess-text-tertiary"
+              title={
+                devTokensThisIssue > 0
+                  ? `Claude Code executor — ${devTokensThisIssue.toLocaleString()} tokens this issue · exact cost from \`claude -p --output-format json\``
+                  : 'No executor cost data yet — runs after the next daemon tick will populate this'
+              }
+            >
+              <span className="text-chess-text-tertiary/70">Dev:</span>{' '}
+              {fmtUsd(devCostThisIssue)} this issue
+            </span>
+          </>
         )}
         <a
           href={`https://github.com/${GH_REPO}/issues?q=label%3Aseo-daily`}

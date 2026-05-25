@@ -173,10 +173,30 @@ async function executeTaskAsPR(issue, task) {
       throw new Error(`claude exited ${r.status} (signal=${r.signal ?? 'none'})`);
     }
 
+    // Parse Claude CLI's JSON output to extract per-task cost. The CLI
+    // emits { total_cost_usd, usage: { input_tokens, output_tokens, ... } }
+    // when --output-format json is set. We later embed this in the comment
+    // body so the dashboard can sum executor cost per issue / per day.
+    let costUsd = 0;
+    let totalTokens = 0;
+    try {
+      const parsed = JSON.parse(r.stdout || '{}');
+      if (typeof parsed.total_cost_usd === 'number') costUsd = parsed.total_cost_usd;
+      if (parsed.usage) {
+        totalTokens = (parsed.usage.input_tokens || 0)
+          + (parsed.usage.cache_creation_input_tokens || 0)
+          + (parsed.usage.cache_read_input_tokens || 0)
+          + (parsed.usage.output_tokens || 0);
+      }
+    } catch {
+      // Output wasn't JSON (older CLI version?) — leave cost at 0.
+    }
+    console.log(`[exec]   ${task.id}: ${totalTokens.toLocaleString()} tokens · $${costUsd.toFixed(4)}`);
+
     const changed = gitChangedInDir(worktreeDir);
     if (changed.length === 0) {
       // No file changes (e.g. pure browser task). No PR to open.
-      return { hadChanges: false };
+      return { hadChanges: false, costUsd, totalTokens };
     }
 
     // Commit + push.
@@ -222,7 +242,7 @@ async function executeTaskAsPR(issue, task) {
       diffStat,
       files: changed,
     };
-    return { hadChanges: true, pr: prResult };
+    return { hadChanges: true, pr: prResult, costUsd, totalTokens };
   } finally {
     // Always cleanup the worktree, even on failure.
     sh('git', ['worktree', 'remove', '-f', worktreeDir], { stdio: 'ignore' });
@@ -280,12 +300,15 @@ async function processIssue(issueNumber) {
     await commentOnIssue(issue.number, `🔧 Working on **${task.title}**…`);
 
     try {
-      const { hadChanges, pr } = await executeTaskAsPR(issue, task);
+      const { hadChanges, pr, costUsd = 0, totalTokens = 0 } = await executeTaskAsPR(issue, task);
 
       // Mark the box checked so we don't re-attempt this task on the next
       // daemon tick. (Approval/merge happens via the PR, not the checkbox.)
       body = rewriteCheckedBox(body.split('\n'), task.lineIndex);
       await updateIssue(issue.number, { body });
+
+      // Stable trailer the dashboard parses to compute the "Dev" cost pill.
+      const costLine = `\n\n_Dev cost: $${costUsd.toFixed(4)} · ${totalTokens.toLocaleString()} tokens_`;
 
       if (hadChanges && pr) {
         anyReady = true;
@@ -296,7 +319,8 @@ async function processIssue(issueNumber) {
           `${pr.diffStat || `${pr.files.length} file(s) changed`}\n\n` +
           `Files: ${filesList}\n\n` +
           `Branch: \`${pr.branch}\` · Commit: \`${pr.sha.slice(0, 7)}\`\n\n` +
-          `[View full diff →](${pr.url}/files)  ·  Approve & merge from /seo to ship + deploy.`,
+          `[View full diff →](${pr.url}/files)  ·  Approve & merge from /seo to ship + deploy.` +
+          costLine,
         );
       } else {
         // No file changes — e.g. a pure-browser task. Mark done immediately,
@@ -304,7 +328,7 @@ async function processIssue(issueNumber) {
         anyReady = true;
         await commentOnIssue(
           issue.number,
-          `✅ **${task.title}** — done (no file changes; browser-only task)`,
+          `✅ **${task.title}** — done (no file changes; browser-only task)` + costLine,
         );
       }
     } catch (err) {

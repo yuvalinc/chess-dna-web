@@ -496,15 +496,32 @@ export default function SeoAdmin() {
   const onMergePR = async (prNumber: number, taskTitle: string) => {
     setBusy('merge:' + prNumber);
     try {
+      // The executor opens PRs in draft state so the dashboard's "Approve &
+      // merge" button is the sole gate. GitHub's REST merge endpoint refuses
+      // draft PRs with HTTP 405 — silently failing the click and leaving the
+      // user staring at the same button. Mark ready_for_review first (via
+      // GraphQL — REST doesn't expose this), then merge.
+      const pr = await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`);
+      if (pr.draft && pr.node_id) {
+        const ready = await ghFetch(`/graphql`, {
+          method: 'POST',
+          body: JSON.stringify({
+            query: 'mutation Ready($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } } }',
+            variables: { id: pr.node_id },
+          }),
+        });
+        if (ready?.errors?.length) {
+          throw new Error(`Mark-ready failed: ${ready.errors[0].message}`);
+        }
+      }
       await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}/merge`, {
         method: 'PUT',
         body: JSON.stringify({ merge_method: 'squash', commit_title: `[SEO] ${taskTitle}` }),
       });
-      // Refetch PR state for this number specifically.
-      const pr = await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`);
+      const merged = await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`);
       setPrStates(prev => {
         const m = new Map(prev);
-        m.set(prNumber, { state: pr.state, merged_at: pr.merged_at, merge_commit_sha: pr.merge_commit_sha });
+        m.set(prNumber, { state: merged.state, merged_at: merged.merged_at, merge_commit_sha: merged.merge_commit_sha });
         return m;
       });
     } catch (e) {

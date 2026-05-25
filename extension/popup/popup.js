@@ -23,8 +23,8 @@ function computePolicy() {
 
 // ─── Render ─────────────────────────────────────────────────────────────
 async function render() {
-  const { ghPat, karma, activeDrafts, lastSyncAt } = await STORAGE.get([
-    'ghPat', 'karma', 'activeDrafts', 'lastSyncAt',
+  const { ghPat, karma, activeDrafts, lastSyncAt, lastSyncError } = await STORAGE.get([
+    'ghPat', 'karma', 'activeDrafts', 'lastSyncAt', 'lastSyncError',
   ]);
 
   // PAT setup
@@ -49,9 +49,13 @@ async function render() {
 
   // Posting as
   $('advocate-username').textContent = ADVOCATE;
-  $('last-sync').textContent = lastSyncAt
-    ? `Last update: ${new Date(lastSyncAt).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' })}`
-    : 'Last update: —';
+  if (lastSyncError) {
+    $('last-sync').innerHTML = `<span style="color: #c9580a;" title="${escapeHtml(lastSyncError)}">⚠ ${escapeHtml(lastSyncError.slice(0, 60))}${lastSyncError.length > 60 ? '…' : ''}</span>`;
+  } else {
+    $('last-sync').textContent = lastSyncAt
+      ? `Last update: ${new Date(lastSyncAt).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' })}`
+      : 'Last update: —';
+  }
 
   // Today's date in the section header
   $('today-date').textContent = '| ' + new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });

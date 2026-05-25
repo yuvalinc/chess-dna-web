@@ -47,7 +47,14 @@ chrome.runtime.onStartup.addListener(async () => {
   try {
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   } catch {}
+  pollDrafts(); pollKarma(); pollReplies();
 });
+
+// Service workers in MV3 idle out after ~30s and restart on the next event.
+// Fire pollDrafts at the top level so a reload-via-chrome://extensions/
+// (which doesn't fire onInstalled) still produces a fresh sync.
+pollDrafts();
+pollKarma();
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'poll-drafts')  pollDrafts();
@@ -57,28 +64,60 @@ chrome.alarms.onAlarm.addListener(alarm => {
 
 // ─── Drafts queue ───────────────────────────────────────────────────────────
 async function pollDrafts() {
+  console.log('[chess-dna] pollDrafts starting…');
   const { ghPat } = await STORAGE.get(['ghPat']);
-  if (!ghPat) return;
+  if (!ghPat) {
+    await STORAGE.set({ lastSyncError: 'No GitHub PAT saved. Connect GitHub first.' });
+    console.warn('[chess-dna] pollDrafts: no PAT');
+    return;
+  }
   try {
-    const res = await fetch(`https://api.github.com/repos/${GH_REPO}/issues?labels=reddit-daily&state=open&per_page=1`, {
+    // state=all so drafts still surface even if a previous run was already
+    // closed (after deploy). Sorted by created descending (default for issues).
+    const url = `https://api.github.com/repos/${GH_REPO}/issues?labels=reddit-daily&state=all&per_page=5`;
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${ghPat}`, Accept: 'application/vnd.github+json' },
     });
-    if (!res.ok) return;
-    const [issue] = await res.json();
-    if (!issue) return;
-    const commentsRes = await fetch(`https://api.github.com/repos/${GH_REPO}/issues/${issue.number}/comments?per_page=100`, {
-      headers: { Authorization: `Bearer ${ghPat}`, Accept: 'application/vnd.github+json' },
-    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      const err = `GitHub ${res.status}: ${txt.slice(0, 140)}`;
+      console.warn('[chess-dna] pollDrafts:', err);
+      await STORAGE.set({ lastSyncError: err });
+      return;
+    }
+    const list = await res.json();
+    const issue = list?.[0];
+    if (!issue) {
+      console.warn('[chess-dna] pollDrafts: no reddit-daily issues found');
+      await STORAGE.set({
+        activeDrafts: { all: [], queued: 0 },
+        lastSyncError: 'No reddit-daily issues on github. Run npm run reddit:daily.',
+        lastSyncAt: Date.now(),
+      });
+      chrome.action.setBadgeText({ text: '' });
+      return;
+    }
+    console.log('[chess-dna] pollDrafts: latest issue #' + issue.number);
+    const commentsRes = await fetch(
+      `https://api.github.com/repos/${GH_REPO}/issues/${issue.number}/comments?per_page=100`,
+      { headers: { Authorization: `Bearer ${ghPat}`, Accept: 'application/vnd.github+json' } },
+    );
     const comments = commentsRes.ok ? await commentsRes.json() : [];
     const drafts = parseDrafts(issue.body || '', comments);
+    console.log('[chess-dna] pollDrafts: parsed', drafts.all.length, 'drafts,', drafts.queued, 'queued');
     await STORAGE.set({
       activeDrafts: drafts,
       activeIssueNumber: issue.number,
       lastSyncAt: Date.now(),
+      lastSyncError: null,
     });
     chrome.action.setBadgeText({ text: drafts.queued > 0 ? String(drafts.queued) : '' });
     chrome.action.setBadgeBackgroundColor({ color: '#3a9d52' });
-  } catch (e) { console.warn('[chess-dna] pollDrafts failed', e); }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[chess-dna] pollDrafts threw:', msg);
+    await STORAGE.set({ lastSyncError: `Network error: ${msg}` });
+  }
 }
 
 function parseDrafts(body, comments) {

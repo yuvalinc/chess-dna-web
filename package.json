@@ -14,7 +14,8 @@
     "seo:execute": "node scripts/seo-execute.mjs",
     "seo:install-daemon": "node scripts/seo-install-daemon.mjs install",
     "seo:uninstall-daemon": "node scripts/seo-install-daemon.mjs uninstall",
-    "reddit:daily": "node scripts/reddit-daily.mjs"
+    "reddit:daily": "node scripts/reddit-daily.mjs",
+    "brand:monitor": "node scripts/brand-monitor.mjs"
   },
   "dependencies": {
     "@base44/sdk": "^0.8.19",

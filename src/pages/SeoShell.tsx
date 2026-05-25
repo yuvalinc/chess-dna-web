@@ -2,6 +2,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import SeoAdmin from './SeoAdmin';
 import RedditAdmin from './RedditAdmin';
+import InsightsAdmin from './InsightsAdmin';
 
 // Thin tabbed wrapper at /seo. Each tab renders a self-contained admin page
 // (each handles its own PAT + data fetching — they share the same PAT key
@@ -11,16 +12,18 @@ import RedditAdmin from './RedditAdmin';
 //   /seo            → SEO daily
 //   /seo?tab=reddit → ReddGrow
 
-type TabKey = 'seo' | 'reddit';
+type TabKey = 'seo' | 'reddit' | 'insights';
 const TABS: Array<{ key: TabKey; label: string; hint: string }> = [
-  { key: 'seo',    label: 'SEO daily',  hint: 'On-site SEO tasks the daily agent produces' },
-  { key: 'reddit', label: 'ReddGrow',   hint: 'AI-drafted Reddit comments ready to copy & post' },
+  { key: 'seo',      label: 'SEO daily',  hint: 'On-site SEO tasks the daily agent produces' },
+  { key: 'reddit',   label: 'ReddGrow',   hint: 'AI-drafted Reddit comments ready to copy & post' },
+  { key: 'insights', label: 'Insights',   hint: 'AI visibility (kw.com) + Reddit brand mentions' },
 ];
 
 export default function SeoShell() {
   const { isAdmin } = useAuth();
   const [params, setParams] = useSearchParams();
-  const tab: TabKey = params.get('tab') === 'reddit' ? 'reddit' : 'seo';
+  const rawTab = params.get('tab');
+  const tab: TabKey = rawTab === 'reddit' ? 'reddit' : rawTab === 'insights' ? 'insights' : 'seo';
 
   const setTab = (next: TabKey) => {
     // Preserve other params (none today, but future-proof) and only set ?tab
@@ -69,7 +72,9 @@ export default function SeoShell() {
           );
         })}
       </nav>
-      {tab === 'seo' ? <SeoAdmin /> : <RedditAdmin />}
+      {tab === 'seo' && <SeoAdmin />}
+      {tab === 'reddit' && <RedditAdmin />}
+      {tab === 'insights' && <InsightsAdmin />}
     </div>
   );
 }

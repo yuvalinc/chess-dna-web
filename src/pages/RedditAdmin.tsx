@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import ActivityCalendar from '@/components/ActivityCalendar';
 
 // Reddit outreach dashboard — copy-paste workflow for AI-drafted comments.
 // Mirrors /seo's architecture: GitHub issues as control plane, PAT in
@@ -126,7 +127,15 @@ function parseDraftActions(comments: GhComment[]): Map<string, DraftAction> {
 function extractSummary(body: string | null): string | null {
   if (!body) return null;
   const m = body.match(/##\s+Summary\s*\n([\s\S]*?)(?=\n##|\n---|$)/);
-  return m ? m[1].trim() : null;
+  if (!m) return null;
+  // Strip markdown bold so **N** doesn't leak through as literal asterisks.
+  return m[1].trim().replace(/\*\*([^*]+)\*\*/g, '$1');
+}
+
+function countDraftsInBody(body: string | null): number {
+  if (!body) return 0;
+  const matches = body.match(/<!--\s*draft-\d+\s*-->/g);
+  return matches?.length ?? 0;
 }
 
 function extractTokens(body: string | null): number {
@@ -238,6 +247,27 @@ export default function RedditAdmin() {
   const todayTokens = displayed ? extractTokens(displayed.body) : 0;
   const past = issues ? issues.filter(i => i.number !== displayed?.number) : [];
 
+  // Per-day draft counts for the activity calendar (last ~91 days).
+  const draftsByDay = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const issue of issues ?? []) {
+      const d = new Date(issue.created_at);
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      m.set(k, (m.get(k) ?? 0) + countDraftsInBody(issue.body));
+    }
+    return m;
+  }, [issues]);
+
+  // Rolling stats for the header strip.
+  const now = Date.now();
+  const draftsToday = displayed ? countDraftsInBody(displayed.body) : 0;
+  const draftsLast7 = (issues ?? [])
+    .filter(i => now - new Date(i.created_at).getTime() < 7 * 24 * 3600 * 1000)
+    .reduce((s, i) => s + countDraftsInBody(i.body), 0);
+  const draftsLast30 = (issues ?? [])
+    .filter(i => now - new Date(i.created_at).getTime() < 30 * 24 * 3600 * 1000)
+    .reduce((s, i) => s + countDraftsInBody(i.body), 0);
+
   // ──────── Actions ────────
   const postComment = async (draft: ParsedDraft, kind: DraftAction) => {
     if (!displayed) return;
@@ -265,18 +295,13 @@ export default function RedditAdmin() {
   };
 
   // ──────── Render ────────
-  if (isAdmin === null) return <div className="p-8 text-center text-chess-text-tertiary">Loading…</div>;
-  if (!isAdmin) {
-    return (
-      <div className="p-8 text-center">
-        <h2 className="text-xl font-bold mb-2">Access Denied</h2>
-        <p className="text-chess-text-tertiary">This page is restricted to administrators.</p>
-      </div>
-    );
-  }
+  // Admin gate now lives in SeoShell; this component renders inside it. The
+  // PAT setup screen stays here because it's tab-local UX — only shown if
+  // the user hasn't pasted a PAT yet (rare given the dev-mode auto-load).
+  if (isAdmin !== true) return null;
   if (!pat) {
     return (
-      <div className="max-w-5xl mx-auto pb-20 px-1">
+      <div className="pb-20">
         <h1 className="text-2xl font-extrabold text-chess-text mb-4">Reddit Outreach</h1>
         <PatSetup onSaved={setPat} />
       </div>
@@ -284,7 +309,7 @@ export default function RedditAdmin() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto pb-20 px-1">
+    <div className="pb-20">
       <header className="flex flex-wrap items-baseline gap-3 mb-4">
         <h1 className="text-2xl font-extrabold text-chess-text">Reddit Outreach</h1>
         <span className="text-[12px] text-chess-text-tertiary">
@@ -295,7 +320,7 @@ export default function RedditAdmin() {
             className="text-[11px] text-chess-text-tertiary"
             title={`${totalTokens.toLocaleString()} tokens total · est. $${COST_PER_M_TOKENS_USD}/M`}
           >
-            Today {fmtUsd((todayTokens / 1_000_000) * COST_PER_M_TOKENS_USD)} · Total {fmtUsd((totalTokens / 1_000_000) * COST_PER_M_TOKENS_USD)}
+            {fmtUsd((todayTokens / 1_000_000) * COST_PER_M_TOKENS_USD)} today · {fmtUsd((totalTokens / 1_000_000) * COST_PER_M_TOKENS_USD)} total
           </span>
         )}
         <a
@@ -307,6 +332,20 @@ export default function RedditAdmin() {
           on github.com →
         </a>
       </header>
+
+      {issues && issues.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <StatCard label="Today" value={draftsToday} sublabel="drafts" />
+          <StatCard label="Last 7 days" value={draftsLast7} sublabel="drafts" />
+          <StatCard label="Last 30 days" value={draftsLast30} sublabel="drafts" />
+        </div>
+      )}
+
+      {issues && issues.length > 0 && (
+        <div className="mb-4">
+          <ActivityCalendar counts={draftsByDay} label="drafts" colorClass="bg-chess-accent" />
+        </div>
+      )}
 
       {error && (
         <div className="bg-chess-blunder/10 border border-chess-blunder/30 text-chess-blunder text-[13px] rounded-lg p-3 mb-4">
@@ -496,6 +535,18 @@ function DraftCard({
         >
           view thread →
         </a>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, sublabel }: { label: string; value: number; sublabel: string }) {
+  return (
+    <div className="bg-chess-surface rounded-xl border border-chess-border/40 p-3">
+      <div className="text-[11px] text-chess-text-tertiary uppercase tracking-wider">{label}</div>
+      <div className="text-2xl font-extrabold text-chess-text leading-tight mt-0.5">
+        {value}
+        <span className="text-[12px] text-chess-text-tertiary font-normal ml-1.5">{sublabel}</span>
       </div>
     </div>
   );

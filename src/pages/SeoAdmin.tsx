@@ -990,14 +990,39 @@ function IssueCard({
           </div>
         )}
 
-        {status === 'approved' && (
-          <div className="text-[12px] text-chess-text-tertiary bg-chess-bg/40 rounded p-3">
-            ✓ Approved. The local daemon on your Mac picks this up within 30 seconds — file edits + Chrome MCP for browser tasks. Watch the comments stream in on this issue as each task finishes.
-            <div className="text-[11px] text-chess-text-tertiary mt-2">
-              Daemon not running? Run <code className="bg-chess-bg/60 px-1 rounded select-all">npm run seo:install-daemon</code> once (then never again).
+        {status === 'approved' && (() => {
+          // The daemon picks up approved issues every 30s. If no execution
+          // comments have appeared after a generous grace period, it almost
+          // certainly isn't running on the user's Mac. Surface that loudly
+          // instead of cheerfully claiming "the daemon will handle it".
+          // updated_at moves when the seo-approved label gets added, so it's
+          // a decent proxy for approval time.
+          const approvedAgoMs = Date.now() - new Date(issue.updated_at).getTime();
+          const daemonGraceMs = 3 * 60 * 1000;
+          const daemonLikelyDead = execStatuses.size === 0 && approvedAgoMs > daemonGraceMs;
+          if (daemonLikelyDead) {
+            return (
+              <div className="text-[12px] bg-chess-blunder/10 border border-chess-blunder/30 rounded p-3">
+                <div className="text-chess-blunder font-bold mb-1">⚠ Daemon hasn't picked this up</div>
+                <div className="text-chess-text-secondary mb-2">
+                  Approved {Math.round(approvedAgoMs / 60000)} min ago but no execution comments yet. The local launchd daemon that runs Claude Code on approved issues isn't running on your Mac.
+                </div>
+                <div className="text-chess-text-secondary">
+                  Run this once to fix (survives reboots, never needs re-running):
+                </div>
+                <code className="block bg-chess-bg/60 px-2 py-1.5 rounded mt-1 select-all text-chess-text font-mono text-[11px]">npm run seo:install-daemon</code>
+              </div>
+            );
+          }
+          return (
+            <div className="text-[12px] text-chess-text-tertiary bg-chess-bg/40 rounded p-3">
+              ✓ Approved. The local daemon on your Mac picks this up within 30 seconds — file edits + Chrome MCP for browser tasks. Watch the comments stream in on this issue as each task finishes.
+              <div className="text-[11px] text-chess-text-tertiary mt-2">
+                Daemon not running? Run <code className="bg-chess-bg/60 px-1 rounded select-all">npm run seo:install-daemon</code> once (then never again).
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {summary && (

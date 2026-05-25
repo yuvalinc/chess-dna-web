@@ -28,10 +28,13 @@ interface GhComment {
   created_at: string;
 }
 
+type DraftType = 'warmup' | 'promotional' | 'brand_monitor';
+
 interface ParsedDraft {
   id: string;
   subreddit: string;
   title: string;
+  type: DraftType;
   matchScore: number;
   reasons: string;
   postedAgo: string;
@@ -43,6 +46,25 @@ interface ParsedDraft {
 }
 
 type DraftAction = 'opened' | 'posted' | 'skipped';
+
+// Visual + UX rules per draft type.
+const TYPE_META: Record<DraftType, { label: string; cls: string; hint: string }> = {
+  warmup: {
+    label: '🟢 Warmup',
+    cls: 'bg-chess-best/15 text-chess-best border-chess-best/30',
+    hint: 'Karma builder — zero brand mention. Posts freely without ratio limits.',
+  },
+  promotional: {
+    label: '🎯 Promotional',
+    cls: 'bg-chess-accent/15 text-chess-accent border-chess-accent/30',
+    hint: 'Brand mention woven in naturally. Subject to the 9:1 warmup-to-promo rule.',
+  },
+  brand_monitor: {
+    label: '👁 Brand mention',
+    cls: 'bg-chess-inaccuracy/15 text-chess-inaccuracy border-chess-inaccuracy/30',
+    hint: 'Thread already mentions chess-dna — respond as a peer user, not as the team.',
+  },
+};
 
 function getPat(): string | null {
   try {
@@ -79,6 +101,7 @@ function parseDrafts(body: string | null): ParsedDraft[] {
     const headerMatch = block.match(/^###\s+\[r\/([^\]]+)\]\s+(.+?)\s*<!--\s*(draft-\d+)\s*-->/m);
     if (!headerMatch) continue;
     const [, subreddit, title, id] = headerMatch;
+    const typeM = block.match(/\*\*Type\*\*:\s*(warmup|promotional|brand_monitor)/);
     const match = block.match(/\*\*Match\*\*:\s*(\d+)%(?:\s*·\s*_([^_]+)_)?/);
     const posted = block.match(/\*\*Posted\*\*:\s*([\d.]+h)\s+ago\s*·\s*(\d+)↑\s*·\s*(\d+)\s+comments/);
     const url = block.match(/\*\*URL\*\*:\s*(\S+)/);
@@ -88,6 +111,8 @@ function parseDrafts(body: string | null): ParsedDraft[] {
       id,
       subreddit,
       title: title.trim(),
+      // Default to warmup for pre-classifier issues so legacy drafts still parse.
+      type: (typeM?.[1] as DraftType) ?? 'warmup',
       matchScore: match ? Number(match[1]) : 0,
       reasons: match?.[2]?.trim() ?? '',
       postedAgo: posted?.[1] ?? '',
@@ -268,6 +293,31 @@ export default function RedditAdmin() {
     .filter(i => now - new Date(i.created_at).getTime() < 30 * 24 * 3600 * 1000)
     .reduce((s, i) => s + countDraftsInBody(i.body), 0);
 
+  // 9:1 warmup-to-promotional ratio. Only counts posted (✅) drafts within the
+  // currently-displayed issue — across all issues would need fetching every
+  // issue's comments. Good enough as a guardrail since users typically post
+  // a batch per day and the ratio violation is most acute within that batch.
+  const postedByType = useMemo(() => {
+    const tally: Record<DraftType, number> = { warmup: 0, promotional: 0, brand_monitor: 0 };
+    if (!comments) return tally;
+    const titleToType = new Map<string, DraftType>();
+    for (const d of drafts) titleToType.set(d.title, d.type);
+    for (const c of comments) {
+      const body = c.body ?? '';
+      if (!body.startsWith('✅')) continue;
+      const titleM = body.match(/\*\*([^*]+?)\*\*/);
+      if (!titleM) continue;
+      const t = titleToType.get(titleM[1].trim());
+      if (t) tally[t] += 1;
+    }
+    return tally;
+  }, [comments, drafts]);
+
+  // Threshold the user must clear before a Promotional draft is allowed.
+  // Reddit's unwritten norm is 9 helpful comments per 1 self-promotion.
+  const promoBudget = Math.max(0, Math.floor(postedByType.warmup / 9) - postedByType.promotional);
+  const ratioOK = promoBudget > 0;
+
   // ──────── Actions ────────
   const postComment = async (draft: ParsedDraft, kind: DraftAction) => {
     if (!displayed) return;
@@ -395,7 +445,7 @@ export default function RedditAdmin() {
 
           {drafts.length > 0 && (
             <div className="bg-chess-surface rounded-xl p-4 border border-chess-border/40 mb-4">
-              <div className="flex items-baseline justify-between mb-3">
+              <div className="flex items-baseline justify-between mb-3 flex-wrap gap-2">
                 <h3 className="text-sm font-bold text-chess-text">Drafts ({drafts.length})</h3>
                 <span className="text-[11px] text-chess-text-tertiary">
                   {drafts.filter(d => actions.get(d.title) === 'posted').length} posted ·{' '}
@@ -403,12 +453,15 @@ export default function RedditAdmin() {
                   {drafts.filter(d => actions.get(d.title) === 'skipped').length} skipped
                 </span>
               </div>
+              <RatioBadge postedByType={postedByType} promoBudget={promoBudget} ratioOK={ratioOK} />
               {drafts.map(draft => (
                 <DraftCard
                   key={draft.id}
                   draft={draft}
                   action={actions.get(draft.title)}
                   busyKey={busy}
+                  ratioOK={ratioOK}
+                  promoBudget={promoBudget}
                   onCopyOpen={() => copyAndOpen(draft)}
                   onPosted={() => postComment(draft, 'posted')}
                   onSkipped={() => postComment(draft, 'skipped')}
@@ -444,11 +497,13 @@ export default function RedditAdmin() {
 }
 
 function DraftCard({
-  draft, action, busyKey, onCopyOpen, onPosted, onSkipped,
+  draft, action, busyKey, ratioOK, promoBudget, onCopyOpen, onPosted, onSkipped,
 }: {
   draft: ParsedDraft;
   action?: DraftAction;
   busyKey: string | null;
+  ratioOK: boolean;
+  promoBudget: number;
   onCopyOpen: () => void;
   onPosted: () => void;
   onSkipped: () => void;
@@ -456,6 +511,10 @@ function DraftCard({
   const isPosted = action === 'posted';
   const isSkipped = action === 'skipped';
   const isOpened = action === 'opened';
+  const typeMeta = TYPE_META[draft.type];
+  // Block copy on Promotional drafts when the 9:1 ratio isn't met — Reddit's
+  // anti-spam classifier looks for this. Brand-monitor and warmup pass freely.
+  const ratioBlocked = draft.type === 'promotional' && !ratioOK && !isPosted;
   const cardCls = isPosted
     ? 'border-chess-best/30 bg-chess-best/5'
     : isSkipped
@@ -472,6 +531,12 @@ function DraftCard({
   return (
     <div className={`border rounded-lg p-3 mb-3 transition-colors ${cardCls}`}>
       <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold border ${typeMeta.cls}`}
+          title={typeMeta.hint}
+        >
+          {typeMeta.label}
+        </span>
         <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold border ${scoreColor}`}>
           {draft.matchScore}% match
         </span>
@@ -500,12 +565,23 @@ function DraftCard({
       {draft.reasons && (
         <div className="text-[11px] text-chess-text-tertiary mb-2 italic">{draft.reasons}</div>
       )}
+      {ratioBlocked && (
+        <div className="text-[11px] bg-chess-blunder/10 border border-chess-blunder/30 rounded p-2 mb-2 text-chess-blunder">
+          ⚠ <strong>Ratio gate</strong>: post {-promoBudget + 1} more Warmup comment{-promoBudget === 0 ? '' : 's'} before this Promotional draft. Reddit flags accounts with more than 1 self-promo per 9 helpful posts.
+        </div>
+      )}
       <div className="flex gap-2 flex-wrap">
         <button
           onClick={onCopyOpen}
-          disabled={busyKey != null}
-          className="text-[12px] font-bold px-3 py-1.5 rounded-md border bg-chess-accent text-white border-chess-accent hover:bg-chess-accent/90 disabled:opacity-60"
-          title="Copy the draft to clipboard and open the Reddit thread in a new tab"
+          disabled={busyKey != null || ratioBlocked}
+          className={`text-[12px] font-bold px-3 py-1.5 rounded-md border disabled:opacity-60 ${
+            ratioBlocked
+              ? 'bg-chess-surface text-chess-text-tertiary border-chess-border/40 cursor-not-allowed'
+              : 'bg-chess-accent text-white border-chess-accent hover:bg-chess-accent/90'
+          }`}
+          title={ratioBlocked
+            ? 'Blocked: post more Warmup drafts first to maintain a healthy 9:1 ratio'
+            : 'Copy the draft to clipboard and open the Reddit thread in a new tab'}
         >
           📋 Copy & Open Reddit
         </button>
@@ -548,6 +624,36 @@ function StatCard({ label, value, sublabel }: { label: string; value: number; su
         {value}
         <span className="text-[12px] text-chess-text-tertiary font-normal ml-1.5">{sublabel}</span>
       </div>
+    </div>
+  );
+}
+
+function RatioBadge({
+  postedByType, promoBudget, ratioOK,
+}: {
+  postedByType: Record<DraftType, number>;
+  promoBudget: number;
+  ratioOK: boolean;
+}) {
+  const totalPosted = postedByType.warmup + postedByType.promotional + postedByType.brand_monitor;
+  if (totalPosted === 0) {
+    return (
+      <div className="text-[11px] text-chess-text-tertiary mb-3 italic">
+        9:1 ratio gate active — post Warmup drafts first to unlock Promotional drafts. Each 9 Warmup posts buys 1 Promotional slot.
+      </div>
+    );
+  }
+  return (
+    <div className={`text-[11px] mb-3 px-3 py-2 rounded border ${
+      ratioOK
+        ? 'bg-chess-best/10 border-chess-best/30 text-chess-best'
+        : 'bg-chess-mistake/10 border-chess-mistake/30 text-chess-mistake'
+    }`}>
+      <strong>{ratioOK ? '✓ Ratio healthy' : '⚠ Ratio under 9:1'}</strong>
+      <span className="text-chess-text-tertiary ms-2">
+        Posted this issue: {postedByType.warmup} Warmup · {postedByType.promotional} Promotional · {postedByType.brand_monitor} Brand-mention
+        {' · '}Promotional budget: {promoBudget}
+      </span>
     </div>
   );
 }

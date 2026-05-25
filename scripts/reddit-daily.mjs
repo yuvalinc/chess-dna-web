@@ -150,22 +150,79 @@ function scoreThread(post) {
   return { score, reasons, matched };
 }
 
+// ─── Draft classification ──────────────────────────────────────────────────
+// Each thread gets categorized by intent so we can pick the right voice +
+// brand-mention policy. Reddit's anti-spam classifier flags accounts with
+// >10–20% promotional posts; "warmup" comments (zero brand mention) build
+// the karma and credibility that promotional drafts later rely on.
+
+// Promotional intent markers — thread directly asks for or discusses tools.
+const PROMO_PATTERNS = [
+  'recommend', 'best app', 'best tool', 'best software', 'best site',
+  'what app', 'what tool', 'which app', 'which tool',
+  'any apps', 'any tools', 'analysis tool', 'analysis app',
+  'training app', 'training tool',
+  'thoughts on', 'review of', 'is it worth',
+  'has anyone tried', 'has anyone used',
+];
+
+// Brand mentions — thread directly mentions us or a close competitor by name.
+const BRAND_PATTERNS = [
+  'chess-dna', 'chessdna', 'chess dna', 'chessdna.app',
+];
+
+function classifyDraftType(post) {
+  const text = `${post.title}\n${post.selftext ?? ''}`.toLowerCase();
+  if (BRAND_PATTERNS.some(p => text.includes(p))) return 'brand_monitor';
+  if (PROMO_PATTERNS.some(p => text.includes(p))) return 'promotional';
+  return 'warmup';
+}
+
 // ─── Draft generation ──────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `you are drafting a reddit comment for the chess-dna.app team.
-
-chess-dna is a free web app that takes a user's chess.com or lichess games, runs them through stockfish, and surfaces their recurring patterns + weaknesses (e.g. "you blunder back-rank tactics in time pressure"). it then drills them on their actual past mistakes. it's designed for 600–1800 elo improvers stuck on a plateau.
-
-voice rules (these matter — drafts get rejected if they read like ads):
+const VOICE_RULES = `voice rules (these matter — drafts get rejected if they read like ads):
 - lowercase, conversational, like a regular redditor typing fast
 - 2–4 sentences max, no walls of text
 - no em-dashes, no bullet lists, no markdown, no emojis
-- speak from personal experience — "i used to / what worked for me / i tried"
-- mention chess-dna ONCE, naturally, only if the thread actually benefits from it
-- if the thread doesn't genuinely benefit from chess-dna, mention it not at all and just be a helpful redditor
-- never say "you should check out / try / use chess dna" — that's advertising. instead describe what you do and let chess-dna be one detail among several
-- disclose nothing — assume the reader knows nothing about your affiliation. the comment must sound like a peer
+- speak from personal experience — "i used to / what worked for me / i tried"`;
 
-output ONLY the comment text, no preamble or quotes around it.`;
+const CONTEXT_BLOCK = `chess-dna is a free web app that takes a user's chess.com or lichess games, runs them through stockfish, and surfaces their recurring patterns + weaknesses (e.g. "you blunder back-rank tactics in time pressure"). it then drills them on their actual past mistakes. it's designed for 600–1800 elo improvers stuck on a plateau.`;
+
+const SYSTEM_PROMPTS = {
+  // Karma builder — zero brand mention. The point is to be useful so the
+  // account accumulates trust before any promotional posts go out.
+  warmup: `you are drafting a reddit comment as a regular member of the chess community. you have no product to promote — just be a helpful, knowledgeable peer.
+
+${VOICE_RULES}
+- ABSOLUTELY NO brand mention. do not name any app, tool, or website by name. you may mention general concepts ("game analysis", "puzzle training") but not specific products.
+- if the thread asks "what app should i use", just describe the strategy/principle without naming products.
+
+output ONLY the comment text, no preamble or quotes around it.`,
+
+  // Brand mention allowed when the thread genuinely benefits from it.
+  promotional: `you are drafting a reddit comment for the chess-dna.app team.
+
+${CONTEXT_BLOCK}
+
+${VOICE_RULES}
+- mention chess-dna ONCE, naturally, only because the thread is directly asking for this kind of tool
+- never say "you should check out / try / use chess dna" — that's advertising. instead describe what you do and let chess-dna be one detail among several others you tried
+- be honest about limitations — mention something it doesn't do, or a free alternative, alongside chess-dna. that's how real recommendations read.
+
+output ONLY the comment text, no preamble or quotes around it.`,
+
+  // Someone is already talking about us. Engage as a user, not as marketing.
+  brand_monitor: `you are drafting a reddit comment in response to a thread that already mentions chess-dna.app.
+
+${CONTEXT_BLOCK}
+
+${VOICE_RULES}
+- the brand is already in the conversation — you don't need to reintroduce it. respond to the specific point the OP made.
+- if OP had a problem with chess-dna, acknowledge it honestly and either explain a workaround or thank them for the feedback. do not be defensive.
+- if OP recommended chess-dna, add color from your own experience ("yeah the pattern thing helped me catch X").
+- never identify yourself as the team. you're another user who happens to also use it.
+
+output ONLY the comment text, no preamble or quotes around it.`,
+};
 
 function buildUserPrompt(post) {
   const body = (post.selftext ?? '').slice(0, 1500);
@@ -175,14 +232,15 @@ ${body ? `\nbody:\n${body}\n` : ''}
 draft a comment.`;
 }
 
-async function generateDraft(post) {
+async function generateDraft(post, type) {
+  const systemPrompt = SYSTEM_PROMPTS[type] ?? SYSTEM_PROMPTS.warmup;
   const res = await fetch(`${ANTHROPIC_BASE}/v1/messages`, {
     method: 'POST',
     headers: ANTHROPIC_HEADERS(),
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 300,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: [{ role: 'user', content: buildUserPrompt(post) }],
     }),
   });
@@ -194,6 +252,54 @@ async function generateDraft(post) {
   const text = data.content?.[0]?.text?.trim() ?? '';
   const tokens = (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0);
   return { text, tokens };
+}
+
+// ─── Ramping policy ────────────────────────────────────────────────────────
+// Reddit's anti-spam classifier flags accounts that go 0→20 posts/day or post
+// a high ratio of promotional comments. We ramp up daily volume + the
+// warmup-to-promo ratio over a 2-week onboarding window. After that, default
+// to 12/day with at most ~30% promotional content. Override per-account via
+// REDDIT_CAMPAIGN_START (YYYY-MM-DD) and REDDIT_MAX_DRAFTS.
+const CAMPAIGN_START = process.env.REDDIT_CAMPAIGN_START ?? '2026-05-25';
+
+function computeRampingPolicy() {
+  // If user explicitly set MAX_DRAFTS, honor it but still apply mix caps.
+  const explicitCap = process.env.REDDIT_MAX_DRAFTS ? Number(process.env.REDDIT_MAX_DRAFTS) : null;
+  const startMs = new Date(CAMPAIGN_START).getTime();
+  const dayN = Math.max(1, Math.floor((Date.now() - startMs) / (24 * 3600 * 1000)) + 1);
+
+  let maxDrafts, maxPromoShare, maxBrandShare;
+  if (dayN <= 3) { maxDrafts = 3;  maxPromoShare = 0.00; maxBrandShare = 1.0; }
+  else if (dayN <= 7)  { maxDrafts = 5;  maxPromoShare = 0.20; maxBrandShare = 1.0; }
+  else if (dayN <= 14) { maxDrafts = 8;  maxPromoShare = 0.30; maxBrandShare = 1.0; }
+  else                 { maxDrafts = 12; maxPromoShare = 0.30; maxBrandShare = 1.0; }
+
+  if (explicitCap != null) maxDrafts = explicitCap;
+  return {
+    dayN,
+    maxDrafts,
+    maxWarmup: maxDrafts, // unlimited warmup share
+    maxPromo:  Math.max(1, Math.floor(maxDrafts * maxPromoShare)),
+    maxBrand:  Math.max(0, Math.floor(maxDrafts * maxBrandShare)),
+  };
+}
+
+function pickByPolicy(scored, policy) {
+  // Take the highest-scoring candidates while respecting per-type caps.
+  // Order matters — we want top score first, then fill remaining slots with
+  // whatever respects caps. Within a type, scored array is already sorted desc.
+  const out = [];
+  const used = { warmup: 0, promotional: 0, brand_monitor: 0 };
+  const capFor = (t) => t === 'warmup' ? policy.maxWarmup
+                      : t === 'promotional' ? policy.maxPromo
+                      : policy.maxBrand;
+  for (const c of scored) {
+    if (out.length >= policy.maxDrafts) break;
+    if (used[c.type] >= capFor(c.type)) continue;
+    out.push(c);
+    used[c.type] += 1;
+  }
+  return out;
 }
 
 // ─── Concurrency limiter ───────────────────────────────────────────────────
@@ -233,6 +339,7 @@ function buildIssueBody({ scanned, totalCandidates, drafted, tokens }) {
     const bodyExcerpt = (d.post.selftext ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
     lines.push(
       `### [r/${d.post.subreddit}] ${d.post.title.replace(/[\[\]]/g, '')}  <!-- ${id} -->`,
+      `- **Type**: ${d.type ?? 'warmup'}`,
       `- **Match**: ${d.score}%${d.reasons?.length ? ` · _${d.reasons.join(' · ')}_` : ''}`,
       `- **Posted**: ${ageHrs}h ago · ${d.post.score}↑ · ${d.post.num_comments} comments`,
       `- **URL**: https://www.reddit.com${d.post.permalink}`,
@@ -309,19 +416,32 @@ async function main() {
   });
 
   const allScored = subResults.flatMap(r => r.scored ?? []);
-  const top = allScored
+  // Classify before slicing so the type-mix policy can rebalance the selection.
+  const allClassified = allScored
     .filter(s => s.score >= MIN_SCORE)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, MAX_DRAFTS);
+    .map(s => ({ ...s, type: classifyDraftType(s.post) }))
+    .sort((a, b) => b.score - a.score);
 
-  console.log(`[reddit-daily] ${top.length} thread(s) qualified — generating drafts…`);
+  // Apply ramping policy. Cap each type's share so we never ship a batch
+  // that's >X% promotional — Reddit anti-spam flags accounts with a poor
+  // warmup-to-promo ratio. Defaults pick a conservative 70/25/5 mix.
+  const policy = computeRampingPolicy();
+  const top = pickByPolicy(allClassified, policy);
+
+  console.log(`[reddit-daily] ${top.length} thread(s) qualified (cap=${policy.maxDrafts}, mix warmup≤${policy.maxWarmup}/promo≤${policy.maxPromo}/brand≤${policy.maxBrand}) — generating drafts…`);
 
   let tokens = 0;
   const drafted = await mapLimit(top, 3, async candidate => {
     try {
-      const { text, tokens: t } = await generateDraft(candidate.post);
+      const { text, tokens: t } = await generateDraft(candidate.post, candidate.type);
       tokens += t;
-      return { post: candidate.post, score: candidate.score, reasons: candidate.reasons, draft: text };
+      return {
+        post: candidate.post,
+        score: candidate.score,
+        reasons: candidate.reasons,
+        type: candidate.type,
+        draft: text,
+      };
     } catch (e) {
       console.warn(`[reddit-daily] draft failed for ${candidate.post.id}: ${e.message}`);
       return null;

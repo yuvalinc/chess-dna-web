@@ -10,11 +10,84 @@
   if (window.__chessDnaInjected) return;
   window.__chessDnaInjected = true;
 
-  // Ask the worker if we have a draft for this URL.
-  chrome.runtime.sendMessage({ type: 'get-draft-for-thread', url: window.location.href }, (resp) => {
-    if (!resp?.draft) return;
-    injectOverlay(resp.draft);
-  });
+  const LOG = (...args) => console.log('%c[chess-dna]', 'color: #5ee387; font-weight: bold;', ...args);
+  LOG('content script loaded for', window.location.href);
+
+  const postId = window.location.pathname.match(/\/comments\/([a-z0-9]+)/i)?.[1];
+  LOG('detected post ID:', postId || '(none — content script will not match)');
+
+  if (!postId) {
+    LOG('this URL is not a Reddit thread page, exiting');
+    return;
+  }
+
+  // Ask the worker if we have a draft for this URL. ALWAYS inject some
+  // overlay so the user can see the extension is alive even when there
+  // is no match — the previous silent return made it impossible to
+  // distinguish "extension not loaded" from "no matching draft".
+  chrome.runtime.sendMessage(
+    { type: 'get-draft-for-thread', url: window.location.href, postId },
+    (resp) => {
+      LOG('worker response:', resp);
+      if (chrome.runtime.lastError) {
+        LOG('runtime error talking to worker:', chrome.runtime.lastError);
+        injectDiagnostic({ reason: 'no-worker', error: chrome.runtime.lastError.message });
+        return;
+      }
+      if (resp?.draft) {
+        LOG('match found — injecting draft overlay');
+        injectOverlay(resp.draft);
+      } else {
+        LOG('no match — injecting diagnostic overlay');
+        injectDiagnostic({
+          reason: resp?.reason || 'no-match',
+          postId,
+          cachedDrafts: resp?.cachedDrafts ?? 0,
+          patSet: resp?.patSet ?? false,
+        });
+      }
+    },
+  );
+
+  // Small diagnostic card shown when the content script ran but there's no
+  // matching draft. Makes "did the extension even load?" visibly obvious.
+  // Auto-dismisses after 8s; user can dismiss earlier.
+  function injectDiagnostic(info) {
+    if (document.getElementById('chess-dna-overlay')) return;
+    const reasonText = {
+      'no-match': `No draft for this thread.\nPost ID: ${info.postId}\nDrafts in cache: ${info.cachedDrafts}`,
+      'no-pat': `GitHub PAT not set. Open the side panel and paste a PAT.`,
+      'no-drafts': `0 drafts in cache. Click Sync in the side panel.`,
+      'no-worker': `Service worker not responding: ${info.error || 'unknown'}.`,
+    }[info.reason] || `Unknown state: ${info.reason}`;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'chess-dna-overlay';
+    overlay.innerHTML = `
+      <style>
+        #chess-dna-overlay {
+          position: fixed; bottom: 16px; right: 16px; z-index: 2147483646;
+          width: 280px; background: #1a1d23; color: #b8bcc6;
+          border: 1px solid #2c3038; border-radius: 8px; padding: 10px 12px;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+          font: 11px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        #chess-dna-overlay .cdn-hdr { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+        #chess-dna-overlay .cdn-hdr strong { color: #5ee387; font-size: 11px; }
+        #chess-dna-overlay .cdn-close { margin-left: auto; cursor: pointer; opacity: 0.5; font-size: 14px; }
+        #chess-dna-overlay .cdn-close:hover { opacity: 1; }
+        #chess-dna-overlay pre { margin: 0; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 10.5px; color: #8e95a3; }
+      </style>
+      <div class="cdn-hdr">
+        <strong>✓ Chess DNA loaded</strong>
+        <span class="cdn-close" title="Dismiss">×</span>
+      </div>
+      <pre>${escapeHtml(reasonText)}</pre>
+    `;
+    document.body.appendChild(overlay);
+    overlay.querySelector('.cdn-close').addEventListener('click', () => overlay.remove());
+    setTimeout(() => overlay.remove(), 8000);
+  }
 
   function injectOverlay(draft) {
     const overlay = document.createElement('div');

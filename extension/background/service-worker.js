@@ -213,12 +213,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Match on Reddit's canonical post ID — the 6–8 char base36 segment in
     // /r/<sub>/comments/<POSTID>/.../ . It's stable across www/sh/old/new
     // subdomains, locale prefixes, query strings, and fragment hashes.
-    STORAGE.get(['activeDrafts']).then(({ activeDrafts }) => {
+    STORAGE.get(['activeDrafts', 'ghPat']).then(({ activeDrafts, ghPat }) => {
       const drafts = activeDrafts?.all ?? [];
-      const id = extractPostId(msg.url);
-      if (!id) { sendResponse({ draft: null }); return; }
+      const id = msg.postId || extractPostId(msg.url);
+      const cachedDrafts = drafts.length;
+      console.log('[chess-dna] get-draft-for-thread', { url: msg.url, postId: id, cachedDrafts, patSet: !!ghPat });
+      if (!ghPat) {
+        sendResponse({ draft: null, reason: 'no-pat', cachedDrafts: 0, patSet: false });
+        return;
+      }
+      if (cachedDrafts === 0) {
+        sendResponse({ draft: null, reason: 'no-drafts', cachedDrafts: 0, patSet: true });
+        return;
+      }
+      if (!id) {
+        sendResponse({ draft: null, reason: 'no-post-id', cachedDrafts, patSet: true });
+        return;
+      }
       const match = drafts.find(d => extractPostId(d.url) === id);
-      sendResponse({ draft: match || null });
+      sendResponse({
+        draft: match || null,
+        reason: match ? 'match' : 'no-match',
+        postId: id,
+        cachedDrafts,
+        patSet: true,
+      });
     });
     return true; // keep the message channel open for async sendResponse
   }

@@ -8,6 +8,9 @@
 
   "host_permissions": [
     "https://www.reddit.com/*",
+    "https://old.reddit.com/*",
+    "https://sh.reddit.com/*",
+    "https://new.reddit.com/*",
     "https://api.github.com/*"
   ],
 
@@ -32,7 +35,12 @@
 
   "content_scripts": [
     {
-      "matches": ["https://www.reddit.com/r/*/comments/*"],
+      "matches": [
+        "https://www.reddit.com/r/*/comments/*",
+        "https://old.reddit.com/r/*/comments/*",
+        "https://sh.reddit.com/r/*/comments/*",
+        "https://new.reddit.com/r/*/comments/*"
+      ],
       "js": ["content/reddit-thread.js"],
       "run_at": "document_idle"
     }

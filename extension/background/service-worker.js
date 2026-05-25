@@ -71,7 +71,11 @@ async function pollDrafts() {
     });
     const comments = commentsRes.ok ? await commentsRes.json() : [];
     const drafts = parseDrafts(issue.body || '', comments);
-    await STORAGE.set({ activeDrafts: drafts, activeIssueNumber: issue.number });
+    await STORAGE.set({
+      activeDrafts: drafts,
+      activeIssueNumber: issue.number,
+      lastSyncAt: Date.now(),
+    });
     chrome.action.setBadgeText({ text: drafts.queued > 0 ? String(drafts.queued) : '' });
     chrome.action.setBadgeBackgroundColor({ color: '#3a9d52' });
   } catch (e) { console.warn('[chess-dna] pollDrafts failed', e); }
@@ -206,26 +210,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.type === 'get-draft-for-thread') {
-    // Content script calls this when it lands on a thread page. We respond
-    // with the matching draft (if any) so the script can offer to fill it in.
+    // Match on Reddit's canonical post ID — the 6–8 char base36 segment in
+    // /r/<sub>/comments/<POSTID>/.../ . It's stable across www/sh/old/new
+    // subdomains, locale prefixes, query strings, and fragment hashes.
     STORAGE.get(['activeDrafts']).then(({ activeDrafts }) => {
       const drafts = activeDrafts?.all ?? [];
-      const match = drafts.find(d =>
-        msg.url?.includes(d.url.replace(/^https?:\/\/[^/]+/, ''))
-        || msg.url?.endsWith(d.url.split('/').slice(-2).join('/')),
-      );
+      const id = extractPostId(msg.url);
+      if (!id) { sendResponse({ draft: null }); return; }
+      const match = drafts.find(d => extractPostId(d.url) === id);
       sendResponse({ draft: match || null });
     });
     return true; // keep the message channel open for async sendResponse
   }
   if (msg.type === 'mark-posted') {
-    markPosted(msg.title);
+    markComment(msg.title, '✅', 'marked posted by extension');
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.type === 'mark-skipped') {
+    markComment(msg.title, '🗑', 'skipped from extension');
     sendResponse({ ok: true });
     return false;
   }
 });
 
-async function markPosted(title) {
+// Pull /r/<sub>/comments/<POSTID>/... out of any Reddit URL variant.
+function extractPostId(url) {
+  if (!url) return null;
+  const m = url.match(/\/comments\/([a-z0-9]+)(?:\/|$|\?|#)/i);
+  return m?.[1] ?? null;
+}
+
+async function markComment(title, emoji, verb) {
   const { ghPat, activeIssueNumber } = await STORAGE.get(['ghPat', 'activeIssueNumber']);
   if (!ghPat || !activeIssueNumber) return;
   await fetch(`https://api.github.com/repos/${GH_REPO}/issues/${activeIssueNumber}/comments`, {
@@ -235,8 +251,8 @@ async function markPosted(title) {
       Accept: 'application/vnd.github+json',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ body: `✅ **${title}** — marked posted by extension` }),
+    body: JSON.stringify({ body: `${emoji} **${title}** — ${verb}` }),
   });
-  // Refresh queue so badge clears.
+  // Refresh queue so badge clears and the list reflects the new state.
   pollDrafts();
 }

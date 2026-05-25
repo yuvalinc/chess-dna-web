@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import SeoAdmin from './SeoAdmin';
@@ -11,6 +12,14 @@ import InsightsAdmin from './InsightsAdmin';
 // Tab state lives in ?tab so the active tab is bookmarkable.
 //   /seo            → SEO daily
 //   /seo?tab=reddit → ReddGrow
+//
+// PAT bootstrap on production: visiting /seo#pat=<gh-token> writes the token
+// to localStorage and reloads, so the user never has to type into the
+// PatSetup screen. The fragment is stripped from the URL before reload so
+// it's not left in browser history or shareable URLs. Fragments don't go
+// to the server, so this never reaches Base44 / network logs.
+
+const PAT_STORAGE_KEY = 'chess-dna:seo-gh-pat';
 
 type TabKey = 'seo' | 'reddit' | 'insights';
 const TABS: Array<{ key: TabKey; label: string; hint: string }> = [
@@ -19,11 +28,45 @@ const TABS: Array<{ key: TabKey; label: string; hint: string }> = [
   { key: 'insights', label: 'Insights',   hint: 'AI visibility (kw.com) + Reddit brand mentions' },
 ];
 
+// Capture #pat=… from the URL fragment, save it, and clean the URL.
+// Runs synchronously before React paints so the user never sees the
+// PatSetup screen on the bootstrap visit.
+function consumePatFragment(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hash = window.location.hash;
+  const m = hash.match(/[#&]pat=([^&]+)/);
+  if (!m) return false;
+  try {
+    const token = decodeURIComponent(m[1]);
+    if (token && token.length >= 20) {
+      localStorage.setItem(PAT_STORAGE_KEY, token);
+    }
+  } catch {
+    // ignore — fall through to strip the fragment anyway
+  }
+  // Strip the pat param from the fragment; preserve any other fragment data.
+  const cleaned = hash.replace(/[#&]pat=[^&]*/, '').replace(/^#$/, '');
+  const newUrl = window.location.pathname + window.location.search + (cleaned.startsWith('#') ? cleaned : '');
+  window.history.replaceState({}, '', newUrl);
+  return true;
+}
+
 export default function SeoShell() {
   const { isAdmin } = useAuth();
   const [params, setParams] = useSearchParams();
   const rawTab = params.get('tab');
   const tab: TabKey = rawTab === 'reddit' ? 'reddit' : rawTab === 'insights' ? 'insights' : 'seo';
+  const [bootstrapped, setBootstrapped] = useState(false);
+
+  // Bootstrap PAT from URL fragment on first render. Uses a state flag to
+  // force a re-render once the localStorage has been written (so getPat()
+  // in the inner components reads the new value).
+  useEffect(() => {
+    if (!bootstrapped) {
+      consumePatFragment();
+      setBootstrapped(true);
+    }
+  }, [bootstrapped]);
 
   const setTab = (next: TabKey) => {
     // Preserve other params (none today, but future-proof) and only set ?tab

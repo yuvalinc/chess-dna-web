@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import ActivityCalendar from '@/components/ActivityCalendar';
+import KarmaJourney from '@/components/KarmaJourney';
+import AccountHealth from '@/components/AccountHealth';
+
+// Reddit advocate handle — the account that posts the drafts. Hardcoded
+// today; later this should come from a per-campaign advocates list.
+const ADVOCATE_USERNAME = 'Inside-Essay-617';
 
 // Reddit outreach dashboard — copy-paste workflow for AI-drafted comments.
 // Mirrors /seo's architecture: GitHub issues as control plane, PAT in
@@ -384,11 +390,21 @@ export default function RedditAdmin() {
       </header>
 
       {issues && issues.length > 0 && (
-        <div className="grid grid-cols-3 gap-2 mb-3">
-          <StatCard label="Today" value={draftsToday} sublabel="drafts" />
-          <StatCard label="Last 7 days" value={draftsLast7} sublabel="drafts" />
-          <StatCard label="Last 30 days" value={draftsLast30} sublabel="drafts" />
-        </div>
+        <>
+          <KarmaJourney username={ADVOCATE_USERNAME} />
+          <AccountHealth
+            draftsLast7={draftsLast7}
+            draftsLast30={draftsLast30}
+            runsLast7={(issues ?? []).filter(i => now - new Date(i.created_at).getTime() < 7 * 24 * 3600 * 1000).length}
+            postedByType={postedByType}
+            totalPostedAcrossHistory={postedByType.warmup + postedByType.promotional + postedByType.brand_monitor}
+          />
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <StatCard label="Today" value={draftsToday} sublabel="drafts" />
+            <StatCard label="Last 7 days" value={draftsLast7} sublabel="drafts" />
+            <StatCard label="Last 30 days" value={draftsLast30} sublabel="drafts" />
+          </div>
+        </>
       )}
 
       {issues && issues.length > 0 && (

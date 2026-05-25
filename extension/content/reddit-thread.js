@@ -72,11 +72,18 @@
     overlay.querySelector('.cdn-close').addEventListener('click', () => overlay.remove());
 
     overlay.querySelector('.cdn-fill').addEventListener('click', async () => {
-      const ok = fillCommentBox(draft.draft);
-      if (!ok) {
-        // Fallback to clipboard if we couldn't find a textarea.
+      const fillBtn = overlay.querySelector('.cdn-fill');
+      fillBtn.textContent = 'Filling…';
+      const result = await fillCommentBox(draft.draft);
+      if (result === 'filled') {
+        fillBtn.textContent = '✓ Filled';
+        setTimeout(() => { fillBtn.textContent = 'Fill comment box'; }, 2000);
+      } else if (result === 'clipboard') {
+        // We copied to clipboard but couldn't write into the editor.
+        // Surface the keystroke the user needs to press themselves.
+        fillBtn.textContent = 'Press Cmd+V';
         await navigator.clipboard.writeText(draft.draft);
-        alert('Comment box not found yet — copied to clipboard so you can paste manually.');
+        setTimeout(() => { fillBtn.textContent = 'Fill comment box'; }, 4000);
       }
     });
 
@@ -94,27 +101,134 @@
     });
   }
 
-  // Reddit's comment composer is a contenteditable div (new Reddit) or a
-  // <textarea> (old Reddit / mobile). Try both.
-  function fillCommentBox(text) {
-    // New Reddit: contenteditable div with [contenteditable="true"]
-    const editable = document.querySelector('div[contenteditable="true"]');
-    if (editable) {
-      editable.focus();
-      editable.textContent = text;
-      editable.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-      return true;
+  // Reddit ships three distinct comment composers depending on URL + skin:
+  //   • old.reddit.com   → plain <textarea name="text">
+  //   • www.reddit.com   → Lexical-based contenteditable inside a normal DOM
+  //   • sh.reddit.com    → web components (<shreddit-composer>) with shadow
+  //                        DOM containing the Lexical editor
+  // Plus the composer is often *collapsed* until the user clicks
+  // "Add a comment" — we click it programmatically if so.
+  //
+  // For rich-text editors (Lexical / Draft / ProseMirror), assigning
+  // textContent does NOT update the editor's internal model. The editor
+  // ignores the DOM change and the Submit button posts an empty string.
+  // The correct approach is `document.execCommand('insertText')` after
+  // focusing — it fires the proper beforeinput/input events that React
+  // editors listen for.
+  async function fillCommentBox(text) {
+    // 1. Make sure a composer is open. If the page only shows a collapsed
+    //    "Add a comment" placeholder, click it first.
+    await openComposerIfCollapsed();
+
+    // 2. Look for an editor — walk shadow roots too since shreddit-composer
+    //    encapsulates its Lexical editor in a shadow root.
+    const editor = findEditor(document);
+    if (!editor) {
+      console.warn('[chess-dna] no comment editor found');
+      return 'clipboard';
     }
-    // Old Reddit: textarea inside .commentarea or under a "reply" link
-    const ta = document.querySelector('textarea[name="text"]');
-    if (ta) {
-      ta.focus();
+
+    // 3. Plain textarea (old Reddit / mobile fallback) — native setter.
+    if (editor.tagName === 'TEXTAREA') {
+      editor.focus();
       const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-      setter.call(ta, text);
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
+      setter.call(editor, text);
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'filled';
     }
-    return false;
+
+    // 4. Rich editor (contenteditable). execCommand is the only way to
+    //    cleanly insert text that Lexical/Draft will respect. Yes, it's
+    //    deprecated — and yes, it still works in Chrome 2024+ specifically
+    //    for content scripts. If it ever stops, we fall back to clipboard.
+    editor.focus();
+    // Move caret to end so insert appends instead of replacing selection.
+    try {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } catch {}
+
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, text); } catch {}
+    if (!ok) {
+      // Last-ditch: dispatch a synthetic paste event with a DataTransfer
+      // payload. Many editors handle paste even when execCommand fails.
+      try {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        editor.dispatchEvent(new ClipboardEvent('paste', {
+          bubbles: true, cancelable: true, clipboardData: dt,
+        }));
+        ok = (editor.textContent || '').includes(text.slice(0, 20));
+      } catch {}
+    }
+    if (!ok) {
+      console.warn('[chess-dna] execCommand + paste both failed; fall back to clipboard');
+      return 'clipboard';
+    }
+    return 'filled';
+  }
+
+  // Click "Add a comment" / reply UI if visible but not yet expanded into an
+  // editable composer. Wait briefly for the editor to mount.
+  async function openComposerIfCollapsed() {
+    if (findEditor(document)) return; // already open
+    const trigger =
+      // sh.reddit.com — comment placeholder card
+      document.querySelector('[name="rich-text-comment-cta"]') ||
+      // new Reddit — "Add a comment" button or placeholder textarea
+      document.querySelector('button[aria-label*="comment" i][aria-label*="add" i]') ||
+      document.querySelector('[data-testid="comment-submission-form-richtext"] button') ||
+      // anything that looks like a placeholder for the composer
+      [...document.querySelectorAll('button, div[role="button"]')]
+        .find(el => /add a comment|write a comment|join the conversation/i.test(el.textContent || ''));
+    if (trigger) {
+      trigger.click();
+      // Lexical takes ~100–250ms to mount. Poll for up to 1.5s.
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 100));
+        if (findEditor(document)) return;
+      }
+    }
+  }
+
+  // Recursively walk the DOM + open shadow roots looking for an editor.
+  function findEditor(root) {
+    if (!root) return null;
+    // Plain textarea (old Reddit, mobile)
+    const ta = root.querySelector?.('textarea[name="text"]');
+    if (ta) return ta;
+    // Rich editor candidates — try most specific first.
+    const candidates = [
+      'div[contenteditable="true"][role="textbox"][aria-label*="comment" i]',
+      'div[contenteditable="true"][role="textbox"]',
+      '[data-testid="comment-submission-form-richtext"] div[contenteditable="true"]',
+      'div[contenteditable="true"]',
+    ];
+    for (const sel of candidates) {
+      const el = root.querySelector?.(sel);
+      if (el && isVisible(el)) return el;
+    }
+    // Walk open shadow roots — sh.reddit.com encapsulates the composer.
+    const all = root.querySelectorAll?.('*') ?? [];
+    for (const el of all) {
+      if (el.shadowRoot) {
+        const found = findEditor(el.shadowRoot);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function isVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
   }
 
   function escapeHtml(s) {

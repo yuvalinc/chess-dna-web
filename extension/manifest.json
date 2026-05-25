@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "One-click posting, karma sync, and reply detection for the Chess DNA Reddit campaign.",
 
-  "permissions": ["storage", "alarms", "notifications"],
+  "permissions": ["storage", "alarms", "notifications", "sidePanel"],
 
   "host_permissions": [
     "https://www.reddit.com/*",
@@ -12,14 +12,17 @@
   ],
 
   "action": {
-    "default_popup": "popup/popup.html",
-    "default_title": "Chess DNA Reddit Co-pilot",
+    "default_title": "Chess DNA Reddit Co-pilot — click to open side panel",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
       "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"
     }
+  },
+
+  "side_panel": {
+    "default_path": "popup/popup.html"
   },
 
   "background": {

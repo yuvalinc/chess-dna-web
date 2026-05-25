@@ -27,10 +27,26 @@ chrome.runtime.onInstalled.addListener(async () => {
   chrome.alarms.create('poll-drafts',  { periodInMinutes: POLL_DRAFTS_INTERVAL_MIN });
   chrome.alarms.create('poll-karma',   { periodInMinutes: POLL_KARMA_INTERVAL_MIN });
   chrome.alarms.create('poll-replies', { periodInMinutes: POLL_REPLIES_INTERVAL_MIN });
+  // Clicking the toolbar icon should open the persistent side panel
+  // alongside the current tab (not a transient popup that closes when
+  // the user clicks back into the page).
+  try {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  } catch (e) {
+    console.warn('[chess-dna] side panel API unavailable, fallback to popup', e);
+  }
   // Run all three once at install.
   pollDrafts();
   pollKarma();
   pollReplies();
+});
+
+// On every startup (browser restart, not just install) re-apply the side
+// panel behavior in case Chrome forgot it.
+chrome.runtime.onStartup.addListener(async () => {
+  try {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  } catch {}
 });
 
 chrome.alarms.onAlarm.addListener(alarm => {

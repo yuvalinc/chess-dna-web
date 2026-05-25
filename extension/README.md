@@ -27,7 +27,32 @@ ToS) and means every comment gets human review.
 2. Toggle **Developer mode** on (top-right).
 3. Click **Load unpacked**.
 4. Select this `extension/` directory.
-5. Pin the icon to your toolbar so the popup is one click away.
+5. Pin the icon to your toolbar so the side panel is one click away.
+
+**Clicking the toolbar icon opens a persistent side panel** (Chrome Side
+Panel API) alongside whatever tab you're on. It stays open as you
+navigate Reddit — no transient popup that closes on every click.
+
+## Does it post or comment automatically?
+
+**No.** The extension never submits a Reddit comment on its own. The
+flow is:
+
+1. **Daily scanner runs** (manually via `npm run reddit:daily`, or via
+   the launchd daemon once you opt in). Generates ~12 AI drafts in a
+   GH issue.
+2. **Extension worker polls GH every 10 min**, caches the drafts +
+   their action state, sets a badge count on the toolbar icon.
+3. **You open a matching Reddit thread**. A floating overlay appears
+   bottom-right with the draft preview + three buttons.
+4. **You click "Fill comment box"** → the draft fills Reddit's reply
+   textarea. You can edit it.
+5. **You click Reddit's own Comment button** to submit. The extension
+   does not touch Reddit's submit flow.
+6. **You click "Mark posted"** in the overlay so the dashboard's 9:1
+   ratio gate and Account Health update.
+
+Karma sync and reply detection are read-only — they never post anything.
 
 ## First-time setup
 

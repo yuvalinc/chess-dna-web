@@ -4,8 +4,11 @@
   <meta charset="UTF-8">
   <title>Chess DNA Reddit Co-pilot</title>
   <style>
+    /* Layout works as both Chrome popup (~340px) and side panel (~320–500px).
+       Side panel users get a wider, more readable card stack. */
+    html, body { min-height: 100%; }
     body {
-      width: 340px;
+      min-width: 320px;
       margin: 0;
       padding: 14px;
       background: #0f1115;
@@ -97,6 +100,22 @@
   </div>
 
   <button id="refresh-btn" class="secondary">Refresh now</button>
+
+  <details style="margin-top: 14px; font-size: 11px; color: #8e95a3;">
+    <summary style="cursor: pointer; padding: 4px 0;">How posting works (no auto-post)</summary>
+    <div style="background: #1a1d23; padding: 10px; border-radius: 6px; margin-top: 6px; line-height: 1.5;">
+      <strong style="color: #e8e9ee;">The extension never submits a comment on its own.</strong>
+      Every post takes one click from you on Reddit's own Submit button. Flow:
+      <ol style="padding-left: 18px; margin: 6px 0;">
+        <li>Open any matching Reddit thread.</li>
+        <li>An overlay appears bottom-right with the AI draft.</li>
+        <li>Click <strong>Fill comment box</strong> → draft fills Reddit's reply textarea.</li>
+        <li>You review / edit / click Reddit's own <strong>Comment</strong> button.</li>
+        <li>Click <strong>Mark posted</strong> in the overlay so the dashboard ratio gate updates.</li>
+      </ol>
+      Karma sync and reply detection are read-only — no posting either way.
+    </div>
+  </details>
 
   <script src="popup.js"></script>
 </body>

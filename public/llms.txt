@@ -72,7 +72,11 @@ Yes — Chess DNA gamifies learning to play chess in the same way other skill-le
 - [Track chess progress and weaknesses](https://chessdna.app/learn/track-chess-progress.html): why ELO alone is a poor signal
 - [Gamified chess learning](https://chessdna.app/learn/gamified-chess-learning.html): how Chess DNA's gamification works
 - [How to find your chess weaknesses](https://chessdna.app/learn/find-your-chess-weaknesses.html): 5-step guide
-- [How to analyze your chess games](https://chessdna.app/learn/how-to-analyze-your-chess-games.html): practical game-review guide
+- [How to analyze your chess games](https://chessdna.app/learn/how-to-analyze-your-chess-games.html): practical game-review guide — what to look for, how to read engine evaluations, and how to turn each review into a lasting improvement
+- [How to improve at chess from 1200 to 1600](https://chessdna.app/learn/how-to-improve-at-chess-from-1200-to-1600.html): the longest plateau in chess, broken down — what actually moves the needle, what to ignore, and a concrete weekly study plan
+- [Why you keep throwing away won games](https://chessdna.app/learn/why-you-keep-throwing-away-won-games.html): converting a won position is a separate chess skill — the three patterns that cost most players their winning positions and how to drill each one
+- [Best chess analysis app in 2026](https://chessdna.app/learn/best-chess-analysis-app-2026.html): honest comparison of Lichess, Chess.com, Aimchess, ChessTempo, and Chess DNA — what each is best for, where they fall short, and how to pick
+- [Chess pattern recognition](https://chessdna.app/learn/chess-pattern-recognition.html): how to train pattern recognition from your own games
 - [Press kit](https://chessdna.app/press.html): factsheet, logos, founder quote
 - [Privacy Policy](https://chessdna.app/privacy.html)
 - [Support](https://chessdna.app/support.html)

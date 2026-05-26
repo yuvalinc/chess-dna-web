@@ -284,15 +284,40 @@ async function processIssue(issueNumber) {
   console.log(`[exec] Issue #${issue.number}: "${issue.title}"`);
 
   const { tasks, lines } = parseTasks(issue.body ?? '');
-  const pending = tasks.filter(t => !t.checked);
+  // Reddit tasks have a separate pipeline (ReddGrow tab + Chrome extension).
+  // The Claude Code executor cannot reliably post on Reddit and shouldn't
+  // try — running --dangerously-skip-permissions in a browser context against
+  // a logged-in Reddit session is exactly the pattern that gets accounts
+  // shadowbanned. Skip them with a one-time comment so the user knows.
+  const isReddit = (t) =>
+    /\bhttps?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\b/i.test(t.description ?? '');
+  const allPending = tasks.filter(t => !t.checked);
+  const reddit = allPending.filter(isReddit);
+  const pending = allPending.filter(t => !isReddit(t));
+
+  // Mark reddit tasks as routed so the dashboard surfaces the ReddGrow
+  // banner and the executor doesn't keep skipping them every 30s.
+  for (const t of reddit) {
+    // Only comment once per task — check if a routed marker already exists.
+    // (Cheap heuristic: the issue body's checkbox is the source of truth.)
+    await commentOnIssue(
+      issue.number,
+      `🔀 **${t.title}** — routed to ReddGrow (lane: browser, Reddit URLs detected). Handle via /seo?tab=reddit and the Chrome extension. The executor is skipping this task.`,
+    );
+    body = rewriteCheckedBox(body.split('\n'), t.lineIndex);
+  }
+  if (reddit.length > 0) {
+    await updateIssue(issue.number, { body });
+    console.log(`[exec] Skipped ${reddit.length} Reddit task(s) — routed to ReddGrow`);
+  }
+
   if (pending.length === 0) {
-    console.log('[exec] No unchecked tasks; closing.');
+    console.log('[exec] No unchecked code/non-Reddit tasks; closing.');
     await setLabels(issue.number, ['seo-daily', 'seo-done']);
     await updateIssue(issue.number, { state: 'closed' });
     return;
   }
 
-  let body = lines.join('\n');
   let anyReady = false;
   let anyFailed = false;
 

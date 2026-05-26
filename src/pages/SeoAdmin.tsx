@@ -127,6 +127,17 @@ function parseTasks(body: string | null): ParsedTask[] {
   return tasks;
 }
 
+// Pull all reddit.com thread URLs out of a task description. Used to detect
+// "this is a Reddit outreach task" and route the user to the ReddGrow tab
+// instead of having the Claude Code executor try to do browser automation
+// against Reddit (which is unreliable + risks the account).
+function extractRedditUrls(description: string): string[] {
+  if (!description) return [];
+  const matches = description.matchAll(/https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/r\/[^\s)\]'"<>]+/g);
+  const urls = [...matches].map(m => m[0].replace(/[.,;]+$/, ''));
+  return [...new Set(urls)];
+}
+
 function extractSection(body: string | null, heading: string): string | null {
   if (!body) return null;
   const re = new RegExp(`##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|\\n---|$)`, 'i');
@@ -157,7 +168,7 @@ function fmtUsd(n: number): string {
 }
 
 interface TaskExecutionStatus {
-  status: 'done' | 'done_manual' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
+  status: 'done' | 'done_manual' | 'routed_reddgrow' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
   sha?: string;
   files?: string[];
   prNumber?: number;
@@ -217,6 +228,11 @@ function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutio
       // Same terminal state as ✅ from the executor; surfaces with its own
       // pill label so the user remembers which tasks they did by hand.
       map.set(title, { status: 'done_manual' });
+    } else if (body.startsWith('🔀')) {
+      // Executor declined this task and routed it to ReddGrow because the
+      // description contains Reddit URLs. Surface as its own state so the
+      // dashboard banner is consistent with what the daemon did.
+      map.set(title, { status: 'routed_reddgrow' });
     } else if (body.startsWith('❌')) {
       map.set(title, { status: 'failed' });
     } else if (body.startsWith('🔧')) {
@@ -909,6 +925,11 @@ function TaskRow({
     pillCls = 'bg-chess-best text-white border-chess-best';
     pillTitle = 'You marked this done — already handled outside the dashboard. The agent will see this on its next run and avoid re-suggesting.';
     cardCls = 'border-chess-best/30 bg-chess-best/5';
+  } else if (executed === 'routed_reddgrow') {
+    pillLabel = '🔀 → ReddGrow';
+    pillCls = 'bg-chess-accent text-white border-chess-accent';
+    pillTitle = 'Reddit task — handled via the ReddGrow tab + Chrome extension, not the Claude Code executor.';
+    cardCls = 'border-chess-accent/30 bg-chess-accent/5';
   } else if (executed === 'failed') {
     pillLabel = '✕ Failed';
     pillCls = 'bg-chess-blunder text-white border-chess-blunder';
@@ -996,6 +1017,29 @@ function TaskRow({
 
           {task.description && (
             <p className="text-[13px] text-chess-text-secondary whitespace-pre-wrap">{task.description}</p>
+          )}
+          {/* Reddit tasks have their own pipeline (ReddGrow tab + Chrome
+              extension). Surface a banner that routes the user there
+              instead of relying on the Claude Code executor to do
+              browser automation against Reddit. */}
+          {extractRedditUrls(task.description).length > 0 && !executed && (
+            <div className="mt-3 bg-chess-accent/10 border border-chess-accent/30 rounded p-2.5 flex items-start gap-2 flex-wrap">
+              <span className="text-[18px] leading-none">💬</span>
+              <div className="flex-1 min-w-0 text-[12px]">
+                <div className="font-bold text-chess-text mb-0.5">
+                  {extractRedditUrls(task.description).length} Reddit thread{extractRedditUrls(task.description).length === 1 ? '' : 's'} detected — handle in ReddGrow
+                </div>
+                <div className="text-chess-text-tertiary">
+                  Don't run this via the Claude Code executor — it can't reliably post on Reddit. Use the ReddGrow tab with your Chrome extension instead. The agent's suggested copy is right above and the extension will pre-fill it for each thread.
+                </div>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); window.open('/seo?tab=reddit', '_blank'); }}
+                className="text-[11px] font-bold px-2.5 py-1 bg-chess-accent text-white border border-chess-accent rounded hover:bg-chess-accent/90"
+              >
+                → Open ReddGrow
+              </button>
+            </div>
           )}
           {task.filesTouched.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">

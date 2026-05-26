@@ -252,6 +252,157 @@ async function executeTaskAsPR(issue, task) {
   }
 }
 
+// ─── ReddGrow injection ────────────────────────────────────────────────────
+// When a SEO task contains Reddit URLs (with optional suggested comments),
+// we don't try to post them ourselves — we hand them off to the ReddGrow
+// pipeline by appending draft blocks to today's reddit-daily issue. The
+// /seo dashboard's ReddGrow tab + the Chrome extension take over from there.
+
+const REDDIT_USER_AGENT = process.env.REDDIT_USER_AGENT
+  ?? 'chess-dna:seo-executor:1.0 (by /u/Inside-Essay-617)';
+
+function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Parse "1. <url> — context … Suggested[ comment]: '<text>'" blocks out of a
+// SEO task description. Returns one entry per Reddit URL found.
+function parseUrlCommentPairs(description) {
+  if (!description) return [];
+  const pairs = [];
+  // Split on a fresh-numbered-line that introduces a Reddit URL. The split
+  // captures the URL prefix so each chunk ends with the per-item context.
+  const blocks = description.split(/\n(?=\s*\d+\.\s+https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/)/);
+  for (const block of blocks) {
+    const urlM = block.match(/(https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/r\/[^\s)\]'"<>]+)/);
+    if (!urlM) continue;
+    const url = urlM[1].replace(/[.,;]+$/, '');
+    const commentM = block.match(/Suggested(?:\s+comment)?\s*:\s*['"]([^'"]+)['"]/i);
+    pairs.push({ url, suggestedComment: commentM?.[1] ?? null });
+  }
+  return pairs;
+}
+
+async function fetchRedditThread(url) {
+  const base = url.replace(/[?#].*$/, '').replace(/\/$/, '');
+  const jsonUrl = `${base}.json`;
+  const res = await fetch(jsonUrl, { headers: { 'User-Agent': REDDIT_USER_AGENT } });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const post = data?.[0]?.data?.children?.[0]?.data;
+  if (!post) return null;
+  return {
+    subreddit: post.subreddit,
+    title: post.title ?? '',
+    score: post.score ?? 0,
+    num_comments: post.num_comments ?? 0,
+    selftext: post.selftext ?? '',
+    created_utc: post.created_utc ?? Math.floor(Date.now() / 1000),
+    permalink: post.permalink ?? new URL(url).pathname,
+  };
+}
+
+function buildDraftBlock(draft, idx) {
+  const ageHrs = ((Date.now() / 1000 - draft.created_utc) / 3600).toFixed(1);
+  const excerpt = (draft.selftext ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  return [
+    `### [r/${draft.subreddit}] ${draft.title.replace(/[\[\]]/g, '')}  <!-- draft-${idx} -->`,
+    `- **Type**: promotional`,
+    `- **Match**: 100% _· seeded by SEO executor from ${draft.fromSeoIssue} (AI-citation target)_`,
+    `- **Posted**: ${ageHrs}h ago · ${draft.score}↑ · ${draft.num_comments} comments`,
+    `- **URL**: https://www.reddit.com${draft.permalink}`,
+    ``,
+    `**Original post**:`,
+    `> ${excerpt || '_(link post, no body text)_'}${(draft.selftext ?? '').length > 240 ? '…' : ''}`,
+    ``,
+    `**AI draft**:`,
+    '```',
+    draft.suggestedComment ?? '_(no suggested comment from SEO agent — write your own to follow the warmup/promotional ratio)_',
+    '```',
+    ``,
+    '---',
+    '',
+  ].join('\n');
+}
+
+// Find today's reddit-daily issue (open only). If none, create one. Then
+// append the new draft blocks to its body, re-numbering them so the existing
+// ReddGrow parser still works.
+async function findOrCreateRedditIssue() {
+  const today = todayIso();
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open label:reddit-daily in:title "${today}"`);
+  const search = await gh(`/search/issues?q=${q}`);
+  const existing = search.items?.[0];
+  if (existing) return gh(`/repos/${GH_REPO}/issues/${existing.number}`);
+  return gh(`/repos/${GH_REPO}/issues`, {
+    method: 'POST',
+    body: JSON.stringify({
+      title: `Reddit ${today} — 0 drafts`,
+      body: [
+        `_Daily Reddit outreach — ${today}_`,
+        ``,
+        `## Summary`,
+        `Created by the SEO executor on demand. The reddit-daily scan may add more drafts later.`,
+        ``,
+        `## Drafts`,
+        ``,
+      ].join('\n'),
+      labels: ['reddit-daily', 'reddit-pending'],
+    }),
+  });
+}
+
+async function injectIntoReddGrow(task, seoIssueNumber) {
+  const pairs = parseUrlCommentPairs(task.description);
+  if (pairs.length === 0) return 0;
+
+  // Enrich each URL with Reddit thread metadata (subreddit, title, age, etc.)
+  // so the draft block matches what reddit-daily.mjs writes and the ReddGrow
+  // parser doesn't need to special-case our injections.
+  const enriched = [];
+  for (const p of pairs) {
+    try {
+      const meta = await fetchRedditThread(p.url);
+      if (!meta) continue;
+      enriched.push({ ...meta, ...p, fromSeoIssue: `#${seoIssueNumber}` });
+      // Be polite to Reddit's unauthenticated API (~60 req/min cap).
+      await new Promise(r => setTimeout(r, 600));
+    } catch (e) {
+      console.warn(`[exec]   reddit fetch failed for ${p.url}:`, e.message);
+    }
+  }
+  if (enriched.length === 0) return 0;
+
+  // Append to today's reddit-daily issue, re-numbering drafts so IDs don't
+  // collide with existing ones.
+  const target = await findOrCreateRedditIssue();
+  const body = target.body ?? '';
+  const existingCount = (body.match(/<!--\s*draft-\d+\s*-->/g) ?? []).length;
+  const newBlocks = enriched
+    .map((d, i) => buildDraftBlock(d, existingCount + i + 1))
+    .join('\n');
+
+  // If there's no "## Drafts" heading (legacy issue body), add one.
+  let newBody;
+  if (/^##\s+Drafts\s*$/m.test(body)) {
+    newBody = body.trimEnd() + '\n\n' + newBlocks;
+  } else {
+    newBody = body.trimEnd() + '\n\n## Drafts\n\n' + newBlocks;
+  }
+  // Update the title to reflect the new count.
+  const totalDrafts = existingCount + enriched.length;
+  await gh(`/repos/${GH_REPO}/issues/${target.number}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      body: newBody,
+      title: `Reddit ${todayIso()} — ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'}`,
+    }),
+  });
+  console.log(`[exec]   → injected ${enriched.length} reddit draft(s) into #${target.number}`);
+  return enriched.length;
+}
+
 async function listApprovedIssues() {
   const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open label:seo-approved -label:seo-done`);
   const res = await gh(`/search/issues?q=${q}`);
@@ -298,12 +449,23 @@ async function processIssue(issueNumber) {
   // Local mutable body; gets rewritten when we flip task checkboxes.
   let body = lines.join('\n');
 
-  // Mark reddit tasks as routed so the dashboard surfaces the ReddGrow
-  // banner and the executor doesn't keep skipping them every 30s.
+  // For each Reddit task: parse out the (URL, suggested-comment) pairs from
+  // the task description, enrich each with Reddit thread metadata, and
+  // append draft blocks to today's reddit-daily issue so they show up in
+  // the ReddGrow tab immediately. Then mark the SEO task as routed.
   for (const t of reddit) {
+    let injected = 0;
+    try {
+      injected = await injectIntoReddGrow(t, issue.number);
+    } catch (e) {
+      console.warn(`[exec]   ReddGrow injection failed for ${t.id}:`, e.message);
+    }
+    const note = injected > 0
+      ? `${injected} draft${injected === 1 ? '' : 's'} injected into today's reddit-daily queue. Open /seo?tab=reddit to handle them with the Chrome extension.`
+      : `No URLs could be injected (URL parsing failed or Reddit fetch errored). Handle manually via /seo?tab=reddit.`;
     await commentOnIssue(
       issue.number,
-      `🔀 **${t.title}** — routed to ReddGrow (lane: browser, Reddit URLs detected). Handle via /seo?tab=reddit and the Chrome extension. The executor is skipping this task.`,
+      `🔀 **${t.title}** — routed to ReddGrow.\n\n${note}`,
     );
     body = rewriteCheckedBox(body.split('\n'), t.lineIndex);
   }

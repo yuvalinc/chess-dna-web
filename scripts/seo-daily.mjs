@@ -182,7 +182,7 @@ function sumTokensFromSession(sess) {
   return (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
 }
 
-function buildPrompt(carryover = []) {
+function buildPrompt(carryover = [], completed = []) {
   const today = todayIso();
   const carryoverBlock = carryover.length === 0
     ? ''
@@ -197,12 +197,36 @@ function buildPrompt(carryover = []) {
         ...carryover.map(t => `- **${t.priority}** — ${t.title}: ${t.description}`),
         ``,
       ].join('\n');
+
+  // Completed-work memory: explicit list of tasks that already shipped or
+  // were marked done in recent runs. Prevents the agent from proposing
+  // "Add JSON-LD to /learn/" when /learn/ already has JSON-LD, or
+  // "Configure AIV prompts" after the user manually configured them.
+  const completedBlock = completed.length === 0
+    ? ''
+    : [
+        ``,
+        `## Already shipped — do NOT re-suggest`,
+        ``,
+        `The following tasks have been completed in recent runs. They are either:`,
+        `  • _done_   — executor completed (no PR needed, e.g. browser-only task)`,
+        `  • _pr-open_  — executor opened a PR; the work is in motion`,
+        `  • _merged_   — PR merged + deployed`,
+        `  • _manually-done_ — user marked it done in the /seo dashboard (handled outside the agent)`,
+        ``,
+        `**Never propose a task whose title is substantially similar to anything in this list** unless you have specific evidence the underlying problem has regressed. If you propose follow-up work that builds on something here, reference the original task title so the user can trace the lineage.`,
+        ``,
+        ...completed.map(t => `- _${t.marker}_ (${t.fromDate}, #${t.fromIssue}) — **${t.title}**`),
+        ``,
+      ].join('\n');
+
   return [
     `Today is ${today}. Run today's SEO/GEO analysis for ${SITE_URL}.`,
     ``,
     `Target keywords: ${KEYWORDS.join(', ')}`,
     `Keyword.com project: "${KEYWORDCOM_PROJECT}"`,
     carryoverBlock,
+    completedBlock,
     ``,
     `## Data source`,
     ``,
@@ -389,6 +413,49 @@ async function fetchCarryoverTasks(todayDate) {
   return skipped;
 }
 
+// Walk the last 10 SEO daily issues for tasks that were completed — by the
+// executor (✅), shipped via PR (📝 / 🚀), or marked manually done (🏁).
+// Returned as a flat list of titles + dates so the agent can avoid re-
+// suggesting work that's already done. Replaces the reverted commit
+// d09810f's "memory of shipped work" feature.
+async function fetchCompletedTasks() {
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue label:seo-daily sort:created-desc`);
+  const search = await gh(`/search/issues?q=${q}&per_page=10`);
+  const recent = search.items ?? [];
+  if (recent.length === 0) return [];
+
+  const completed = [];
+  // Fan out comment fetches for the recent issues with a small concurrency
+  // bound — search returns titles only, completion state lives in comments.
+  for (const issue of recent.slice(0, 10)) {
+    let comments;
+    try {
+      comments = await gh(`/repos/${GH_REPO}/issues/${issue.number}/comments?per_page=100`);
+    } catch { continue; }
+    const dateLabel = (issue.title.match(/SEO\s+(\d{4}-\d{2}-\d{2})/) || [])[1] ?? 'recent';
+    const seenTitles = new Set();
+    for (const c of comments ?? []) {
+      const body = c.body ?? '';
+      // ✅ = executor finished a no-PR task (e.g. browser-only).
+      // 📝 = executor opened a PR — counts as "in motion / done" so we don't re-suggest.
+      // 🚀 = PR merged.
+      // 🏁 = user manually marked done outside the dashboard.
+      if (!/^[✅📝🚀🏁]/.test(body)) continue;
+      const titleM = body.match(/\*\*([^*]+?)\*\*/);
+      if (!titleM) continue;
+      const title = titleM[1].trim();
+      if (seenTitles.has(title)) continue;
+      seenTitles.add(title);
+      const marker = body.startsWith('🏁') ? 'manually-done'
+        : body.startsWith('🚀') ? 'merged'
+        : body.startsWith('📝') ? 'pr-open'
+        : 'done';
+      completed.push({ title, marker, fromIssue: issue.number, fromDate: dateLabel });
+    }
+  }
+  return completed;
+}
+
 async function main() {
   const today = todayIso();
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is required');
@@ -417,8 +484,19 @@ async function main() {
     console.warn(`[seo-daily] Carryover lookup failed (non-fatal):`, e.message);
   }
 
-  console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords, ${carryover.length} carryover)...`);
-  await sendPrompt(sessionId, buildPrompt(carryover));
+  console.log(`[seo-daily] Looking up shipped tasks (do-not-re-suggest list)…`);
+  let completed = [];
+  try {
+    completed = await fetchCompletedTasks();
+    if (completed.length > 0) {
+      console.log(`[seo-daily] Tracking ${completed.length} previously-completed task(s) across last 10 runs.`);
+    }
+  } catch (e) {
+    console.warn(`[seo-daily] Completed-tasks lookup failed (non-fatal):`, e.message);
+  }
+
+  console.log(`[seo-daily] Sending daily prompt (${KEYWORDS.length} keywords, ${carryover.length} carryover, ${completed.length} shipped)...`);
+  await sendPrompt(sessionId, buildPrompt(carryover, completed));
 
   console.log(`[seo-daily] Polling session until idle (max ${POLL_MAX_SEC}s)...`);
   const { session: finished, events: eventsPayload } = await pollSession(sessionId);

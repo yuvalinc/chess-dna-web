@@ -157,7 +157,7 @@ function fmtUsd(n: number): string {
 }
 
 interface TaskExecutionStatus {
-  status: 'done' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
+  status: 'done' | 'done_manual' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
   sha?: string;
   files?: string[];
   prNumber?: number;
@@ -212,6 +212,11 @@ function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutio
         ? [...filesM[1].matchAll(/`([^`]+)`/g)].map(m => m[1])
         : undefined;
       map.set(title, { status: 'done', sha: shaM?.[1], files });
+    } else if (body.startsWith('🏁')) {
+      // Manually marked done by the user (work happened outside the dashboard).
+      // Same terminal state as ✅ from the executor; surfaces with its own
+      // pill label so the user remembers which tasks they did by hand.
+      map.set(title, { status: 'done_manual' });
     } else if (body.startsWith('❌')) {
       map.set(title, { status: 'failed' });
     } else if (body.startsWith('🔧')) {
@@ -593,6 +598,50 @@ export default function SeoAdmin() {
     }
   };
 
+  // "Mark done" — user already did the work elsewhere (e.g. configured kw.com
+  // manually, posted a Reddit thread by hand). We post a 🏁 comment so:
+  //   1. The executor sees the task is handled and skips it (it now treats
+  //      🏁 like ✅ for the "already done" check).
+  //   2. The daily agent's next run reads recent 🏁 + ✅ comments as
+  //      "shipped" context and doesn't re-suggest them.
+  //   3. The dashboard card flips to a green "✓ Done (manual)" state.
+  // Also flips the issue-body checkbox to checked so the executor's task
+  // parser sees the task as not-pending in case it scans the body first.
+  const onMarkDone = async (issue: GhIssue, task: ParsedTask) => {
+    setBusy('done:' + task.id);
+    const synth: GhComment = {
+      id: -Date.now(),
+      body: `🏁 **${task.title}** — manually marked done by user`,
+      created_at: new Date().toISOString(),
+    };
+    const prevBody = issue.body;
+    const lines = (issue.body ?? '').split('\n');
+    if (!task.checked) {
+      lines[task.lineIndex] = lines[task.lineIndex].replace(/^- \[ \]/, '- [x]');
+    }
+    const newBody = lines.join('\n');
+    setComments(prev => [...(prev ?? []), synth]);
+    setIssues(prev => prev?.map(i => i.number === issue.number ? { ...i, body: newBody } : i) ?? null);
+    try {
+      await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ body: synth.body }),
+      });
+      if (newBody !== prevBody) {
+        await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ body: newBody }),
+        });
+      }
+    } catch (e) {
+      setComments(prev => (prev ?? []).filter(c => c.id !== synth.id));
+      setIssues(prev => prev?.map(i => i.number === issue.number ? { ...i, body: prevBody } : i) ?? null);
+      setError(`Mark done failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const onToggleTask = async (issue: GhIssue, task: ParsedTask) => {
     setBusy('task:' + task.id);
     const prevBody = issue.body;
@@ -719,6 +768,7 @@ export default function SeoAdmin() {
         onApprove={() => onApprove(displayed)}
         onToggleTask={(t) => onToggleTask(displayed, t)}
         onRemoveTask={(t) => onRemoveTask(displayed, t)}
+        onMarkDoneTask={(t) => onMarkDone(displayed, t)}
         onMergePR={onMergePR}
         onRejectPR={onRejectPR}
         showRaw={showRawId === displayed.number}
@@ -784,18 +834,20 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, busy, onToggle, onRemove, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy, removeBusy,
+  task, busy, onToggle, onRemove, onMarkDone, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy, removeBusy, doneBusy,
 }: {
   task: ParsedTask;
   busy: boolean;
   onToggle: () => void;
   onRemove: () => void;
+  onMarkDone: () => void;
   executionStatus?: TaskExecutionStatus;
   onMergePR?: (prNumber: number, taskTitle: string) => void;
   onRejectPR?: (prNumber: number) => void;
   mergeBusy?: boolean;
   rejectBusy?: boolean;
   removeBusy?: boolean;
+  doneBusy?: boolean;
 }) {
   // Approval state (pre-execution) comes from the markdown checkbox.
   // Execution state (post-approval) comes from issue comments left by the executor.
@@ -829,6 +881,11 @@ function TaskRow({
     pillLabel = '✓ Done';
     pillCls = 'bg-chess-best text-white border-chess-best';
     pillTitle = 'Completed by Claude Code (browser task, no PR)';
+    cardCls = 'border-chess-best/30 bg-chess-best/5';
+  } else if (executed === 'done_manual') {
+    pillLabel = '🏁 Done (manual)';
+    pillCls = 'bg-chess-best text-white border-chess-best';
+    pillTitle = 'You marked this done — already handled outside the dashboard. The agent will see this on its next run and avoid re-suggesting.';
     cardCls = 'border-chess-best/30 bg-chess-best/5';
   } else if (executed === 'failed') {
     pillLabel = '✕ Failed';
@@ -864,6 +921,16 @@ function TaskRow({
           >
             {busy ? '…' : pillLabel}
           </button>
+          {!toggleLocked && (
+            <button
+              onClick={onMarkDone}
+              disabled={doneBusy}
+              className="text-[10px] text-chess-text-tertiary hover:text-chess-best transition-colors disabled:opacity-50"
+              title="Mark as already done. Stops the executor from running it AND tells the next daily agent run not to re-suggest it."
+            >
+              {doneBusy ? '…' : '🏁 Mark done'}
+            </button>
+          )}
           {!toggleLocked && (
             <button
               onClick={onRemove}
@@ -986,13 +1053,14 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, onRemoveTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, removedTitles, tokens,
+  issue, isLatest, onApprove, onToggleTask, onRemoveTask, onMarkDoneTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, removedTitles, tokens,
 }: {
   issue: GhIssue;
   isLatest: boolean;
   onApprove: () => void;
   onToggleTask: (t: ParsedTask) => void;
   onRemoveTask: (t: ParsedTask) => void;
+  onMarkDoneTask: (t: ParsedTask) => void;
   onMergePR: (prNumber: number, taskTitle: string) => void;
   onRejectPR: (prNumber: number) => void;
   showRaw: boolean;
@@ -1109,12 +1177,14 @@ function IssueCard({
                 busy={busy === 'task:' + task.id}
                 onToggle={() => onToggleTask(task)}
                 onRemove={() => onRemoveTask(task)}
+                onMarkDone={() => onMarkDoneTask(task)}
                 executionStatus={es}
                 onMergePR={onMergePR}
                 onRejectPR={onRejectPR}
                 mergeBusy={prNum != null && busy === 'merge:' + prNum}
                 rejectBusy={prNum != null && busy === 'reject:' + prNum}
                 removeBusy={busy === 'remove:' + task.id}
+                doneBusy={busy === 'done:' + task.id}
               />
             );
           })}

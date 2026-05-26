@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0f1a" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="canonical" href="https://chessdna.app/learn/chess-analysis-app.html" />
+
+    <title>The Best Chess Analysis App: How to Actually Improve from Your Games | Chess DNA</title>
+    <meta name="description" content="Chess DNA is an AI chess analysis app that connects to Chess.com and Lichess, finds your recurring patterns, and lets you replay your own mistakes. Import your games and get your personalized improvement plan." />
+    <meta name="keywords" content="chess analysis app, best chess analysis app, chess game analyzer, ai chess analysis, chess.com analysis alternative, lichess analysis alternative, chess analysis software" />
+    <meta name="robots" content="index, follow" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Chess DNA" />
+    <meta property="og:title" content="The Best Chess Analysis App: How to Actually Improve from Your Games" />
+    <meta property="og:description" content="Chess DNA is an AI chess analysis app that connects to Chess.com and Lichess, finds your recurring patterns, and lets you replay your own mistakes." />
+    <meta property="og:url" content="https://chessdna.app/learn/chess-analysis-app.html" />
+    <meta property="og:image" content="https://chessdna.app/favicon.png" />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      "headline": "The Best Chess Analysis App: How to Actually Improve from Your Games",
+      "description": "Chess DNA is an AI chess analysis app that connects to Chess.com and Lichess, finds your recurring patterns, and lets you replay your own mistakes. Import your games and get your personalized improvement plan.",
+      "url": "https://chessdna.app/learn/chess-analysis-app.html",
+      "image": "https://chessdna.app/favicon.png",
+      "datePublished": "2026-05-26",
+      "dateModified": "2026-05-26",
+      "author": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/" },
+      "publisher": { "@type": "Organization", "name": "Chess DNA", "url": "https://chessdna.app/", "logo": "https://chessdna.app/favicon.png" },
+      "mainEntityOfPage": { "@type": "WebPage", "@id": "https://chessdna.app/learn/chess-analysis-app.html" },
+      "about": [
+        { "@type": "Thing", "name": "Chess analysis app" },
+        { "@type": "Thing", "name": "Chess game analysis" },
+        { "@type": "Thing", "name": "AI chess analysis" },
+        { "@type": "SoftwareApplication", "name": "Chess DNA", "url": "https://chessdna.app/" }
+      ]
+    }
+    </script>
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is Chess DNA free?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Chess DNA is free to use — connect your Chess.com or Lichess username, import your games, and get full engine analysis, pattern detection, and personalized replay positions at no cost. There is no paywall on the core analysis loop. Shared API keys for the AI features are included so you don't need to bring your own."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does Chess DNA work with Chess.com and Lichess?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Chess DNA imports your games directly from both Chess.com and Lichess. You enter your username once and Chess DNA pulls your game history, then continues importing new games as you play them. PGN file imports are also supported for games from other sources."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What patterns does Chess DNA detect?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Chess DNA classifies every mistake in your games into one of 13 named patterns: Missed Tactic, Missed Pin, Missed Fork, Missed Skewer, Missed Mate, Trapped Piece, Discovered Attack, Hanging Pieces, Back Rank Weakness, King Safety, Endgame Technique, Opening Inaccuracy, and Time Pressure Blunder. Each pattern is ranked by the amount of rating it has cost you, so the most expensive leak surfaces at the top of your improvement plan."
+          }
+        }
+      ]
+    }
+    </script>
+
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #0a0f1a; color: #e8edf5; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.65; }
+      .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px 96px; }
+      header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+      header img { width: 44px; height: 44px; border-radius: 12px; }
+      header .crumb { font-size: 13px; color: #94a3b8; }
+      header .crumb a { color: #94a3b8; text-decoration: none; }
+      header .crumb a:hover { color: #6ee7b7; }
+      h1 { font-size: 30px; margin: 0 0 14px; letter-spacing: -0.02em; line-height: 1.2; }
+      h2 { color: #6ee7b7; font-size: 22px; margin: 40px 0 10px; letter-spacing: -0.01em; }
+      h3 { font-size: 17px; color: #cbd5e1; margin: 24px 0 6px; }
+      p, li { color: #cbd5e1; }
+      a { color: #6ee7b7; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      ol li, ul li { margin: 6px 0; }
+      .lede { font-size: 19px; color: #e8edf5; margin: 0 0 28px; }
+      .callout { background: #111827; border: 1px solid #1f2937; border-left: 3px solid #6ee7b7; border-radius: 8px; padding: 14px 18px; margin: 18px 0; }
+      .callout strong { color: #e8edf5; }
+      .cta-wrap { margin: 36px 0 8px; }
+      .cta { display: inline-block; background: #6ee7b7; color: #0a0f1a; padding: 14px 26px; border-radius: 10px; font-weight: 700; text-decoration: none; font-size: 16px; }
+      .cta:hover { background: #5ed5a5; text-decoration: none; }
+      footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid #1f2937; color: #94a3b8; font-size: 14px; }
+      footer a { color: #94a3b8; margin-right: 16px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <img src="/favicon.png" alt="Chess DNA logo" />
+        <div>
+          <div class="crumb"><a href="https://chessdna.app/">Chess DNA</a> · <a href="https://chessdna.app/learn/">Learn</a></div>
+        </div>
+      </header>
+
+      <h1>The Best Chess Analysis App: How to Actually Improve from Your Games</h1>
+
+      <p class="lede">A chess analysis app should do more than show you an evaluation bar. It should tell you why you lost, what you keep getting wrong, and what to drill next — across hundreds of your games, not just the one you happen to be looking at. This guide walks through what to look for in a real analysis app, why move-by-move review hits a ceiling, and how Chess DNA's pattern pipeline turns your Chess.com or Lichess history into a personalized improvement plan.</p>
+
+      <div class="callout">
+        <strong>The short version:</strong> a chess analysis app is only useful if it closes the loop from "engine evaluation" to "what I should train tomorrow." Chess DNA imports your Chess.com and Lichess games, runs each one through Stockfish, classifies every mistake into a named pattern, ranks the patterns by rating lost, and queues replay positions from your own games. The full loop, automated.
+      </div>
+
+      <h2>What Makes a Good Chess Analysis App vs. Just an Engine Board</h2>
+      <p>Most tools that call themselves "chess analysis" are really just an engine board: a chessboard, a move list, and a Stockfish evaluation that updates as you click. That's a useful component, but it's not analysis — it's a calculator. A calculator tells you the answer to a problem you already typed in. It doesn't tell you which problems you should be solving in the first place.</p>
+      <p>A real chess analysis app does four things an engine board cannot:</p>
+      <ol>
+        <li><strong>It works across many games, not one.</strong> The signal that matters lives in the aggregate. A blunder on Tuesday is noise. The same blunder showing up six times across fifty games is a diagnosis. Any app that only loads one game at a time is missing the whole point of analysis.</li>
+        <li><strong>It classifies mistakes, not just flags them.</strong> "Blunder" is a category of one. "Missed knight fork on f7" is actionable. The app needs a taxonomy — named patterns that let you count what's happening and not just notice it.</li>
+        <li><strong>It ranks what's costing you the most.</strong> You don't have time to fix every leak. You have time to fix the biggest one. An app that doesn't surface a priority order is making you do the bookkeeping by hand, which is exactly the work nobody actually does.</li>
+        <li><strong>It hands you a drill.</strong> Knowing your weakness is half the value. The other half is the replay queue — the exact positions from your own games where the weakness fired, so you can train recognition on the shape that actually hurts you.</li>
+      </ol>
+      <p>An engine board does none of this. Stockfish on a webpage tells you a move was a -2.3 mistake. It does not tell you that this is the eighth time this month you missed the same kind of discovered attack in the same kind of middlegame structure. The job of a chess analysis app is to do that aggregation for you.</p>
+
+      <h2>Move-by-Move Review vs. Pattern Analysis Across Many Games</h2>
+      <p>The standard workflow at most chess sites is "open the game, click through the moves, watch the eval bar." This is move-by-move review, and it has a hard ceiling. It's useful for understanding <em>that one game</em>, but it doesn't compound. You finish a session, close the browser, and the data is gone — not literally, but functionally. You'll never aggregate it. You'll never count it. You'll never see the pattern that's running through it.</p>
+      <p>Pattern analysis is the opposite shape. It takes every game in your history as a single dataset, runs them all through engine analysis, classifies every mistake into a named category, and produces a ranked view of what's happening to you in aggregate. The unit of value is not "this move was bad" — it's "you have lost approximately 240 rating points this quarter to a recurring back-rank weakness, here is the queue of positions where it fired, drill these."</p>
+      <p>The math here is brutal but clarifying. If you play fifty games a month and review three of them carefully, you've examined 6% of your evidence. The pattern running through the other 94% is invisible to you. Pattern analysis flips that ratio — every game contributes signal, automatically, and the picture it builds is statistical instead of anecdotal. (For the long version of this argument, see <a href="https://chessdna.app/learn/how-to-improve-at-chess.html">How to Improve at Chess: Pattern Recognition, Weakness Analysis & Game Review</a>.)</p>
+      <p>This is the distinction between a chess <em>review</em> tool and a chess <em>analysis</em> app. Review tools work at the game level. Analysis apps work at the corpus level. Both have a place, but improvement happens at the corpus level — and that's the level almost nobody operates at without an app that does the aggregation for them.</p>
+
+      <h2>How Chess DNA's Analysis Pipeline Works</h2>
+      <p>Chess DNA is built around the four-stage pipeline that every serious chess analysis app needs: import, engine analysis, pattern classification, and replay. Each stage is automatic — the only step that requires your input is entering your Chess.com or Lichess username the first time.</p>
+      <ol>
+        <li><strong>Import.</strong> You connect a Chess.com or Lichess username once. Chess DNA pulls your game history into the app and keeps importing as you play new games. PGN file imports are supported too, for games from other clients or over-the-board sessions you've recorded. There is no upload-one-game-at-a-time flow — the whole history loads at once.</li>
+        <li><strong>Engine analysis.</strong> Every imported game is run through Stockfish 17, in your browser, via a Web Worker. Each move is scored at analysis depth 18, then classified by win-chance loss into a quality bucket: best, excellent, good, inaccuracy, mistake, or blunder. The full per-move evaluation is stored, not just the headline number, so the data is available for everything downstream.</li>
+        <li><strong>Pattern classification.</strong> Every mistake is classified into one of 13 named patterns — Missed Tactic, Missed Pin, Missed Fork, Missed Skewer, Missed Mate, Trapped Piece, Discovered Attack, Hanging Pieces, Back Rank Weakness, King Safety, Endgame Technique, Opening Inaccuracy, Time Pressure Blunder. The classification is rule-based and reproducible — it sees the same position the same way every time. The output is a ranked list, sorted by how much rating each pattern has cost you.</li>
+        <li><strong>Replay.</strong> For each pattern, Chess DNA queues replay positions taken directly from your own games — the exact spots where the pattern fired. You replay until the recognition is automatic, then that pattern moves down the ranking and the next-most-expensive one surfaces. The training is never generic, because it's always built from your real game history. (More on this in <a href="https://chessdna.app/learn/chess-pattern-recognition.html">Chess Pattern Recognition: How to Train on Your Own Patterns</a>.)</li>
+      </ol>
+      <p>On top of those four stages, the 8-dimension Skill Radar (Openings, Tactics, Defense, Positional, Endgame, Calculation, Time Management, Resilience) scores you 0–99 in each dimension and recomputes as new games come in. Rank tiers — Pawn, Knight, Bishop, Rook, Queen, King — give you a visible league you're climbing as your weakest dimension improves. The loop is no longer invisible.</p>
+
+      <h2>Comparison to Alternatives</h2>
+      <p>There are good chess analysis tools out there. They're worth understanding clearly, because each one does a different job, and Chess DNA is built to fill the gap none of them fill.</p>
+      <h3>Chess.com Game Review</h3>
+      <p>Chess.com's Game Review is excellent at what it does: it walks you through a single game with engine evaluation, "key moments," and natural-language commentary on individual moves. The Coach feature is genuinely useful for understanding what happened in <em>that one game</em>. Where it stops is the aggregation step — it's a per-game review surface, not a corpus-level pattern engine. You can review games one at a time, but you don't get a ranked list of recurring weaknesses across the last fifty.</p>
+      <h3>Lichess Analysis</h3>
+      <p>Lichess's analysis board is fast, free, and has a deep engine. It's the best raw analysis surface on the web, and the computer analysis annotates every move in a game with engine evaluations and shows you "inaccuracy / mistake / blunder" counts. Like Chess.com, it operates at the single-game level. The Insights feature does provide some aggregate stats (win rates by opening, performance by time control), but it doesn't extract named tactical patterns from your mistakes or queue replay positions for them.</p>
+      <h3>ChessTempo</h3>
+      <p>ChessTempo is a tactics trainer with a large curated puzzle database and useful spaced-repetition mechanics. It's a great place to drill tactics in general. What it doesn't do is build its training set from <em>your</em> games — every player drills against the same shared pool of positions, so the puzzles aren't filtered by what your eyes are actually missing. The complement to a tool like ChessTempo is exactly what Chess DNA provides: pattern detection from your own history that tells you which kinds of tactics to be drilling in the first place.</p>
+      <p>The honest summary is that these tools are mostly complementary, not competitive. Chess.com and Lichess are where you play and where you do per-game review. ChessTempo is where you drill generic tactics. Chess DNA is the aggregation layer on top — the app that reads your whole history, finds the patterns, ranks them, and tells you which leaks to seal first.</p>
+
+      <p class="cta-wrap"><a class="cta" href="https://chessdna.app/">Open Chess DNA →</a></p>
+
+      <h2>Frequently Asked Questions</h2>
+      <h3>Is Chess DNA free?</h3>
+      <p>Yes. Chess DNA is free to use — connect your Chess.com or Lichess username, import your games, and get full engine analysis, pattern detection, and personalized replay positions at no cost. There is no paywall on the core analysis loop. Shared API keys for the AI features are included so you don't need to bring your own.</p>
+      <h3>Does Chess DNA work with Chess.com and Lichess?</h3>
+      <p>Yes. Chess DNA imports your games directly from both Chess.com and Lichess. You enter your username once and Chess DNA pulls your game history, then continues importing new games as you play them. PGN file imports are also supported for games from other sources.</p>
+      <h3>What patterns does Chess DNA detect?</h3>
+      <p>Chess DNA classifies every mistake in your games into one of 13 named patterns: Missed Tactic, Missed Pin, Missed Fork, Missed Skewer, Missed Mate, Trapped Piece, Discovered Attack, Hanging Pieces, Back Rank Weakness, King Safety, Endgame Technique, Opening Inaccuracy, and Time Pressure Blunder. Each pattern is ranked by the amount of rating it has cost you, so the most expensive leak surfaces at the top of your improvement plan.</p>
+
+      <h2>Related guides</h2>
+      <p><a href="https://chessdna.app/learn/how-to-improve-at-chess.html">How to improve at chess — the full method</a> · <a href="https://chessdna.app/learn/chess-pattern-recognition.html">Chess pattern recognition: how to train on your own patterns</a> · <a href="https://chessdna.app/learn/find-your-chess-weaknesses.html">How to find your chess weaknesses from your own games</a> · <a href="https://chessdna.app/learn/">All Chess DNA improvement guides</a></p>
+
+      <footer>
+        <a href="https://chessdna.app/">Home</a>
+        <a href="https://chessdna.app/learn/">Learn</a>
+        <a href="https://chessdna.app/about.html">About</a>
+        <a href="https://chessdna.app/features.html">Features</a>
+        <a href="https://chessdna.app/faq.html">FAQ</a>
+        <a href="https://chessdna.app/contact.html">Contact</a>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -18,18 +18,37 @@ Disallow: /graph
 Disallow: /data-access-request
 
 # Welcome AI crawlers — Chess DNA is meant to be cited.
+# Full allowlist mirrors what citation-leader competitors (chesssolve.com) ship.
+# Each bot maps to a different AI engine / training pipeline:
+#   GPTBot              → ChatGPT training data
+#   OAI-SearchBot       → ChatGPT browse-mode citations
+#   ChatGPT-User        → live ChatGPT browsing requests
+#   anthropic-ai        → Claude training data
+#   ClaudeBot           → Claude browse-mode citations
+#   Claude-Web          → live Claude browsing requests
+#   PerplexityBot       → Perplexity citations
+#   YouBot              → You.com citations
+#   cohere-ai           → Cohere training
+#   Google-Extended     → Gemini / Google AI Overviews training
+#   Amazonbot           → Alexa / Amazon AI citations
+#   Bytespider          → Doubao / TikTok AI
+#   Applebot-Extended   → Apple Intelligence training
+#   FacebookBot         → Meta AI citations
+#   CCBot               → Common Crawl (general LLM training corpus)
 User-agent: GPTBot
-Allow: /
-
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: anthropic-ai
 User-agent: ClaudeBot
-Allow: /
-
+User-agent: Claude-Web
 User-agent: PerplexityBot
-Allow: /
-
+User-agent: YouBot
+User-agent: cohere-ai
 User-agent: Google-Extended
-Allow: /
-
+User-agent: Amazonbot
+User-agent: Bytespider
+User-agent: Applebot-Extended
+User-agent: FacebookBot
 User-agent: CCBot
 Allow: /
 

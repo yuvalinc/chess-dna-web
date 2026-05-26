@@ -268,17 +268,27 @@ function todayIso() {
 
 // Parse "1. <url> — context … Suggested[ comment]: '<text>'" blocks out of a
 // SEO task description. Returns one entry per Reddit URL found.
+//
+// SEO daily renders task descriptions as markdown blockquotes (every line
+// gets a "  > " prefix), so we strip those before tokenizing. Also handles
+// curly/typographic quotes around the suggested comment text (the agent
+// sometimes uses ‘ … ’ instead of straight ' … ').
 function parseUrlCommentPairs(description) {
   if (!description) return [];
+  // Strip leading whitespace + blockquote markers from each line.
+  const flat = description
+    .split('\n')
+    .map(line => line.replace(/^\s*>\s?/, ''))
+    .join('\n');
+
   const pairs = [];
-  // Split on a fresh-numbered-line that introduces a Reddit URL. The split
-  // captures the URL prefix so each chunk ends with the per-item context.
-  const blocks = description.split(/\n(?=\s*\d+\.\s+https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/)/);
+  const blocks = flat.split(/\n(?=\s*\d+\.\s+https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/)/);
   for (const block of blocks) {
     const urlM = block.match(/(https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/r\/[^\s)\]'"<>]+)/);
     if (!urlM) continue;
     const url = urlM[1].replace(/[.,;]+$/, '');
-    const commentM = block.match(/Suggested(?:\s+comment)?\s*:\s*['"]([^'"]+)['"]/i);
+    // Accept straight or typographic quotes around the suggested comment.
+    const commentM = block.match(/Suggested(?:\s+comment)?\s*:\s*['"‘’“”]([^'"‘’“”]+)['"‘’“”]/i);
     pairs.push({ url, suggestedComment: commentM?.[1] ?? null });
   }
   return pairs;

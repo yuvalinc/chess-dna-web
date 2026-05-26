@@ -538,16 +538,38 @@ export default function SeoAdmin() {
           throw new Error(`Mark-ready failed: ${ready.errors[0].message}`);
         }
       }
-      await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}/merge`, {
+      // The PUT /merge response itself confirms the merge with the new commit
+      // sha. Use that to optimistically update local state instead of relying
+      // on an immediate GET — GitHub takes a few hundred ms to mark
+      // merged_at on the PR object, and during that window the GET returns
+      // { state: 'open', merged_at: null } which would leave the UI showing
+      // the original Approve/Reject buttons even though the merge succeeded.
+      const mergeResp = await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}/merge`, {
         method: 'PUT',
         body: JSON.stringify({ merge_method: 'squash', commit_title: `[SEO] ${taskTitle}` }),
       });
-      const merged = await ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`);
       setPrStates(prev => {
         const m = new Map(prev);
-        m.set(prNumber, { state: merged.state, merged_at: merged.merged_at, merge_commit_sha: merged.merge_commit_sha });
+        m.set(prNumber, {
+          state: 'closed',
+          merged_at: new Date().toISOString(),
+          merge_commit_sha: mergeResp?.sha ?? null,
+        });
         return m;
       });
+      // Best-effort reconciliation: refetch in the background to capture the
+      // canonical merge_commit_sha + GitHub's actual merged_at timestamp.
+      // Don't await — if it fails or returns stale data, the optimistic state
+      // above is already correct enough.
+      ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`).then(pr => {
+        if (pr?.merged_at) {
+          setPrStates(prev => {
+            const m = new Map(prev);
+            m.set(prNumber, { state: pr.state, merged_at: pr.merged_at, merge_commit_sha: pr.merge_commit_sha });
+            return m;
+          });
+        }
+      }).catch(() => {});
     } catch (e) {
       setError(`Merge of PR #${prNumber} failed: ${(e as Error).message}`);
     } finally {

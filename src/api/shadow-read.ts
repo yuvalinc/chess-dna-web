@@ -233,16 +233,30 @@ const IGNORED_FIELDS = new Set([
 function compareRows(
   base44: Record<string, unknown>,
   supabase: Record<string, unknown>,
-  _entity: Entity,
+  entity: Entity,
 ): FieldDiff[] {
   const diffs: FieldDiff[] = [];
+
+  // UserPreferences is packed into a single `settings` jsonb column on the
+  // Supabase side (see transformToSupabase). Compare Base44 top-level fields
+  // against the unpacked settings dict, not against the row's columns —
+  // otherwise every preference field shows as "missing in supabase" because
+  // it lives one level deeper.
+  const sbFieldSource = entity === 'UserPreferences'
+    ? ((supabase.settings as Record<string, unknown> | undefined) ?? {})
+    : supabase;
 
   // Walk Base44 keys; the snake_case equivalent is what's in supabase.
   for (const [key, b44Val] of Object.entries(base44)) {
     if (IGNORED_FIELDS.has(key)) continue;
     const snakeKey = key.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
     if (IGNORED_FIELDS.has(snakeKey)) continue;
-    const sbVal = supabase[snakeKey];
+    // For UserPreferences, supabase keeps the original camelCase keys inside
+    // `settings` (we just spread the row into settings on write); for other
+    // entities the top-level columns are snake_case. Try both lookups.
+    const sbVal = entity === 'UserPreferences'
+      ? (sbFieldSource[key] ?? sbFieldSource[snakeKey])
+      : sbFieldSource[snakeKey];
 
     if (!shallowEqual(b44Val, sbVal)) {
       diffs.push({ field: key, base44: b44Val, supabase: sbVal });

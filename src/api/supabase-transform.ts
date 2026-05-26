@@ -41,11 +41,15 @@ export function transformToSupabase(
   row: Record<string, unknown>,
   userId: string,
 ): Record<string, unknown> {
-  // Strip Base44 metadata that doesn't apply server-side.
+  // Strip Base44 metadata that doesn't apply server-side. `is_sample` is a
+  // Base44-internal flag and the Supabase schema doesn't define it — including
+  // it in a PATCH body triggers PGRST204 "Could not find the 'is_sample'
+  // column of 'games' in the schema cache" and the mirror update is dropped.
   const clean = { ...row };
   delete clean.created_date;
   delete clean.updated_date;
   delete clean.created_by_id;
+  delete clean.is_sample;
 
   if (entity === 'UserPreferences') {
     const { id, ...settings } = clean;

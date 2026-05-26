@@ -295,11 +295,12 @@ async function processIssue(issueNumber) {
   const reddit = allPending.filter(isReddit);
   const pending = allPending.filter(t => !isReddit(t));
 
+  // Local mutable body; gets rewritten when we flip task checkboxes.
+  let body = lines.join('\n');
+
   // Mark reddit tasks as routed so the dashboard surfaces the ReddGrow
   // banner and the executor doesn't keep skipping them every 30s.
   for (const t of reddit) {
-    // Only comment once per task — check if a routed marker already exists.
-    // (Cheap heuristic: the issue body's checkbox is the source of truth.)
     await commentOnIssue(
       issue.number,
       `🔀 **${t.title}** — routed to ReddGrow (lane: browser, Reddit URLs detected). Handle via /seo?tab=reddit and the Chrome extension. The executor is skipping this task.`,

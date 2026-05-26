@@ -168,7 +168,7 @@ function fmtUsd(n: number): string {
 }
 
 interface TaskExecutionStatus {
-  status: 'done' | 'done_manual' | 'routed_reddgrow' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
+  status: 'done' | 'done_manual' | 'needs_review' | 'reviewed' | 'routed_reddgrow' | 'failed' | 'in_progress' | 'pr_open' | 'pr_merged' | 'pr_rejected';
   sha?: string;
   files?: string[];
   prNumber?: number;
@@ -233,6 +233,17 @@ function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutio
       // description contains Reddit URLs. Surface as its own state so the
       // dashboard banner is consistent with what the daemon did.
       map.set(title, { status: 'routed_reddgrow' });
+    } else if (body.startsWith('🔎')) {
+      // Executor couldn't physically execute the task (browser visit, email,
+      // form submission) and is asking the user to do the manual step and
+      // provide proof. Only promote to 'needs_review' if we haven't already
+      // seen a 👁 reviewed for this title — once reviewed, stay reviewed.
+      if (map.get(title)?.status !== 'reviewed') {
+        map.set(title, { status: 'needs_review' });
+      }
+    } else if (body.startsWith('👁')) {
+      // User confirmed the manual task is done with a screenshot/proof.
+      map.set(title, { status: 'reviewed' });
     } else if (body.startsWith('❌')) {
       map.set(title, { status: 'failed' });
     } else if (body.startsWith('🔧')) {
@@ -645,6 +656,30 @@ export default function SeoAdmin() {
   //   3. The dashboard card flips to a green "✓ Done (manual)" state.
   // Also flips the issue-body checkbox to checked so the executor's task
   // parser sees the task as not-pending in case it scans the body first.
+  // "Mark reviewed" — user has done the manual step (visited the site, sent
+  // the email, etc.) and is confirming with a 👁 comment. The agent's "Already
+  // shipped — do NOT re-suggest" memory picks this up on the next run.
+  const onMarkReviewed = async (issue: GhIssue, task: ParsedTask) => {
+    setBusy('review:' + task.id);
+    const synth: GhComment = {
+      id: -Date.now(),
+      body: `👁 **${task.title}** — reviewed by user (manual task verified)`,
+      created_at: new Date().toISOString(),
+    };
+    setComments(prev => [...(prev ?? []), synth]);
+    try {
+      await ghFetch(`/repos/${GH_REPO}/issues/${issue.number}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ body: synth.body }),
+      });
+    } catch (e) {
+      setComments(prev => (prev ?? []).filter(c => c.id !== synth.id));
+      setError(`Mark reviewed failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const onMarkDone = async (issue: GhIssue, task: ParsedTask) => {
     setBusy('done:' + task.id);
     const synth: GhComment = {
@@ -807,6 +842,7 @@ export default function SeoAdmin() {
         onToggleTask={(t) => onToggleTask(displayed, t)}
         onRemoveTask={(t) => onRemoveTask(displayed, t)}
         onMarkDoneTask={(t) => onMarkDone(displayed, t)}
+        onMarkReviewedTask={(t) => onMarkReviewed(displayed, t)}
         onMergePR={onMergePR}
         onRejectPR={onRejectPR}
         showRaw={showRawId === displayed.number}
@@ -872,13 +908,14 @@ const EFFORT_STYLES: Record<NonNullable<ParsedTask['effort']>, string> = {
 };
 
 function TaskRow({
-  task, busy, onToggle, onRemove, onMarkDone, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy, removeBusy, doneBusy,
+  task, busy, onToggle, onRemove, onMarkDone, onMarkReviewed, executionStatus, onMergePR, onRejectPR, mergeBusy, rejectBusy, removeBusy, doneBusy, reviewBusy,
 }: {
   task: ParsedTask;
   busy: boolean;
   onToggle: () => void;
   onRemove: () => void;
   onMarkDone: () => void;
+  onMarkReviewed: () => void;
   executionStatus?: TaskExecutionStatus;
   onMergePR?: (prNumber: number, taskTitle: string) => void;
   onRejectPR?: (prNumber: number) => void;
@@ -886,6 +923,7 @@ function TaskRow({
   rejectBusy?: boolean;
   removeBusy?: boolean;
   doneBusy?: boolean;
+  reviewBusy?: boolean;
 }) {
   // Approval state (pre-execution) comes from the markdown checkbox.
   // Execution state (post-approval) comes from issue comments left by the executor.
@@ -930,6 +968,16 @@ function TaskRow({
     pillCls = 'bg-chess-accent text-white border-chess-accent';
     pillTitle = 'Reddit task — handled via the ReddGrow tab + Chrome extension, not the Claude Code executor.';
     cardCls = 'border-chess-accent/30 bg-chess-accent/5';
+  } else if (executed === 'needs_review') {
+    pillLabel = '🔎 Needs your review';
+    pillCls = 'bg-chess-inaccuracy text-white border-chess-inaccuracy';
+    pillTitle = 'Executor can\'t physically do this task (browser visit / email / form). You need to do the manual step and attach proof, then click Mark reviewed.';
+    cardCls = 'border-chess-inaccuracy/30 bg-chess-inaccuracy/5';
+  } else if (executed === 'reviewed') {
+    pillLabel = '👁 Reviewed';
+    pillCls = 'bg-chess-best text-white border-chess-best';
+    pillTitle = 'You confirmed the manual task with proof. Agent treats this as shipped on future runs.';
+    cardCls = 'border-chess-best/30 bg-chess-best/5';
   } else if (executed === 'failed') {
     pillLabel = '✕ Failed';
     pillCls = 'bg-chess-blunder text-white border-chess-blunder';
@@ -1041,6 +1089,40 @@ function TaskRow({
               </button>
             </div>
           )}
+          {/* Needs-review banner: the executor couldn't physically do this
+              task (browser visit, email, form submission). Surface a clear
+              "you do it + click Mark reviewed" CTA. */}
+          {executed === 'needs_review' && (
+            <div className="mt-3 bg-chess-inaccuracy/10 border border-chess-inaccuracy/30 rounded p-3">
+              <div className="font-bold text-chess-inaccuracy mb-1 text-[12px]">
+                ⚠ Not actually executed
+              </div>
+              <div className="text-[12px] text-chess-text-secondary mb-2 leading-relaxed">
+                The executor can't physically visit websites, send emails, or submit forms — it spent
+                tokens reasoning about this task but made <strong>zero changes in the real world</strong>.
+                To finish: do the manual step yourself, take a screenshot, reply to the GitHub issue with
+                the proof, then click below.
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={onMarkReviewed}
+                  disabled={reviewBusy}
+                  className="text-[12px] font-bold px-3 py-1.5 bg-chess-best text-white border border-chess-best rounded hover:bg-chess-best/90 disabled:opacity-50"
+                  title="Confirm you did the manual step. Logs 👁 on the issue so the next agent run treats it as shipped."
+                >
+                  {reviewBusy ? '…' : '👁 I did it — Mark reviewed'}
+                </button>
+                <a
+                  href={`https://github.com/${GH_REPO}/issues`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] text-chess-text-tertiary hover:text-chess-accent self-center"
+                >
+                  Attach screenshot on GitHub →
+                </a>
+              </div>
+            </div>
+          )}
           {task.filesTouched.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {task.filesTouched.map(f => (
@@ -1119,7 +1201,7 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, onRemoveTask, onMarkDoneTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, removedTitles, tokens,
+  issue, isLatest, onApprove, onToggleTask, onRemoveTask, onMarkDoneTask, onMarkReviewedTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, removedTitles, tokens,
 }: {
   issue: GhIssue;
   isLatest: boolean;
@@ -1127,6 +1209,7 @@ function IssueCard({
   onToggleTask: (t: ParsedTask) => void;
   onRemoveTask: (t: ParsedTask) => void;
   onMarkDoneTask: (t: ParsedTask) => void;
+  onMarkReviewedTask: (t: ParsedTask) => void;
   onMergePR: (prNumber: number, taskTitle: string) => void;
   onRejectPR: (prNumber: number) => void;
   showRaw: boolean;
@@ -1244,6 +1327,7 @@ function IssueCard({
                 onToggle={() => onToggleTask(task)}
                 onRemove={() => onRemoveTask(task)}
                 onMarkDone={() => onMarkDoneTask(task)}
+                onMarkReviewed={() => onMarkReviewedTask(task)}
                 executionStatus={es}
                 onMergePR={onMergePR}
                 onRejectPR={onRejectPR}
@@ -1251,6 +1335,7 @@ function IssueCard({
                 rejectBusy={prNum != null && busy === 'reject:' + prNum}
                 removeBusy={busy === 'remove:' + task.id}
                 doneBusy={busy === 'done:' + task.id}
+                reviewBusy={busy === 'review:' + task.id}
               />
             );
           })}

@@ -193,10 +193,25 @@ async function executeTaskAsPR(issue, task) {
     }
     console.log(`[exec]   ${task.id}: ${totalTokens.toLocaleString()} tokens · $${costUsd.toFixed(4)}`);
 
+    // Capture Claude Code's actual response text so the executor can surface
+    // what the agent THOUGHT it did. For tasks Claude can't physically
+    // execute (browser visits, sending emails, posting on Reddit, etc.) the
+    // response usually explains the limitation + provides a draft for the
+    // user to do manually. We use this to write an honest "needs review"
+    // comment instead of pretending the task was done.
+    let claudeResponse = '';
+    try {
+      const parsed = JSON.parse(r.stdout || '{}');
+      claudeResponse = String(parsed.result ?? '').slice(0, 2400);
+    } catch {}
+
     const changed = gitChangedInDir(worktreeDir);
     if (changed.length === 0) {
-      // No file changes (e.g. pure browser task). No PR to open.
-      return { hadChanges: false, costUsd, totalTokens };
+      // No file changes (e.g. pure browser task, email, manual outreach).
+      // No PR to open. Return the response text so the caller can surface it
+      // for verification — Claude Code can't physically visit sites, send
+      // emails, or post on social media from this environment.
+      return { hadChanges: false, costUsd, totalTokens, claudeResponse };
     }
 
     // Commit + push.
@@ -498,7 +513,7 @@ async function processIssue(issueNumber) {
     await commentOnIssue(issue.number, `🔧 Working on **${task.title}**…`);
 
     try {
-      const { hadChanges, pr, costUsd = 0, totalTokens = 0 } = await executeTaskAsPR(issue, task);
+      const { hadChanges, pr, costUsd = 0, totalTokens = 0, claudeResponse = '' } = await executeTaskAsPR(issue, task);
 
       // Mark the box checked so we don't re-attempt this task on the next
       // daemon tick. (Approval/merge happens via the PR, not the checkbox.)
@@ -521,12 +536,28 @@ async function processIssue(issueNumber) {
           costLine,
         );
       } else {
-        // No file changes — e.g. a pure-browser task. Mark done immediately,
-        // since there's no PR to review.
+        // No file changes means Claude Code couldn't physically execute the
+        // task (browser task, email send, social post). We previously marked
+        // these as ✅ done which was misleading — nothing actually happened.
+        // Post 🔎 needs-review instead, with Claude's actual response so the
+        // user can see what was drafted vs what was claimed, and prompt them
+        // to do the manual step + provide proof.
         anyReady = true;
+        const responseExcerpt = claudeResponse
+          ? `\n\n<details><summary>What Claude Code produced (no file changes were made)</summary>\n\n\`\`\`\n${claudeResponse.slice(0, 2000)}${claudeResponse.length > 2000 ? '\n…(truncated)' : ''}\n\`\`\`\n\n</details>`
+          : '\n\n_Claude Code produced no output._';
         await commentOnIssue(
           issue.number,
-          `✅ **${task.title}** — done (no file changes; browser-only task)` + costLine,
+          `🔎 **${task.title}** — needs your verification\n\n` +
+          `**The executor cannot physically execute this task** — it has no browser, can't send emails, and can't post on external sites. Claude Code spent ${totalTokens.toLocaleString()} tokens reasoning about it but made zero file changes.\n\n` +
+          `**You need to:**\n` +
+          `1. Do the steps listed in the task description (visit the site / send the email / submit the form).\n` +
+          `2. Capture a screenshot or save a copy of what you submitted.\n` +
+          `3. Reply to this comment with the proof attached.\n` +
+          `4. Click **Mark reviewed** (👁) in /seo so the agent knows it's done.\n\n` +
+          `Until reviewed, the next daily agent run will assume this task is unfinished and may re-propose it.` +
+          responseExcerpt +
+          costLine,
         );
       }
     } catch (err) {

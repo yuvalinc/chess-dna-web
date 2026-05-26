@@ -34,7 +34,7 @@ interface GhComment {
   created_at: string;
 }
 
-type DraftType = 'warmup' | 'promotional' | 'brand_monitor';
+type DraftType = 'warmup' | 'promotional' | 'brand_monitor' | 'post';
 
 interface ParsedDraft {
   id: string;
@@ -69,6 +69,11 @@ const TYPE_META: Record<DraftType, { label: string; cls: string; hint: string }>
     label: '👁 Brand mention',
     cls: 'bg-chess-inaccuracy/15 text-chess-inaccuracy border-chess-inaccuracy/30',
     hint: 'Thread already mentions chess-dna — respond as a peer user, not as the team.',
+  },
+  post: {
+    label: '📝 New post',
+    cls: 'bg-chess-mistake/15 text-chess-mistake border-chess-mistake/30',
+    hint: 'Standalone new post (not a reply). Opens the subreddit /submit page — high effort, high reward.',
   },
 };
 
@@ -107,7 +112,7 @@ function parseDrafts(body: string | null): ParsedDraft[] {
     const headerMatch = block.match(/^###\s+\[r\/([^\]]+)\]\s+(.+?)\s*<!--\s*(draft-\d+)\s*-->/m);
     if (!headerMatch) continue;
     const [, subreddit, title, id] = headerMatch;
-    const typeM = block.match(/\*\*Type\*\*:\s*(warmup|promotional|brand_monitor)/);
+    const typeM = block.match(/\*\*Type\*\*:\s*(warmup|promotional|brand_monitor|post)/);
     const match = block.match(/\*\*Match\*\*:\s*(\d+)%(?:\s*·\s*_([^_]+)_)?/);
     const posted = block.match(/\*\*Posted\*\*:\s*([\d.]+h)\s+ago\s*·\s*(\d+)↑\s*·\s*(\d+)\s+comments/);
     const url = block.match(/\*\*URL\*\*:\s*(\S+)/);
@@ -304,7 +309,7 @@ export default function RedditAdmin() {
   // issue's comments. Good enough as a guardrail since users typically post
   // a batch per day and the ratio violation is most acute within that batch.
   const postedByType = useMemo(() => {
-    const tally: Record<DraftType, number> = { warmup: 0, promotional: 0, brand_monitor: 0 };
+    const tally: Record<DraftType, number> = { warmup: 0, promotional: 0, brand_monitor: 0, post: 0 };
     if (!comments) return tally;
     const titleToType = new Map<string, DraftType>();
     for (const d of drafts) titleToType.set(d.title, d.type);

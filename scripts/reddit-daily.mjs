@@ -96,7 +96,7 @@ async function fetchSubreddit(sub) {
   ]);
   const posts = [...(hot.data?.children ?? []), ...(fresh.data?.children ?? [])]
     .map(c => c.data)
-    .filter(p => p && !p.stickied && !p.over_18);
+    .filter(p => p && !p.stickied && !p.over_18 && !p.archived && !p.locked);
   // Deduplicate by post id (hot + new often overlap).
   const seen = new Set();
   return posts.filter(p => {

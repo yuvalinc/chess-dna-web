@@ -157,17 +157,23 @@ function parseDrafts(body, comments) {
       draft: draftM?.[1]?.trim() ?? '',
     });
   }
-  // Tag with current action state.
+  // Tag with current action state. Distinguish 🗑 "skipped" vs 🗑 "removed":
+  // both start with the same emoji but differ in verb. Removed = hidden
+  // from the queue entirely; skipped = greyed-out but still visible.
   const stateByTitle = new Map();
+  const removed = new Set();
   for (const c of comments) {
     const body = c.body || '';
     const t = body.match(/\*\*([^*]+?)\*\*/)?.[1]?.trim();
     if (!t) continue;
     if (body.startsWith('✅')) stateByTitle.set(t, 'posted');
+    else if (body.startsWith('🗑') && /removed/i.test(body)) removed.add(t);
     else if (body.startsWith('🗑')) stateByTitle.set(t, 'skipped');
     else if (body.startsWith('📋')) stateByTitle.set(t, 'opened');
   }
-  const tagged = out.map(d => ({ ...d, state: stateByTitle.get(d.title) ?? 'pending' }));
+  const tagged = out
+    .filter(d => !removed.has(d.title))
+    .map(d => ({ ...d, state: stateByTitle.get(d.title) ?? 'pending' }));
   const queued = tagged.filter(d => d.state === 'opened').length;
   return { all: tagged, queued };
 }
@@ -304,6 +310,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'mark-skipped') {
     markComment(msg.title, '🗑', 'skipped from extension');
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.type === 'mark-removed') {
+    // 🗑 + "removed by user" — same emoji as skipped but with the verb the
+    // dashboard's parseRemovedTitles() matches on. Removed drafts disappear
+    // from the dashboard entirely (not just dimmed like skipped).
+    markComment(msg.title, '🗑', 'removed by user');
     sendResponse({ ok: true });
     return false;
   }

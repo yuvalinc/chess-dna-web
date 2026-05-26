@@ -281,32 +281,47 @@ function todayIso() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// Parse "1. <url> — context … Suggested[ comment]: '<text>'" blocks out of a
-// SEO task description. Returns one entry per Reddit URL found.
+// Parse one of two shapes from a SEO task description:
+//   (a) Comments: "1. <reddit-url> — … Suggested comment: '…'"
+//   (b) Posts:    "Subreddit: r/X · Post title: '…' · Post body: \"\"\" … \"\"\""
+// Returns a unified list of injection items with kind: 'comment' | 'post'.
 //
 // SEO daily renders task descriptions as markdown blockquotes (every line
-// gets a "  > " prefix), so we strip those before tokenizing. Also handles
-// curly/typographic quotes around the suggested comment text (the agent
-// sometimes uses ‘ … ’ instead of straight ' … ').
+// gets a "  > " prefix), so we strip those before tokenizing. Quote chars
+// can be straight or typographic depending on the model's output.
 function parseUrlCommentPairs(description) {
   if (!description) return [];
-  // Strip leading whitespace + blockquote markers from each line.
   const flat = description
     .split('\n')
     .map(line => line.replace(/^\s*>\s?/, ''))
     .join('\n');
 
-  const pairs = [];
+  const items = [];
+
+  // (a) Per-URL comments
   const blocks = flat.split(/\n(?=\s*\d+\.\s+https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/)/);
   for (const block of blocks) {
     const urlM = block.match(/(https?:\/\/(?:www\.|old\.|sh\.|new\.)?reddit\.com\/r\/[^\s)\]'"<>]+)/);
     if (!urlM) continue;
     const url = urlM[1].replace(/[.,;]+$/, '');
-    // Accept straight or typographic quotes around the suggested comment.
     const commentM = block.match(/Suggested(?:\s+comment)?\s*:\s*['"‘’“”]([^'"‘’“”]+)['"‘’“”]/i);
-    pairs.push({ url, suggestedComment: commentM?.[1] ?? null });
+    items.push({ kind: 'comment', url, suggestedComment: commentM?.[1] ?? null });
   }
-  return pairs;
+
+  // (b) Standalone post drafts — "Subreddit: r/X · Post title: '…' · Post body: '…'"
+  // Body can be a single-quoted string OR a triple-quoted multi-line block.
+  const postRegex = /Subreddit:\s*r\/([\w-]+)[\s·\.,]*Post\s+title:\s*['"‘’“”]([^'"‘’“”\n]+)['"‘’“”][\s·\.,]*Post\s+body:\s*(?:"{3}([\s\S]+?)"{3}|['"‘’“”]([\s\S]+?)['"‘’“”])/gi;
+  let m;
+  while ((m = postRegex.exec(flat)) !== null) {
+    const [, sub, title, bodyTriple, bodySingle] = m;
+    items.push({
+      kind: 'post',
+      subreddit: sub,
+      postTitle: title.trim(),
+      postBody: (bodyTriple ?? bodySingle ?? '').trim(),
+    });
+  }
+  return items;
 }
 
 async function fetchRedditThread(url) {
@@ -317,6 +332,14 @@ async function fetchRedditThread(url) {
   const data = await res.json();
   const post = data?.[0]?.data?.children?.[0]?.data;
   if (!post) return null;
+  // Reddit archives threads after 6 months — commenting + voting both blocked.
+  // The aiv_citations dataset surfaces these because AI engines still index
+  // them, but they're useless as outreach targets. Drop them here so they
+  // never make it into ReddGrow's queue.
+  if (post.archived || post.locked) {
+    console.log(`[exec]   skip archived/locked: ${url}`);
+    return null;
+  }
   return {
     subreddit: post.subreddit,
     title: post.title ?? '',
@@ -325,10 +348,37 @@ async function fetchRedditThread(url) {
     selftext: post.selftext ?? '',
     created_utc: post.created_utc ?? Math.floor(Date.now() / 1000),
     permalink: post.permalink ?? new URL(url).pathname,
+    archived: post.archived ?? false,
+    locked: post.locked ?? false,
   };
 }
 
 function buildDraftBlock(draft, idx) {
+  // Two shapes: (a) commenting on an existing thread, (b) creating a new
+  // standalone post. Posts have no `created_utc`/`score`/`num_comments`
+  // because the thread doesn't exist yet; URL points at the subreddit's
+  // /submit endpoint instead of an existing /comments/<id>/ permalink.
+  if (draft.kind === 'post') {
+    return [
+      `### [r/${draft.subreddit}] ${draft.postTitle.replace(/[\[\]]/g, '')}  <!-- draft-${idx} -->`,
+      `- **Type**: post`,
+      `- **Match**: 100% _· seeded by SEO executor from ${draft.fromSeoIssue} (new post, not a comment)_`,
+      `- **Subreddit**: r/${draft.subreddit}`,
+      `- **URL**: https://www.reddit.com/r/${draft.subreddit}/submit`,
+      ``,
+      `**Post title**:`,
+      `> ${draft.postTitle}`,
+      ``,
+      `**Post body**:`,
+      '```',
+      draft.postBody || '_(no body — write your own; this is a link-post template)_',
+      '```',
+      ``,
+      '---',
+      '',
+    ].join('\n');
+  }
+  // Comment-on-existing-thread shape (the original path).
   const ageHrs = ((Date.now() / 1000 - draft.created_utc) / 3600).toFixed(1);
   const excerpt = (draft.selftext ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
   return [
@@ -351,15 +401,20 @@ function buildDraftBlock(draft, idx) {
   ].join('\n');
 }
 
-// Find today's reddit-daily issue (open only). If none, create one. Then
-// append the new draft blocks to its body, re-numbering them so the existing
-// ReddGrow parser still works.
+// Find the most recent OPEN reddit-daily issue regardless of date. Earlier
+// code only looked for today's issue and created a fresh one if none — but
+// that orphaned yesterday's still-unhandled drafts in a separate issue the
+// dashboard wouldn't show by default. Preferring the most-recent-open issue
+// means all pending drafts (today's daily scan + SEO-injected URLs + any
+// stragglers from yesterday) accumulate in one place.
 async function findOrCreateRedditIssue() {
   const today = todayIso();
-  const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open label:reddit-daily in:title "${today}"`);
+  // Sort by created descending — newest open issue wins.
+  const q = encodeURIComponent(`repo:${GH_REPO} is:issue is:open label:reddit-daily sort:created-desc`);
   const search = await gh(`/search/issues?q=${q}`);
   const existing = search.items?.[0];
   if (existing) return gh(`/repos/${GH_REPO}/issues/${existing.number}`);
+  // Only create a new issue if absolutely nothing open exists.
   return gh(`/repos/${GH_REPO}/issues`, {
     method: 'POST',
     body: JSON.stringify({
@@ -379,22 +434,28 @@ async function findOrCreateRedditIssue() {
 }
 
 async function injectIntoReddGrow(task, seoIssueNumber) {
-  const pairs = parseUrlCommentPairs(task.description);
-  if (pairs.length === 0) return 0;
+  const items = parseUrlCommentPairs(task.description);
+  if (items.length === 0) return 0;
 
-  // Enrich each URL with Reddit thread metadata (subreddit, title, age, etc.)
-  // so the draft block matches what reddit-daily.mjs writes and the ReddGrow
-  // parser doesn't need to special-case our injections.
   const enriched = [];
-  for (const p of pairs) {
+  for (const item of items) {
+    if (item.kind === 'post') {
+      // Posts don't need Reddit-thread enrichment (the thread doesn't exist
+      // yet — the user submits it via r/<sub>/submit). Pass through with
+      // the SEO-supplied title + body verbatim.
+      enriched.push({ ...item, fromSeoIssue: `#${seoIssueNumber}` });
+      continue;
+    }
+    // Comments — fetch the existing thread so the draft block has accurate
+    // metadata (title, age, score, archived?). fetchRedditThread() drops
+    // archived/locked threads so they never reach ReddGrow.
     try {
-      const meta = await fetchRedditThread(p.url);
+      const meta = await fetchRedditThread(item.url);
       if (!meta) continue;
-      enriched.push({ ...meta, ...p, fromSeoIssue: `#${seoIssueNumber}` });
-      // Be polite to Reddit's unauthenticated API (~60 req/min cap).
+      enriched.push({ kind: 'comment', ...meta, ...item, fromSeoIssue: `#${seoIssueNumber}` });
       await new Promise(r => setTimeout(r, 600));
     } catch (e) {
-      console.warn(`[exec]   reddit fetch failed for ${p.url}:`, e.message);
+      console.warn(`[exec]   reddit fetch failed for ${item.url}:`, e.message);
     }
   }
   if (enriched.length === 0) return 0;

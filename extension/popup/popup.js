@@ -101,6 +101,11 @@ async function render() {
       e.stopPropagation();
       chrome.runtime.sendMessage({ type: 'mark-skipped', title: draft.title }, () => render());
     });
+    card.querySelector('.btn-remove')?.addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!confirm(`Remove "${draft.title.slice(0, 80)}" from the queue? This hides it permanently.`)) return;
+      chrome.runtime.sendMessage({ type: 'mark-removed', title: draft.title }, () => render());
+    });
   });
 }
 
@@ -122,6 +127,7 @@ function renderDraftCard(d, idx) {
           <button class="btn-copy">Copy</button>
           ${stateCls === 'posted' ? '' : '<button class="btn-mark">Mark posted</button>'}
           ${stateCls === 'skipped' ? '' : '<button class="btn-skip">Skip</button>'}
+          ${stateCls === 'posted' ? '' : '<button class="btn-remove" title="Hide this draft from the queue permanently">✕ Remove</button>'}
         </div>
       </div>
     </div>

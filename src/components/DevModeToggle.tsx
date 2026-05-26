@@ -6,20 +6,84 @@
  *  rapid UI iteration but useless for testing anything that depends on
  *  real entity CRUD, RLS, analytics writes, or admin gating against a
  *  real email. This toggle flips a localStorage flag (`chess-dna-real-
- *  mode`) that the AuthContext respects, then optionally lets you paste
- *  a Base44 access token so requests against the real backend succeed.
+ *  mode`) that the AuthContext respects, then loads a Base44 access
+ *  token so requests against the real backend succeed.
  *
- *  Workflow to test as a real user from localhost:
- *    1) Open the deployed site, sign in.
- *    2) DevTools → Application → Local Storage → copy
- *       `base44_access_token`.
- *    3) Paste it here, click "Save & reload".
- *    4) The local app now behaves exactly like production for that user.
+ *  Three modes:
+ *    • DEV  — shortcut auth, no real backend writes (fast UI iteration).
+ *    • REAL — real mode, bring-your-own token (paste from any account).
+ *    • ME   — real mode, one-click sign-in using a token stored in
+ *             `localStorage['dev-auth-token']`. Per-browser, never in
+ *             any shipped bundle.
+ *
+ *  ME-mode workflow:
+ *    1) Once per dev browser, in DevTools console:
+ *         localStorage.setItem('dev-auth-token', 'eyJ...your.jwt...')
+ *    2) Refresh the page. The "Me" button now enables.
+ *    3) Click it. Real-mode + your token are applied and the page reloads.
+ *
+ *  Why localStorage and not a VITE_* env var:
+ *    Vite inlines every VITE_* variable into `import.meta.env` for any
+ *    code path that could reference it, regardless of `import.meta.env.DEV`
+ *    gates around the usage. A previous version of this file used
+ *    `VITE_DEV_AUTH_TOKEN` and the dev JWT leaked into the prod bundle
+ *    on 2026-05-25. localStorage is per-browser so no leak is possible.
  * ──────────────────────────────────────────────────────────────────────── */
 import { useEffect, useState } from 'react';
 
 const REAL_MODE_KEY = 'chess-dna-real-mode';
 const TOKEN_KEY = 'base44_access_token';
+const ME_TOKEN_KEY = 'dev-auth-token';
+
+/**
+ * Token source for "Sign in as me" mode. Previously this came from
+ * VITE_DEV_AUTH_TOKEN in .env.local — but Vite inlines every VITE_*
+ * env var into the bundle regardless of dead-code-elimination, so the
+ * dev JWT leaked to all chessdna.app visitors. Switched to reading
+ * from localStorage instead — per-browser, never in any shipped bundle.
+ *
+ * To enable on a dev machine, paste this once in DevTools:
+ *   localStorage.setItem('dev-auth-token', 'eyJ...your.base44.jwt...')
+ *
+ * Then the "Me" button copies that into `base44_access_token` and
+ * flips real-mode on. Re-read every render so the user can pop open
+ * DevTools, set the value, and the button enables without a reload.
+ */
+function readMeToken(): string {
+  // Belt-and-suspenders: also gate on DEV so even the localStorage read
+  // can't happen in a prod build that somehow ships this component.
+  if (!import.meta.env.DEV) return '';
+  try {
+    return localStorage.getItem(ME_TOKEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** Best-effort decode of the JWT `sub` claim (Base44 puts the email there). */
+function decodeJwtEmail(token: string): string | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
+    const sub = typeof payload.sub === 'string' ? payload.sub : null;
+    const email = typeof payload.email === 'string' ? payload.email : null;
+    return email ?? (sub && sub.includes('@') ? sub : null);
+  } catch {
+    return null;
+  }
+}
+// Email / short-name are derived per render from whatever's currently in
+// localStorage so that pasting the token in DevTools updates the button
+// label without a refresh.
+function getMeEmail(token: string): string | null {
+  return token ? decodeJwtEmail(token) : null;
+}
+function getMeShort(email: string | null): string {
+  return email ? email.split('@')[0].split('.')[0] : 'me';
+}
 
 function readRealMode(): boolean {
   try {
@@ -67,10 +131,25 @@ export default function DevModeToggle() {
     window.location.reload();
   };
 
-  const dotColor = realMode
-    ? (tokenPresent ? '#4ade80' : '#fbbf24')
-    : '#64748b';
-  const modeLabel = realMode ? (tokenPresent ? 'REAL' : 'REAL · no token') : 'DEV';
+  // "ME" mode is real-mode + the current token equals the localStorage
+  // dev-auth-token. Re-read both per render so the user can paste a
+  // token into DevTools and the UI updates without a reload.
+  const currentToken = readToken();
+  const meToken = readMeToken();
+  const meEmail = getMeEmail(meToken);
+  const meShort = getMeShort(meEmail);
+  const isMe = realMode && tokenPresent && !!meToken && currentToken === meToken;
+
+  const dotColor = isMe
+    ? '#22d3ee' // cyan for ME
+    : realMode
+      ? (tokenPresent ? '#4ade80' : '#fbbf24')
+      : '#64748b';
+  const modeLabel = isMe
+    ? `ME · ${meShort}`
+    : realMode
+      ? (tokenPresent ? 'REAL' : 'REAL · no token')
+      : 'DEV';
 
   return (
     <div
@@ -108,25 +187,45 @@ export default function DevModeToggle() {
             >×</button>
           </div>
 
-          {/* Mode switch */}
-          <div className="grid grid-cols-2 gap-1.5 mb-3">
+          {/* Mode switch — three options:
+              DEV  = shortcut auth (no real backend writes)
+              REAL = real-mode, bring-your-own token
+              ME   = real-mode, pre-baked token from VITE_DEV_AUTH_TOKEN */}
+          <div className="grid grid-cols-3 gap-1.5 mb-3">
             <button
               type="button"
-              onClick={() => apply(false)}
+              onClick={() => apply(false, '')}
               className={`py-1.5 rounded-md text-[11px] font-bold transition-colors ${
                 !realMode ? 'bg-blue-500/25 text-blue-300 border border-blue-400/40' : 'bg-white/5 border border-white/10 text-white/60 hover:text-white'
               }`}
             >
-              Dev shortcut
+              Dev
             </button>
             <button
               type="button"
               onClick={() => apply(true)}
               className={`py-1.5 rounded-md text-[11px] font-bold transition-colors ${
-                realMode ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-400/40' : 'bg-white/5 border border-white/10 text-white/60 hover:text-white'
+                realMode && !isMe ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-400/40' : 'bg-white/5 border border-white/10 text-white/60 hover:text-white'
               }`}
             >
-              Real user
+              Real
+            </button>
+            <button
+              type="button"
+              disabled={!meToken}
+              onClick={() => apply(true, meToken)}
+              title={meToken
+                ? `Sign in as ${meEmail ?? 'me'}`
+                : "Set localStorage 'dev-auth-token' to enable"}
+              className={`py-1.5 rounded-md text-[11px] font-bold transition-colors ${
+                isMe
+                  ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-400/40'
+                  : meToken
+                    ? 'bg-white/5 border border-white/10 text-white/60 hover:text-white'
+                    : 'bg-white/5 border border-white/10 text-white/25 cursor-not-allowed'
+              }`}
+            >
+              Me
             </button>
           </div>
 
@@ -136,7 +235,9 @@ export default function DevModeToggle() {
               <div className="text-[10px] uppercase tracking-wider font-bold text-white/45 mb-1">Base44 token</div>
               {tokenPresent ? (
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="flex-1 truncate font-mono text-[10px] text-emerald-300">●●●●●●●● token loaded</span>
+                  <span className={`flex-1 truncate font-mono text-[10px] ${isMe ? 'text-cyan-300' : 'text-emerald-300'}`}>
+                    {isMe ? `●●●●●●●● ${meEmail ?? 'me'}` : '●●●●●●●● token loaded'}
+                  </span>
                   <button
                     type="button"
                     onClick={clearToken}
@@ -171,8 +272,9 @@ export default function DevModeToggle() {
             </>
           ) : (
             <div className="text-[10px] text-white/45 leading-snug">
-              Dev shortcut: always-authenticated, always-admin, no Base44 writes.
-              Switch to <b className="text-white/70">Real user</b> to test against the live backend.
+              Dev shortcut: always-authenticated, always-admin, no real Base44 writes.
+              Use <b className="text-white/70">Real</b> to paste any user's token, or{' '}
+              <b className="text-white/70">Me</b>{meEmail ? <> to one-click sign in as <span className="font-mono text-white/65">{meEmail}</span></> : <> (disabled: set <span className="font-mono text-white/65">localStorage['dev-auth-token']</span> in DevTools)</>}.
             </div>
           )}
         </div>

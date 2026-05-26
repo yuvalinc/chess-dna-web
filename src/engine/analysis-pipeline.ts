@@ -8,6 +8,8 @@ import { analysisEvents } from './analysis-events';
 import { isError } from './eval-classifier';
 import { base44 } from '@/api/base44Client';
 import { StockfishClient } from './stockfish-client';
+import { shouldUseFlyEngine } from './backend-config';
+import { getCurrentUserEmail } from '@/contexts/AuthContext';
 import { createSnapshot, computePatterns, assignThemes } from '@/patterns/pattern-engine';
 import { DEFAULT_WINDOW_SIZE, MAX_PATTERN_SNAPSHOTS } from '@shared/constants';
 import type { GameRecord } from '@shared/types/game';
@@ -225,23 +227,29 @@ export async function runBatchAnalysis(
 ): Promise<void> {
   let consecutiveFailures = 0;
   const MAX_CONSECUTIVE_FAILURES = 3;
+  // When the current user routes through Fly, the WASM worker is never used —
+  // skip the local-worker health check / restart to avoid spinning it up for
+  // nothing. The Fly client manages its own retries inside `analyzeGameRemote`.
+  const usingFly = shouldUseFlyEngine(getCurrentUserEmail());
 
   for (let i = 0; i < gameIds.length; i++) {
     const gameId = gameIds[i];
 
-    // Health check the Stockfish worker before each game.
-    // This detects crashes/hangs early and restarts the worker.
-    try {
-      const sf = StockfishClient.getInstance();
-      await sf.ensureHealthy();
-    } catch (err) {
-      console.warn('[Chess DNA] Worker health check failed, attempting restart:', err);
+    if (!usingFly) {
+      // Health check the Stockfish worker before each game.
+      // This detects crashes/hangs early and restarts the worker.
       try {
         const sf = StockfishClient.getInstance();
-        await sf.restart();
-      } catch (restartErr) {
-        console.error('[Chess DNA] Worker restart failed, aborting batch:', restartErr);
-        break;
+        await sf.ensureHealthy();
+      } catch (err) {
+        console.warn('[Chess DNA] Worker health check failed, attempting restart:', err);
+        try {
+          const sf = StockfishClient.getInstance();
+          await sf.restart();
+        } catch (restartErr) {
+          console.error('[Chess DNA] Worker restart failed, aborting batch:', restartErr);
+          break;
+        }
       }
     }
 

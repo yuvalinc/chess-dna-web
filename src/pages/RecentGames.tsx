@@ -38,8 +38,94 @@ const PAGE_SIZE = 20;
 type TabId = 'all' | 'progress' | 'highlights';
 type HighlightsSubTab = 'takeaways' | 'achievements';
 
+// Pull-to-refresh tuning.  PULL_TRIGGER is the visual distance past which
+// release fires a sync; PULL_RESISTANCE damps real drag into visual pull
+// so the gesture feels weighted; PULL_MAX caps it so a long drag doesn't
+// keep growing the indicator.
+type PullState = 'idle' | 'pulling' | 'release' | 'syncing' | 'done';
+const PULL_TRIGGER = 70;
+const PULL_MAX = 110;
+const PULL_RESISTANCE = 0.55;
+
+// Per-row analysis status.  Computed in the parent (which has the
+// queue + progress state via context) and passed to GameRow so the row
+// stays a pure presentational component and doesn't subscribe to the
+// context independently.
+type RowAnalysisState =
+  | { kind: 'complete' }
+  | { kind: 'analyzing'; current: number; total: number }
+  | { kind: 'promoted' }      // user just bumped this to the front; about to start
+  | { kind: 'queued-next' }   // position 0 in the queue (next after the current game)
+  | { kind: 'queued'; position: number } // position > 0 — show "#N in queue"
+  | { kind: 'pending-status' } // backend says analyzing but we have no progress yet
+  | { kind: 'loading-data' }  // analysis exists server-side but client is still fetching
+  | { kind: 'pending' }
+  | { kind: 'failed' };
+
+// Walk up to the nearest scrollable ancestor.  AppShell mounts the page
+// inside an `<main className="overflow-y-auto">`, so window.scrollY stays
+// 0 and we need the parent's scrollTop to know when we're at the top.
+//
+// We pick the first ancestor whose computed overflow-y is auto/scroll —
+// not the first one that *currently* overflows.  Checking scrollHeight
+// fails right after first paint (before games are loaded the main
+// element doesn't overflow yet), which made the gesture fall back to
+// `window` whose scrollY is always 0 on a non-scrolling document.
+function getScroller(el: HTMLElement | null): HTMLElement | Window {
+  let cur: HTMLElement | null = el?.parentElement ?? null;
+  while (cur) {
+    const s = window.getComputedStyle(cur);
+    if (/(auto|scroll|overlay)/.test(s.overflowY)) return cur;
+    cur = cur.parentElement;
+  }
+  return window;
+}
+function getScrollTop(s: HTMLElement | Window): number {
+  return s instanceof Window ? window.scrollY : s.scrollTop;
+}
+
+// Pick the highest-signal status to render in the row.  Priority:
+//   complete (we have summary stats) > currently analyzing >
+//   user-promoted > queue position > backend analyzingStatus >
+//   loading existing data > pending > failed.
+function computeRowAnalysisState(
+  game: GameRecord,
+  analysis: GameAnalysis | undefined,
+  analyzingNow: { gameId: string; current: number; total: number } | null,
+  queueIds: string[],
+  promotedIds: Set<string>,
+  analysesLoading: boolean,
+): RowAnalysisState {
+  if (analysis?.summary?.accuracy != null) return { kind: 'complete' };
+  if (analyzingNow && analyzingNow.gameId === game.id) {
+    return { kind: 'analyzing', current: analyzingNow.current, total: analyzingNow.total };
+  }
+  if (promotedIds.has(game.id)) return { kind: 'promoted' };
+  const pos = queueIds.indexOf(game.id);
+  if (pos === 0) return { kind: 'queued-next' };
+  if (pos > 0) return { kind: 'queued', position: pos };
+  if (game.analysisStatus === 'analyzing') return { kind: 'pending-status' };
+  if (game.analysisStatus === 'complete' && analysesLoading) return { kind: 'loading-data' };
+  if (game.analysisStatus === 'error') return { kind: 'failed' };
+  return { kind: 'pending' };
+}
+
 export default function RecentGames() {
-  const { allGames: rawGames, allAnalyses, gamesLoading: loading, profile, queueForAnalysis } = useChessData();
+  const {
+    allGames: rawGames,
+    allAnalyses,
+    analysesLoading,
+    gamesLoading: loading,
+    profile,
+    queueForAnalysis,
+    isSyncing,
+    syncNow,
+    lastSyncNewGames,
+    analysisQueueIds,
+    analyzingNow,
+    recentlyPromotedIds,
+    analyzingCount,
+  } = useChessData();
   const { settings } = useTheme();
   const { t, language } = useT();
   const timeClassFilter = settings.selectedTimeClass ?? null;
@@ -119,10 +205,169 @@ export default function RecentGames() {
     if (usernames.length > 0) prefetchAvatars(usernames);
   }, [visibleGames]);
 
+  // Auto-queue any visible game that's still pending so the row badges
+  // resolve to "Up next / #N in queue / Analyzing…" instead of a
+  // permanent "Pending".  Limited to what the user actually sees on the
+  // page — when they "Load more", those new rows will get queued too.
+  useEffect(() => {
+    if (loading) return;
+    const queuedSet = new Set(analysisQueueIds);
+    const pendingVisible = visibleGames
+      .filter((g) => g.analysisStatus === 'pending')
+      .filter((g) => !queuedSet.has(g.id))
+      .filter((g) => analyzingNow?.gameId !== g.id)
+      .map((g) => g.id);
+    if (pendingVisible.length > 0) {
+      queueForAnalysis(pendingVisible);
+    }
+  }, [visibleGames, loading, analysisQueueIds, analyzingNow, queueForAnalysis]);
+
+  // Session-scoped analysis progress.  We track the high-water mark of
+  // in-flight games (queued + analyzing) so the bar can fill from 0 →
+  // 100% as the queue drains, rather than always reading "X / current".
+  // When the queue fully empties we reset, so the next batch starts at 0
+  // instead of inheriting the previous denominator.
+  const inFlightCount = analyzingCount + analysisQueueIds.length;
+  const [sessionAnalysisMax, setSessionAnalysisMax] = useState(0);
+  useEffect(() => {
+    if (inFlightCount > sessionAnalysisMax) {
+      setSessionAnalysisMax(inFlightCount);
+    } else if (inFlightCount === 0 && sessionAnalysisMax > 0) {
+      // Small delay before reset so the bar lingers at 100% briefly,
+      // making the "done" state visible instead of vanishing instantly.
+      const id = window.setTimeout(() => setSessionAnalysisMax(0), 1200);
+      return () => window.clearTimeout(id);
+    }
+  }, [inFlightCount, sessionAnalysisMax]);
+  const analysisProgressPct = sessionAnalysisMax > 0
+    ? Math.min(100, Math.round(((sessionAnalysisMax - inFlightCount) / sessionAnalysisMax) * 100))
+    : 100;
+  const showAnalysisProgress = sessionAnalysisMax > 0;
+
   const achievements = useMemo(
     () => computeAchievements(timeFilteredGames, analysisMap),
     [timeFilteredGames, analysisMap],
   );
+
+  // ── Pull-to-refresh ──
+  // Drag down from the top of the page to trigger a chess.com sync. The
+  // gesture only engages while the scroll container is at scrollTop=0;
+  // anything else falls through to native scrolling. We track the scroll
+  // parent at touchstart because the page sits inside AppShell's
+  // overflow-y-auto <main>, not the document body.
+  const pullContainerRef = useRef<HTMLDivElement | null>(null);
+  const pullStartRef = useRef<{ y: number; scroller: HTMLElement | Window } | null>(null);
+  const userInitiatedSyncRef = useRef(false);
+  const lastUserSyncNewGamesRef = useRef(0);
+  const [pullDistance, setPullDistance] = useState(0);
+  const [pullState, setPullState] = useState<PullState>('idle');
+  const [doneSummary, setDoneSummary] = useState<string | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    // Only block during an in-flight sync — 'done' is just lingering
+    // feedback that should be interruptible by a fresh pull.  Returning
+    // early here made back-to-back pulls (within the 1.8s collapse
+    // window) feel like the gesture wasn't registering at all.
+    if (pullState === 'syncing') return;
+    if (pullState === 'done') {
+      // Snap the indicator closed immediately so the new gesture starts
+      // from a clean state.  The useEffect cleanup will clear its
+      // pending collapse timer when pullState transitions to 'idle'.
+      setPullState('idle');
+      setDoneSummary(null);
+    }
+    const touch = e.touches[0];
+    if (!touch) return;
+    const scroller = getScroller(pullContainerRef.current);
+    // Small tolerance — sub-pixel scroll positions and the iOS rubber
+    // band can leave scrollTop fractionally above 0 even when the user
+    // is visually at the top.  Strict `> 0` made the gesture randomly
+    // refuse to engage.
+    if (getScrollTop(scroller) > 4) return;
+    pullStartRef.current = { y: touch.clientY, scroller };
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const start = pullStartRef.current;
+    if (!start) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    // If the scroller scrolled mid-gesture (e.g. user dragged up first
+    // then back down), cancel the pull so we don't half-apply it.
+    // Same 4px tolerance as touchstart for sub-pixel positions.
+    if (getScrollTop(start.scroller) > 4) {
+      pullStartRef.current = null;
+      if (pullDistance !== 0) setPullDistance(0);
+      if (pullState !== 'idle') setPullState('idle');
+      return;
+    }
+    const dy = touch.clientY - start.y;
+    if (dy <= 0) {
+      if (pullDistance !== 0) setPullDistance(0);
+      if (pullState === 'pulling' || pullState === 'release') setPullState('idle');
+      return;
+    }
+    const distance = Math.min(PULL_MAX, dy * PULL_RESISTANCE);
+    setPullDistance(distance);
+    setPullState(distance >= PULL_TRIGGER ? 'release' : 'pulling');
+  };
+
+  const handleTouchEnd = () => {
+    const start = pullStartRef.current;
+    pullStartRef.current = null;
+    if (!start) return;
+    if (pullState === 'release' && !isSyncing) {
+      userInitiatedSyncRef.current = true;
+      lastUserSyncNewGamesRef.current = lastSyncNewGames;
+      setPullDistance(0);
+      setPullState('syncing');
+      // force:true bypasses the sinceMs watermark so chess.com is hit
+      // fresh — back-to-back pulls actually re-check instead of
+      // immediately reporting "up to date" against the watermark we
+      // just wrote.
+      syncNow({ force: true });
+    } else if (pullState !== 'syncing' && pullState !== 'done') {
+      setPullDistance(0);
+      setPullState('idle');
+    }
+  };
+
+  const handleTouchCancel = () => {
+    pullStartRef.current = null;
+    if (pullState === 'pulling' || pullState === 'release') {
+      setPullDistance(0);
+      setPullState('idle');
+    }
+  };
+
+  // When a user-initiated sync wraps up, show a short "Found X new
+  // games" or "You're up to date" message before collapsing the
+  // indicator.  We also acknowledge in-flight analysis so the message
+  // doesn't claim "up to date" while the queue still has work — that
+  // was misleading: the sync result was technically correct (no new
+  // games to import) but the user saw games still loading on the page.
+  useEffect(() => {
+    if (!isSyncing && userInitiatedSyncRef.current && pullState === 'syncing') {
+      userInitiatedSyncRef.current = false;
+      const found = lastSyncNewGames;
+      const inFlight = analysisQueueIds.length + (analyzingNow ? 1 : 0);
+      let summary: string;
+      if (found > 0) {
+        summary = `Found ${found} new game${found === 1 ? '' : 's'}`;
+      } else if (inFlight > 0) {
+        summary = `Up to date · analyzing ${inFlight}`;
+      } else {
+        summary = "You're up to date";
+      }
+      setDoneSummary(summary);
+      setPullState('done');
+      const id = window.setTimeout(() => {
+        setPullState('idle');
+        setDoneSummary(null);
+      }, 1800);
+      return () => window.clearTimeout(id);
+    }
+  }, [isSyncing, lastSyncNewGames, pullState, analysisQueueIds.length, analyzingNow]);
 
   if (loading) {
     return <div className="text-gray-400">{t('games_loading')}</div>;
@@ -130,16 +375,39 @@ export default function RecentGames() {
 
   if (allGames.length === 0) {
     return (
-      <div className="text-center py-16">
-        <div className="text-4xl mb-4">&#9812;</div>
-        <h2 className="text-xl mb-2">{t('games_empty_title')}</h2>
-        <p className="text-gray-400 text-sm">{t('games_empty_desc')}</p>
+      <div
+        ref={pullContainerRef}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchCancel}
+        // min-h-full guarantees the wrapper fills the available height
+        // even when the empty-state content is short, so touches in the
+        // blank area below still reach the pull-to-refresh handlers.
+        // overscroll-y-contain stops the browser's own pull-to-refresh
+        // (e.g. installed-PWA reload) from competing with ours.
+        className="min-h-full overscroll-y-contain"
+      >
+        <PullIndicator distance={pullDistance} state={pullState} doneSummary={doneSummary} />
+        <div className="text-center py-16">
+          <div className="text-4xl mb-4">&#9812;</div>
+          <h2 className="text-xl mb-2">{t('games_empty_title')}</h2>
+          <p className="text-gray-400 text-sm">{t('games_empty_desc')}</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div>
+    <div
+      ref={pullContainerRef}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchCancel}
+      className="min-h-full overscroll-y-contain"
+    >
+      <PullIndicator distance={pullDistance} state={pullState} doneSummary={doneSummary} />
       {/* Page header — chart-line brand glyph + title + supporting tagline. */}
       <div className="mb-3">
         <div className="flex items-center gap-2 mb-1">
@@ -187,6 +455,12 @@ export default function RecentGames() {
 
       {tab === 'all' && (
         <>
+          {/* Global analysis-progress strip — shows while any game is
+              queued or actively analyzing.  Lingers at 100% for a beat
+              after the last game completes, then collapses to nothing.
+              When this strip is gone, every visible row is ready. */}
+          <AnalysisProgressStrip pct={analysisProgressPct} inFlight={inFlightCount} visible={showAnalysisProgress} />
+
           <div className="mb-3">
             <input
               type="text"
@@ -200,6 +474,14 @@ export default function RecentGames() {
           <div className="space-y-2">
             {visibleGames.map((game, idx) => {
               const a = analysisMap.get(game.id);
+              const rowState = computeRowAnalysisState(
+                game,
+                a,
+                analyzingNow,
+                analysisQueueIds,
+                recentlyPromotedIds,
+                analysesLoading,
+              );
               return (
                 <GameRow
                   key={game.id}
@@ -207,6 +489,7 @@ export default function RecentGames() {
                   analysis={a}
                   language={language}
                   isTutorialTarget={idx === 0}
+                  analysisState={rowState}
                   onSeeMove={(moveNumber) => navigate(`/games/${game.id}?move=${moveNumber}`)}
                   onClick={() => {
                     // For pending / unanalyzed games, kick off analysis
@@ -296,6 +579,220 @@ export default function RecentGames() {
   );
 }
 
+
+/* Top-of-list progress strip — appears whenever the analysis pipeline
+ * has work in flight (queued + currently analyzing), and animates from
+ * 0 → 100% as the queue drains.  When the strip is gone, the page is
+ * truly ready: every visible row is either analyzed or has no analysis
+ * pending. */
+function AnalysisProgressStrip({
+  pct,
+  inFlight,
+  visible,
+}: {
+  pct: number;
+  inFlight: number;
+  visible: boolean;
+}) {
+  return (
+    <div
+      style={{
+        maxHeight: visible ? 80 : 0,
+        opacity: visible ? 1 : 0,
+        marginBottom: visible ? 12 : 0,
+        transition: 'max-height 240ms ease-out, opacity 200ms ease-out, margin-bottom 240ms ease-out',
+      }}
+      aria-hidden={!visible}
+      className="overflow-hidden"
+    >
+      <div className="rounded-lg bg-chess-surface/60 border border-chess-accent/25 px-3 py-2">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="flex items-center gap-1.5 text-chess-text-secondary font-bold">
+            <svg className="animate-spin text-chess-accent" width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+            {inFlight > 0
+              ? <>Analyzing your games · <span className="text-chess-text-tertiary font-normal">{inFlight} left</span></>
+              : 'Ready'}
+          </span>
+          <span className="text-chess-accent font-extrabold tabular-nums">{pct}%</span>
+        </div>
+        <div className="mt-1.5 h-1 rounded-full bg-chess-bg/60 overflow-hidden">
+          <div
+            style={{ width: `${pct}%`, transition: 'width 320ms ease-out' }}
+            className="h-full bg-chess-accent rounded-full"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Per-row analysis status badge — replaces the simple "Pending" /
+ * "Analyzing" text with a richer status that surfaces queue position,
+ * per-game progress %, "Just moved to top", "Loading…", and failure
+ * states.  The wrapper enforces a stable two-line layout so the row
+ * doesn't shift vertically as the badge cycles through states. */
+function RowStatusBadge({
+  state,
+  analyzingLabel,
+}: {
+  state: RowAnalysisState;
+  analyzingLabel: string;
+}) {
+  // Mini SVG spinner — matches the pull-to-refresh spinner's stroke.
+  const Spinner = (
+    <svg className="animate-spin" width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+    </svg>
+  );
+
+  switch (state.kind) {
+    case 'analyzing': {
+      const pct = state.total > 0 ? Math.min(100, Math.round((state.current / state.total) * 100)) : 0;
+      return (
+        <>
+          <span className="flex items-center gap-1 text-chess-accent font-bold text-[11px] tabular-nums">
+            {Spinner}
+            {pct}%
+          </span>
+          <span className="text-[9px] text-chess-text-tertiary">
+            {analyzingLabel} {state.current}/{state.total}
+          </span>
+        </>
+      );
+    }
+    case 'promoted':
+      return (
+        <>
+          <span className="flex items-center gap-1 text-chess-accent font-bold text-[10px]">
+            <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="18 15 12 9 6 15" />
+            </svg>
+            Moved up
+          </span>
+          <span className="text-[9px] text-chess-text-tertiary">starting…</span>
+        </>
+      );
+    case 'queued-next':
+      return (
+        <>
+          <span className="text-[10px] font-bold text-chess-accent">Up next</span>
+          <span className="text-[9px] text-chess-text-tertiary">in queue</span>
+        </>
+      );
+    case 'queued':
+      return (
+        <>
+          <span className="text-[10px] font-bold text-chess-text-secondary tabular-nums">#{state.position + 1}</span>
+          <span className="text-[9px] text-chess-text-tertiary">in queue</span>
+        </>
+      );
+    case 'pending-status':
+      return (
+        <div className="flex items-center gap-1 text-chess-text-tertiary">
+          {Spinner}
+          <span className="text-[10px]">{analyzingLabel}</span>
+        </div>
+      );
+    case 'loading-data':
+      return (
+        <div className="flex items-center gap-1 text-chess-text-tertiary">
+          {Spinner}
+          <span className="text-[10px]">Loading…</span>
+        </div>
+      );
+    case 'failed':
+      return <span className="text-[10px] text-chess-blunder font-bold">Failed</span>;
+    case 'pending':
+    default:
+      // Brief flicker between "row mounted" and "auto-queue picked it
+      // up" — show a loading spinner so it reads as "in progress",
+      // never the old "Pending" word.
+      return (
+        <div className="flex items-center gap-1 text-chess-text-tertiary">
+          {Spinner}
+          <span className="text-[10px]">Loading…</span>
+        </div>
+      );
+  }
+}
+
+/* Pull-to-refresh indicator — rendered above the page content so it
+ * "reveals" as the user drags down.  While the user is actively dragging
+ * the height tracks pullDistance with no transition (feels physical);
+ * outside of that we animate to a stable height (0 idle, ~44 while
+ * syncing/done).  The icon swap + accent color change communicates the
+ * current state. */
+function PullIndicator({
+  distance,
+  state,
+  doneSummary,
+}: {
+  distance: number;
+  state: PullState;
+  doneSummary: string | null;
+}) {
+  const isDragging = state === 'pulling' || state === 'release';
+  const targetHeight = isDragging
+    ? Math.min(PULL_MAX, Math.max(0, distance))
+    : state === 'idle'
+      ? 0
+      : 44;
+
+  const label =
+    state === 'release' ? 'Release to sync'
+    : state === 'syncing' ? 'Looking for new games…'
+    : state === 'done' ? (doneSummary ?? '')
+    : 'Pull to refresh';
+
+  const accent = state === 'release' || state === 'syncing' || state === 'done';
+
+  return (
+    <div
+      aria-hidden={state === 'idle'}
+      style={{
+        height: targetHeight,
+        transition: isDragging ? 'none' : 'height 240ms ease-out',
+      }}
+      className="flex items-end justify-center overflow-hidden"
+    >
+      <div
+        className={`pb-1.5 flex items-center gap-1.5 text-[11px] font-bold transition-colors ${
+          accent ? 'text-chess-accent' : 'text-chess-text-tertiary'
+        }`}
+      >
+        {state === 'syncing' ? (
+          <svg className="animate-spin" width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        ) : state === 'done' ? (
+          <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        ) : (
+          <svg
+            width={12}
+            height={12}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.4}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{
+              transform: state === 'release' ? 'rotate(180deg)' : 'rotate(0deg)',
+              transition: 'transform 180ms ease-out',
+            }}
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        )}
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+}
 
 /* Analyze brand glyph — chart-line in a frame, matching the bottom-nav
  * "Analyze" tab icon. Used in the page header. */
@@ -1155,6 +1652,7 @@ function GameRow({
   game,
   analysis,
   language,
+  analysisState,
   onClick,
   onPractice,
   onCompare,
@@ -1165,6 +1663,9 @@ function GameRow({
   game: GameRecord;
   analysis?: GameAnalysis;
   language: string;
+  /** Derived in the parent from queue + progress context.  Drives the
+      status badge on the right side of the row. */
+  analysisState: RowAnalysisState;
   /** Click anywhere on the game header — opens the analysis page (same as the Analyze CTA). */
   onClick: () => void;
   onPractice: () => void;
@@ -1213,9 +1714,17 @@ function GameRow({
   // summary stats). When it's still pending we visually disable the CTA.
   const canShare = !!analysis?.summary;
 
+  // Accent the card while the row's analysis is *in flight* (currently
+  // being analyzed, or just got bumped to the front of the queue) so the
+  // user can see at a glance which game the engine is working on.
+  const accentBorder =
+    analysisState.kind === 'analyzing' || analysisState.kind === 'promoted'
+      ? 'border-chess-accent/45 shadow-[0_0_12px_rgba(74,222,128,0.10)]'
+      : 'border-transparent';
+
   return (
     <div className="card-3d-wrap" data-tutorial-target={isTutorialTarget ? 'games-card' : undefined}>
-      <div className="card-3d bg-chess-surface rounded-xl px-3.5 py-3 border border-transparent">
+      <div className={`card-3d bg-chess-surface rounded-xl px-3.5 py-3 border transition-colors ${accentBorder}`}>
         {/* Header row — same content as before, now slightly larger and
             clickable as the implicit "Analyze" affordance. */}
         <div
@@ -1248,8 +1757,8 @@ function GameRow({
             </div>
           </div>
 
-          <div className="flex flex-col items-end gap-0.5 shrink-0">
-            {accuracy != null ? (
+          <div className="flex flex-col items-end gap-0.5 shrink-0 min-w-[58px]">
+            {analysisState.kind === 'complete' && accuracy != null ? (
               <>
                 <span
                   className={`text-sm font-bold tabular-nums ${
@@ -1264,13 +1773,8 @@ function GameRow({
                 </span>
                 <span className="text-[9px] text-chess-text-disabled">{t('games_acc')}</span>
               </>
-            ) : game.analysisStatus === 'analyzing' ? (
-              <div className="flex items-center gap-1">
-                <span className="w-3 h-3 border-[1.5px] border-chess-accent border-t-transparent rounded-full animate-spin" />
-                <span className="text-[10px] text-chess-text-tertiary">{t('games_analyzing')}</span>
-              </div>
             ) : (
-              <span className="text-[10px] text-chess-text-disabled">{t('games_pending')}</span>
+              <RowStatusBadge state={analysisState} analyzingLabel={t('games_analyzing')} />
             )}
           </div>
         </div>

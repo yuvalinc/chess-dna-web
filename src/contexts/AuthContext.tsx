@@ -37,9 +37,16 @@ function decodeJwt(): { email: string | null; userId: string | null } {
       typeof payload[k] === 'string' && (payload[k] as string).length > 0
         ? (payload[k] as string)
         : null;
+    // Base44 tokens commonly put the email in `sub` and have no `email` claim.
+    // Without this fallback, jwtEmail stays null on first render → betaStatus
+    // sits at 'pending' → AuthGuard shows a loader until `auth.me()` returns.
+    // That's exactly the "stuck on loading" state when the network is slow.
+    const subVal = pickStr('sub');
+    const emailVal = pickStr('email');
+    const subLooksLikeEmail = !!subVal && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(subVal);
     return {
-      email: pickStr('email'),
-      userId: pickStr('sub') ?? pickStr('user_id') ?? pickStr('id'),
+      email: emailVal ?? (subLooksLikeEmail ? subVal : null),
+      userId: subVal ?? pickStr('user_id') ?? pickStr('id'),
     };
   } catch {
     return { email: null, userId: null };
@@ -91,10 +98,31 @@ interface AuthContextValue {
 
 // Module-level cache for imperative (non-React) code
 let _cachedUserId: string | null = null;
+let _cachedUserEmail: string | null = null;
 
 /** Get current user ID synchronously — for use outside React components */
 export function getCurrentUserId(): string | null {
   return _cachedUserId;
+}
+
+/**
+ * Get current user email synchronously — for use outside React components
+ * (e.g. engine routing in `game-analyzer.ts`). Returns the cached email if
+ * `auth.me()` has resolved; otherwise falls back to decoding the JWT in
+ * localStorage. Base44 JWTs commonly carry the email in the `sub` claim
+ * rather than `email`, so we accept either path.
+ */
+export function getCurrentUserEmail(): string | null {
+  if (_cachedUserEmail) return _cachedUserEmail;
+  const jwt = decodeJwt();
+  // `decodeJwt` only treats `email` as the email field; `sub` ends up in
+  // `userId`. For Base44, `sub` is the email — so check whether the userId
+  // looks like an email address and fall back to that.
+  const looksLikeEmail = (s: string | null): s is string =>
+    !!s && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+  const email = jwt.email ?? (looksLikeEmail(jwt.userId) ? jwt.userId : null);
+  if (email) _cachedUserEmail = email;
+  return email;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -236,14 +264,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // fetches kick off in parallel) and enrich userId/email/admin in
     // the background.
     //
-    // Exception: if guest data is pending migration, keep the old
-    // behavior — we MUST migrate before letting entity hooks fire,
-    // otherwise the user would see an empty Base44 collection while
-    // their localStorage data is still being copied over.
+    // Previously we ALSO blocked on guest→Base44 migration so users
+    // didn't see an empty collection mid-migration. That broke down
+    // once we throttled the migration to dodge Base44 rate limits —
+    // hundreds of items × 250ms could leave the UI stuck on loading
+    // for minutes. Resolve immediately and let migration run async;
+    // entity caches will refetch once items land. The migration's own
+    // .then() handler reloads the page if it completes cleanly.
     const hasGuest = hasGuestData();
-    if (!hasGuest) {
-      setAuthResolved(true);
-    }
+    setAuthResolved(true);
 
     base44.auth
       .me()
@@ -253,6 +282,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // field — fall back to the JWT email so we don't gate a verified user.
         const email = ((user?.email as string) ?? null) || decodeJwt().email;
         _cachedUserId = id;
+        _cachedUserEmail = email;
         setUserId(id);
         setUserEmail(email);
         setIsAdmin(email === ADMIN_EMAIL || ADMIN_EMAILS.includes(email ?? ''));
@@ -266,6 +296,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log('[Chess DNA Auth] auth.me() failed — using JWT fallback:', err);
         const jwt = decodeJwt();
         if (jwt.email) {
+          _cachedUserEmail = jwt.email;
           setUserEmail(jwt.email);
           setIsAdmin(jwt.email === ADMIN_EMAIL || ADMIN_EMAILS.includes(jwt.email));
         } else {
@@ -284,7 +315,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           migrateGuestToBase44(b44entities)
             .then((stats) => {
               console.log('[Chess DNA Auth] Guest data migrated:', stats);
-              window.location.reload();
+              // Only reload when the migration was 100% clean. On partial failure
+              // the unmigrated items are still in localStorage; a reload here would
+              // immediately re-trigger the migration and (if Base44 is still
+              // throttling) loop forever. Let the user refresh manually instead.
+              if (stats.failures === 0) {
+                window.location.reload();
+              } else {
+                console.warn(
+                  `[Chess DNA Auth] Guest migration finished with ${stats.failures} failures. ` +
+                  `Unmigrated items kept in localStorage. Refresh manually to retry.`,
+                );
+              }
             })
             .catch((err) => {
               console.error('[Chess DNA Auth] Guest migration failed:', err);

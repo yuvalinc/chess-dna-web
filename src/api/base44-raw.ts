@@ -1,22 +1,19 @@
-import { createClient } from '@base44/sdk';
-
-export const base44 = createClient({
-  appId: '69a04516fd2be6e9fdd5fbde',
-});
-
 /**
- * Snapshot of the original Base44 entity CRUD methods, BOUND to their owning
- * handler. Captured at module-load time, before any monkey-patching by
- * `base44-shadow-wrap.ts`.
+ * Snapshot of the original Base44 entity CRUD methods, BOUND at module-load
+ * time before anything can mutate `base44.entities`.
  *
- * Bound copies are critical: if we only saved a reference to the handler
- * object, the shadow-wrap's mutation of `base44.entities.Game.create` would
- * also affect `rawEntities.Game.create` (same underlying object) — and
- * `dwCreate`/`srGet` calling through `rawEntities` would recurse forever.
+ * Used by `dual-write.ts` and `shadow-read.ts` so they can call Base44
+ * directly. If a future `base44-shadow-wrap.ts` ever monkey-patches
+ * `base44.entities.<X>.create`, these bound wrappers still hit the original
+ * SDK methods — no infinite recursion.
  *
- * Used by `src/api/dual-write.ts` and `src/api/shadow-read.ts`. Add new
- * entities here as soon as they're mirrored to Supabase.
+ * Self-contained: does NOT modify `base44.entities` or `base44Client.ts`.
+ * Importing this file has zero observable side effects.
+ *
+ * Add new entities here as soon as they're mirrored to Supabase.
  */
+import { base44 } from './base44Client';
+
 function snapshotHandler(handler: any) {
   return {
     create: (data: unknown) => handler.create(data),
@@ -30,6 +27,7 @@ function snapshotHandler(handler: any) {
 }
 
 const _e = base44.entities as unknown as Record<string, any>;
+
 export const rawEntities = {
   Game: snapshotHandler(_e.Game),
   Analysis: snapshotHandler(_e.Analysis),

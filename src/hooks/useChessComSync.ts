@@ -58,7 +58,7 @@ export function useChessComSync({
   const lastSyncAtRef = useRef(syncState.lastSyncAt);
   lastSyncAtRef.current = syncState.lastSyncAt;
 
-  const doSync = useCallback(async () => {
+  const doSync = useCallback(async (opts?: { force?: boolean }) => {
     if (!username || syncingRef.current) return;
 
     syncingRef.current = true;
@@ -67,11 +67,17 @@ export function useChessComSync({
     try {
       // sinceMs watermark — most polls find no games newer than this and
       // short-circuit inside importChessComGames before doing any Base44 call.
+      //
+      // When the caller passes `force: true` (user-initiated pull-to-refresh,
+      // typically) we drop the watermark entirely so chess.com is hit fresh
+      // each time.  Without this, pulling twice in quick succession can show
+      // "up to date" even if the user expects re-checked archives — the
+      // watermark from the prior sync filters out everything older than ~now.
       const newGameIds = await importChessComGames(username, {
         maxGames: 30,
         timeClass: 'all',
         guest,
-        sinceMs: lastSyncAtRef.current ?? undefined,
+        sinceMs: opts?.force ? undefined : (lastSyncAtRef.current ?? undefined),
       });
 
       const now = Date.now();
@@ -155,8 +161,8 @@ export function useChessComSync({
     };
   }, [username, enabled, intervalMs, doSync]);
 
-  const syncNow = useCallback(() => {
-    doSync();
+  const syncNow = useCallback((opts?: { force?: boolean }) => {
+    doSync(opts);
   }, [doSync]);
 
   return { ...syncState, syncNow };

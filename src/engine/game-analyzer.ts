@@ -11,14 +11,40 @@ import {
 import { cpLossToAccuracy } from './uci-parser';
 import { detectPhase, countMaterial } from './phase-detector';
 import { detectTacticalMotifs, deriveAdditionalMotifs } from './tactical-detector';
+import { shouldUseFlyEngine } from './backend-config';
+import { getCurrentUserEmail } from '@/contexts/AuthContext';
 
 type ProgressCallback = (moveIndex: number, totalMoves: number) => void;
 
 /**
- * Analyze an entire game move by move using Stockfish.
- * Uses chess.com-style Expected Points model for move classification.
+ * Analyze an entire game move by move.
+ *
+ * Routing: when the current user is opted into the Fly engine (via the
+ * global `VITE_ENGINE_BACKEND=fly` flag, or by being in
+ * `VITE_FLY_ENGINE_ALLOWED_EMAILS`), this delegates to `analyzeGameRemote()`
+ * and the local WASM Stockfish worker is never touched. Otherwise it runs
+ * the standard browser-local pipeline below.
  */
 export async function analyzeGame(
+  game: GameRecord,
+  depth: number,
+  onProgress?: ProgressCallback,
+): Promise<GameAnalysis> {
+  if (shouldUseFlyEngine(getCurrentUserEmail())) {
+    // Lazy import so the Fly client never enters the bundle path for users
+    // who don't opt in.
+    const { analyzeGameRemote } = await import('./fly-client');
+    return analyzeGameRemote(game, depth, onProgress);
+  }
+  return analyzeGameLocal(game, depth, onProgress);
+}
+
+/**
+ * Browser-local analysis (the original implementation).
+ * Runs entirely in the Stockfish WASM web worker.
+ * Uses chess.com-style Expected Points model for move classification.
+ */
+async function analyzeGameLocal(
   game: GameRecord,
   depth: number,
   onProgress?: ProgressCallback,

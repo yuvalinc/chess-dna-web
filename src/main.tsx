@@ -1,6 +1,11 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
+// Phase 3+ shadow-mode patch: routes Base44 entity CRUD through the
+// dual-write + shadow-read wrappers. With all VITE_DUAL_WRITE_* /
+// VITE_SHADOW_READ_* flags OFF (default), this is a no-op pass-through.
+// MUST import before App so the patch is applied before any React code runs.
+import './api/base44-shadow-wrap'
 import App from './App'
 
 // Set default theme

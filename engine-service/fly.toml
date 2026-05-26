@@ -1,0 +1,44 @@
+# fly.toml — Chess DNA engine service
+# Created during Phase 1 of fly-migration-plan.md
+#
+# After `fly auth login`, run `fly launch --copy-config --no-deploy` to provision
+# the app, then `fly deploy` once you've set secrets (see README).
+
+app = "chess-dna-engine"
+primary_region = "iad"   # US-East — switch if your users are EU-heavy
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  STOCKFISH_PATH = "stockfish"
+  STOCKFISH_THREADS = "1"
+  STOCKFISH_HASH_MB = "128"
+  MAX_CONCURRENT_JOBS = "4"
+  JOB_TIMEOUT_MS = "300000"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"   # Suspend (not stop) keeps cold start <1s
+  auto_start_machines = true
+  min_machines_running = 0          # Scale to zero when idle — Stockfish is bursty
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 4   # Match MAX_CONCURRENT_JOBS
+    hard_limit = 8
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/health"
+
+# 2 CPU / 2GB RAM — enough for 4 concurrent Stockfish processes at depth 18.
+# Cost: ~$15/mo if always-on, ~$2-5/mo with autoscale to zero.
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

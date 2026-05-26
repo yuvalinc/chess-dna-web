@@ -41,6 +41,7 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
     analyses,
     dataLoading,
     gamesLoading,
+    fullAnalysesLoading,
     playerElo,
     journeyStage,
     profile,
@@ -109,7 +110,12 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
   const radarCacheKey = userId
     ? `chess-dna-radar-${userId}-${settings.selectedTimeClass ?? 'all'}`
     : null;
-  const [cachedRadarProfiles] = useState<{
+  // useMemo (not useState init) so the cache is re-read once `userId`
+  // resolves from AuthContext. With useState the initializer ran once at
+  // mount with userId=null → cacheKey=null → null cache for the whole
+  // session, leaving the radar to flicker through the all-50s default
+  // until the live compute landed.
+  const cachedRadarProfiles = useMemo<{
     week: SkillProfile;
     month: SkillProfile;
     all: SkillProfile;
@@ -121,9 +127,21 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
       const parsed = JSON.parse(raw);
       if (!parsed?.week || !parsed?.month || !parsed?.all) return null;
       if ((parsed.month.gamesUsed ?? 0) === 0) return null;
+      // Reject corrupted caches where every dimension sits at the
+      // calculator's 50-default. Older builds wrote these when games loaded
+      // before analyses; reading them produces the all-50 flat octagon the
+      // user sees as state 1. Drop the entry so the next persist
+      // overwrites it with a healthy profile.
+      const allFifties = (p: SkillProfile) =>
+        Array.isArray(p?.dimensions) && p.dimensions.length > 0 &&
+        p.dimensions.every((d) => d.score === 50);
+      if (allFifties(parsed.month) && allFifties(parsed.all)) {
+        try { localStorage.removeItem(radarCacheKey); } catch { /* noop */ }
+        return null;
+      }
       return parsed;
     } catch { return null; }
-  });
+  }, [radarCacheKey]);
   const computedRadarProfiles = useMemo(() => {
     const find = (id: TimeWindowId) => TIME_WINDOWS.find(w => w.id === id)!;
     return {
@@ -132,19 +150,28 @@ export default function Overview({ stageOverride, timeClassFilter: timeClassFilt
       all:   computeWindowedProfile(games, analyses, find('all').sinceMsAgo).profile,
     };
   }, [games, analyses]);
-  // Prefer the freshly-computed bundle once `month` has real data. Until
-  // then fall back to the cached one so the radar shows real values from
-  // the moment the page paints.
-  const radarProfiles = computedRadarProfiles.month.gamesUsed > 0
-    ? computedRadarProfiles
-    : (cachedRadarProfiles ?? computedRadarProfiles);
+  // Swap rule:
+  //   - If we have a cache, keep showing it until the FULL analyses batch
+  //     lands. The 30-game progressive batch otherwise causes a transient
+  //     "partial" compute that disagrees with both the cache and the final
+  //     value, producing a visible 2→3 flicker.
+  //   - If no cache (first-time user), show whatever computed data we have
+  //     as soon as it's there, including the partial first batch.
+  const radarProfiles = (() => {
+    if (cachedRadarProfiles && fullAnalysesLoading) return cachedRadarProfiles;
+    if (computedRadarProfiles.month.gamesUsed > 0) return computedRadarProfiles;
+    return cachedRadarProfiles ?? computedRadarProfiles;
+  })();
+  // Persist only after the full batch lands — writing the partial 30-game
+  // compute would corrupt the cache for the next session.
   useEffect(() => {
     if (!radarCacheKey) return;
+    if (fullAnalysesLoading) return;
     if (computedRadarProfiles.month.gamesUsed === 0) return;
     if (typeof localStorage === 'undefined') return;
     try { localStorage.setItem(radarCacheKey, JSON.stringify(computedRadarProfiles)); }
     catch { /* quota — best-effort */ }
-  }, [computedRadarProfiles, radarCacheKey]);
+  }, [computedRadarProfiles, radarCacheKey, fullAnalysesLoading]);
 
   // Overlays definition — kept stable across renders so we can pass the
   // same array to both the radar and the standalone legend.

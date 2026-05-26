@@ -783,14 +783,37 @@ export default function GameDetail() {
               const afterChess = new Chess(currentMove.fenBefore!);
               afterChess.move({ from, to, promotion: promo });
               const threats: string[] = [];
+              let firstThreatMove: { from: string; to: string; promotion?: string } | null = null;
               for (const om of afterChess.moves({ verbose: true })) {
                 if (om.to === to && om.captured) {
                   const attacker = afterChess.get(om.from as Square);
-                  if (attacker) threats.push(`${PN[attacker.type] ?? attacker.type} on [${om.from}]`);
+                  if (attacker) {
+                    threats.push(`${PN[attacker.type] ?? attacker.type} on [${om.from}]`);
+                    if (!firstThreatMove) firstThreatMove = { from: om.from, to: om.to, promotion: om.promotion };
+                  }
                 }
               }
               if (threats.length > 0) {
-                facts.push(`${name} on [${to}] can be captured by: ${threats.join(', ')}.`);
+                // Simulate opponent's capture, then count our legal recaptures on
+                // `to` to compute defenders. Without this the LLM only sees
+                // attackers and concludes the piece is hanging even when a pawn
+                // or piece guards the square.
+                const defenders: string[] = [];
+                try {
+                  const post = new Chess(afterChess.fen());
+                  post.move(firstThreatMove!);
+                  for (const m of post.moves({ verbose: true })) {
+                    if (m.to === to && m.captured) {
+                      const defender = post.get(m.from as Square);
+                      if (defender) defenders.push(`${PN[defender.type] ?? defender.type} on [${m.from}]`);
+                    }
+                  }
+                } catch { /* ignore */ }
+                if (defenders.length > 0) {
+                  facts.push(`${name} on [${to}] can be captured by: ${threats.join(', ')}, but is DEFENDED by: ${defenders.join(', ')} — recapture available, NOT hanging.`);
+                } else {
+                  facts.push(`${name} on [${to}] can be captured by: ${threats.join(', ')}, and is NOT defended — HANGING (free capture).`);
+                }
               }
             } catch { /* ignore */ }
           }

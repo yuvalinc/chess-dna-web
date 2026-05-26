@@ -44,6 +44,11 @@ interface ChessDataContextValue {
   // Loading states
   gamesLoading: boolean;
   analysesLoading: boolean;
+  // True until the FULL analyses batch lands. `analysesLoading` flips false as
+  // soon as the 30-game progressive batch arrives, which makes derived state
+  // (radar, profile) flicker through a partial value before the full set
+  // lands. Consumers that want to avoid that flicker should wait on this.
+  fullAnalysesLoading: boolean;
   patternsLoading: boolean;
   dataLoading: boolean;
 
@@ -99,8 +104,23 @@ interface ChessDataContextValue {
   // Sync
   isSyncing: boolean;
   lastSyncAt: number | null;
+  lastSyncNewGames: number;
   syncError: string | null;
-  syncNow: () => void;
+  /** `force: true` skips the sinceMs watermark, hitting chess.com fresh.
+      Use for user-initiated syncs (pull-to-refresh, refresh button) so
+      back-to-back invocations actually re-check. */
+  syncNow: (opts?: { force?: boolean }) => void;
+
+  // Live analysis queue + per-game progress.  Consumers use these to
+  // show per-row state ("Up next", "#3 in queue", "Analyzing 12/45 moves",
+  // "Moved to top") without each row having to subscribe to the bus
+  // directly.  `analysisQueueIds` is the FIFO order of games still
+  // waiting; `analyzingNow` is the one currently being crunched; and
+  // `recentlyPromotedIds` flags games the user just bumped to the front
+  // so the row can briefly pulse.
+  analysisQueueIds: string[];
+  analyzingNow: { gameId: string; current: number; total: number } | null;
+  recentlyPromotedIds: Set<string>;
 
   // Refetch
   refetchGames: () => void;
@@ -135,6 +155,7 @@ const ChessDataContext = createContext<ChessDataContextValue>({
   patterns: DEFAULT_PATTERNS,
   gamesLoading: true,
   analysesLoading: true,
+  fullAnalysesLoading: true,
   patternsLoading: true,
   dataLoading: true,
   totalGameCount: 0,
@@ -168,8 +189,12 @@ const ChessDataContext = createContext<ChessDataContextValue>({
   patternsUnlocked: false,
   isSyncing: false,
   lastSyncAt: null,
+  lastSyncNewGames: 0,
   syncError: null,
   syncNow: () => {},
+  analysisQueueIds: [],
+  analyzingNow: null,
+  recentlyPromotedIds: new Set(),
   refetchGames: () => {},
   refetchAnalyses: () => {},
   refetchPatterns: () => {},
@@ -483,6 +508,34 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   const analysisQueueRef = useRef<string[]>([]);
   const processingAnalysisRef = useRef(false);
 
+  // Live mirrors of the analysis pipeline so UI consumers can show
+  // queue position, per-game progress, and a brief "moved to top" pulse
+  // without subscribing to analysisEvents directly.
+  const [analysisQueueIds, setAnalysisQueueIds] = useState<string[]>([]);
+  const [analyzingNow, setAnalyzingNow] = useState<{ gameId: string; current: number; total: number } | null>(null);
+  const [recentlyPromotedIds, setRecentlyPromotedIds] = useState<Set<string>>(new Set());
+  const promotedTimersRef = useRef<Map<string, number>>(new Map());
+  // Throttle progress updates — the bus fires per move (~5–10 Hz during
+  // analysis).  Every setState here triggers a full provider re-render,
+  // which cascades to every useChessData() consumer.  Cap visible
+  // updates at ~4 Hz; the badge still feels live without trashing perf.
+  const progressUpdateRef = useRef<{ lastAt: number; lastGameId: string | null }>({ lastAt: 0, lastGameId: null });
+
+  // Keep the queue state mirror in sync with the ref.
+  const syncQueueState = useCallback(() => {
+    setAnalysisQueueIds([...analysisQueueRef.current]);
+  }, []);
+
+  // Clear pending pulse-decay timers on unmount so a closing provider
+  // doesn't leak timers that fire setState on a torn-down tree.
+  useEffect(() => {
+    const timers = promotedTimersRef.current;
+    return () => {
+      timers.forEach((handle) => window.clearTimeout(handle));
+      timers.clear();
+    };
+  }, []);
+
   // Keep the latest onboarding game IDs in a ref so processAnalysisQueue
   // (a long-running async closure) can read the current set without becoming
   // a churn-y dependency.
@@ -497,6 +550,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     try {
       const batch = [...analysisQueueRef.current];
       analysisQueueRef.current = [];
+      syncQueueState();
       // Sort: onboarding games FIRST (so the user's decoding screen finishes
       // ASAP regardless of how many other games race into the queue), then
       // newest-first by playedAt for everything else.
@@ -534,6 +588,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setBatchMode(false);
       processingAnalysisRef.current = false;
+      setAnalyzingNow(null);
       // Use refs to avoid stale closures (this callback runs minutes later)
       refetchGamesRef.current();
       refetchAnalysesRef.current();
@@ -544,7 +599,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.analysisDepth]);
+  }, [settings.analysisDepth, syncQueueState]);
 
   // Look up game IDs by player username via the rawGames ref. Bypasses the
   // username-filtered memos, which are stale inside async click handlers
@@ -559,24 +614,56 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   // Exposed queue function — deduplicates and processes through the single pipeline
   const queueForAnalysis = useCallback((gameIds: string[], opts?: { priority?: 'normal' | 'high' }) => {
     if (gameIds.length === 0) return;
-    // Deduplicate: only add IDs not already in the queue
-    const existing = new Set(analysisQueueRef.current);
-    const newIds = gameIds.filter(id => !existing.has(id));
-    if (newIds.length === 0) return;
     if (opts?.priority === 'high') {
-      // Front-of-queue insert so high-priority games (e.g. just-followed
-      // top players) get analyzed first — challenges appear in seconds
-      // instead of waiting behind the user's whole sync queue.
-      analysisQueueRef.current.unshift(...newIds);
+      // Front-of-queue insert so high-priority games (e.g. the game the
+      // user just clicked Analyze on, or a just-followed top player) get
+      // analyzed first — challenges appear in seconds instead of waiting
+      // behind the user's whole sync queue.
+      //
+      // If the game was already queued further back, *move* it to the
+      // front rather than skipping the call — the user explicitly asked
+      // for it, so we want to honor the promotion even when it's a dedupe.
+      analysisQueueRef.current = [
+        ...gameIds,
+        ...analysisQueueRef.current.filter((id) => !gameIds.includes(id)),
+      ];
+      // Mark these IDs as recently promoted so the row can pulse briefly.
+      setRecentlyPromotedIds((prev) => {
+        const next = new Set(prev);
+        gameIds.forEach((id) => next.add(id));
+        return next;
+      });
+      // Auto-clear the pulse after ~4s.  Per-ID timers so back-to-back
+      // promotions of different games don't reset each other.
+      gameIds.forEach((id) => {
+        const existing = promotedTimersRef.current.get(id);
+        if (existing) window.clearTimeout(existing);
+        const handle = window.setTimeout(() => {
+          setRecentlyPromotedIds((prev) => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+          promotedTimersRef.current.delete(id);
+        }, 4000);
+        promotedTimersRef.current.set(id, handle);
+      });
     } else {
+      // Normal priority — dedupe-and-append.
+      const existing = new Set(analysisQueueRef.current);
+      const newIds = gameIds.filter((id) => !existing.has(id));
+      if (newIds.length === 0) return;
       analysisQueueRef.current.push(...newIds);
     }
+    syncQueueState();
     processAnalysisQueue();
-  }, [processAnalysisQueue]);
+  }, [processAnalysisQueue, syncQueueState]);
 
   const {
     isSyncing,
     lastSyncAt,
+    lastSyncNewGames,
     error: syncError,
     syncNow,
   } = useChessComSync({
@@ -1146,8 +1233,26 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
   const batchCompleteCountRef = useRef(0);
   useEffect(() => {
     const unsub = analysisEvents.on((event) => {
-      if (event.type === 'complete') {
+      if (event.type === 'progress') {
+        // Drive the per-row "Analyzing N/M" indicator.  Throttled so
+        // we don't re-render every useChessData() consumer 5–10×/sec
+        // during a batch.  We always update when the game changes (so
+        // the indicator switches rows immediately), but cap subsequent
+        // updates within the same game to ~4 Hz.
+        const now = Date.now();
+        const last = progressUpdateRef.current;
+        const isNewGame = last.lastGameId !== event.gameId;
+        if (isNewGame || now - last.lastAt >= 250) {
+          progressUpdateRef.current = { lastAt: now, lastGameId: event.gameId };
+          setAnalyzingNow({
+            gameId: event.gameId,
+            current: event.moveIndex,
+            total: event.totalMoves,
+          });
+        }
+      } else if (event.type === 'complete') {
         batchCompleteCountRef.current++;
+        setAnalyzingNow((prev) => (prev?.gameId === event.gameId ? null : prev));
         // Onboarding games always trigger an immediate refetch so the
         // Decoding screen's s1AnalyzedCount updates in lockstep with the
         // games getting analyzed. Without this, batch-mode would suppress
@@ -1163,8 +1268,11 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
           refetchAnalysesRef.current();
           refetchPatternsRef.current();
         }
+      } else if (event.type === 'error') {
+        setAnalyzingNow((prev) => (prev?.gameId === event.gameId ? null : prev));
       } else if (event.type === 'all_complete') {
         batchCompleteCountRef.current = 0;
+        setAnalyzingNow(null);
         refetchGamesRef.current();
         refetchAnalysesRef.current();
         refetchPatternsRef.current();
@@ -1188,6 +1296,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       patterns,
       gamesLoading,
       analysesLoading,
+      fullAnalysesLoading,
       patternsLoading,
       dataLoading,
       totalGameCount,
@@ -1221,8 +1330,12 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       patternsUnlocked,
       isSyncing,
       lastSyncAt,
+      lastSyncNewGames,
       syncError,
       syncNow,
+      analysisQueueIds,
+      analyzingNow,
+      recentlyPromotedIds,
       refetchGames,
       refetchAnalyses,
       refetchPatterns,
@@ -1232,7 +1345,7 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       enrichedAllGames, allAnalyses, patterns,
-      gamesLoading, analysesLoading, patternsLoading, dataLoading,
+      gamesLoading, analysesLoading, fullAnalysesLoading, patternsLoading, dataLoading,
       totalGameCount, analyzedCount, analyzingCount, pendingCount,
       gamesMap, availableTimeClasses,
       friendGames, friendAnalyses, topPlayerGames, topPlayerAnalyses,
@@ -1241,7 +1354,8 @@ export function ChessDataProvider({ children }: { children: React.ReactNode }) {
       tier, tierProgress, nextTier,
       benchmark, leadersBenchmark, overallPercentile,
       journeyStage, hasPatterns, hasAI, patternsUnlocked,
-      isSyncing, lastSyncAt, syncError, syncNow,
+      isSyncing, lastSyncAt, lastSyncNewGames, syncError, syncNow,
+      analysisQueueIds, analyzingNow, recentlyPromotedIds,
       refetchGames, refetchAnalyses, refetchPatterns, refetchAll, queueForAnalysis,
       getStoredGameIdsByUsername,
     ],

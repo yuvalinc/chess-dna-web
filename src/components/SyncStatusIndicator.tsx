@@ -15,7 +15,7 @@ export default function SyncStatusIndicator() {
 
   return (
     <button
-      onClick={syncNow}
+      onClick={() => syncNow({ force: true })}
       disabled={isSyncing}
       className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md bg-chess-surface/80 border border-chess-border/20 hover:bg-chess-surface transition-all disabled:opacity-60"
       title={syncError ? `Sync error: ${syncError}` : ''}

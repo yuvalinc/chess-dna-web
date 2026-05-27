@@ -471,6 +471,31 @@ async function injectIntoReddGrow(task, seoIssueNumber) {
   const existingPostIds = new Set(
     [...body.matchAll(/\*\*URL\*\*:\s*\S*?\/comments\/([a-z0-9]+)/gi)].map(m => m[1])
   );
+
+  // Prune any drafts already in the queue whose threads have since become
+  // archived (Reddit auto-archives at ~180d). They got injected before our
+  // archived-filter was added OR ticked over the 6-month line since the
+  // last injection. Either way they're dead weight — strip them so the
+  // ReddGrow tab isn't cluttered with unpostable threads.
+  let prunedBody = body;
+  const existingDraftMatches = [...body.matchAll(/(###\s+\[r\/[^\]]+\][^\n]*\n[\s\S]*?\n---\n?)/g)];
+  for (const match of existingDraftMatches) {
+    const block = match[1];
+    const pid = block.match(/\*\*URL\*\*:\s*\S*?\/comments\/([a-z0-9]+)/i)?.[1];
+    if (!pid) continue;
+    try {
+      const meta = await fetchRedditThread(`https://www.reddit.com/comments/${pid}/`);
+      if (!meta) { // null = archived/locked per fetchRedditThread filter
+        prunedBody = prunedBody.replace(block, '');
+        console.log(`[exec]   pruned archived draft from #${target.number}: ${pid}`);
+        existingPostIds.delete(pid);
+      }
+      await new Promise(r => setTimeout(r, 400));
+    } catch {}
+  }
+  // Recompute existingCount after pruning so new draft IDs don't collide.
+  const liveBody = prunedBody;
+  const liveExistingCount = (liveBody.match(/<!--\s*draft-\d+\s*-->/g) ?? []).length;
   const beforeDedup = enriched.length;
   const newDrafts = enriched.filter(d => {
     const id = (d.permalink || d.url || '').match(/\/comments\/([a-z0-9]+)/i)?.[1];
@@ -485,18 +510,18 @@ async function injectIntoReddGrow(task, seoIssueNumber) {
     return 0;
   }
   const newBlocks = newDrafts
-    .map((d, i) => buildDraftBlock(d, existingCount + i + 1))
+    .map((d, i) => buildDraftBlock(d, liveExistingCount + i + 1))
     .join('\n');
 
   // If there's no "## Drafts" heading (legacy issue body), add one.
   let newBody;
-  if (/^##\s+Drafts\s*$/m.test(body)) {
-    newBody = body.trimEnd() + '\n\n' + newBlocks;
+  if (/^##\s+Drafts\s*$/m.test(liveBody)) {
+    newBody = liveBody.trimEnd() + '\n\n' + newBlocks;
   } else {
-    newBody = body.trimEnd() + '\n\n## Drafts\n\n' + newBlocks;
+    newBody = liveBody.trimEnd() + '\n\n## Drafts\n\n' + newBlocks;
   }
   // Update the title to reflect the new count.
-  const totalDrafts = existingCount + newDrafts.length;
+  const totalDrafts = liveExistingCount + newDrafts.length;
   await gh(`/repos/${GH_REPO}/issues/${target.number}`, {
     method: 'PATCH',
     body: JSON.stringify({

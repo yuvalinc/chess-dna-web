@@ -1091,27 +1091,14 @@ function TaskRow({
           {task.description && (
             <p className="text-[13px] text-chess-text-secondary whitespace-pre-wrap">{task.description}</p>
           )}
-          {/* Reddit tasks have their own pipeline (ReddGrow tab + Chrome
-              extension). Surface a banner that routes the user there
-              instead of relying on the Claude Code executor to do
-              browser automation against Reddit. */}
+          {/* Reddit tasks route to ReddGrow automatically — the executor
+              detects reddit.com URLs in the description, parses them into
+              draft blocks, and appends to the open reddit-daily issue.
+              No user action needed. We just show a small inline marker so
+              the user knows what's about to happen on Approve. */}
           {extractRedditUrls(task.description).length > 0 && !executed && (
-            <div className="mt-3 bg-chess-accent/10 border border-chess-accent/30 rounded p-2.5 flex items-start gap-2 flex-wrap">
-              <span className="text-[18px] leading-none">💬</span>
-              <div className="flex-1 min-w-0 text-[12px]">
-                <div className="font-bold text-chess-text mb-0.5">
-                  {extractRedditUrls(task.description).length} Reddit thread{extractRedditUrls(task.description).length === 1 ? '' : 's'} detected — handle in ReddGrow
-                </div>
-                <div className="text-chess-text-tertiary">
-                  Don't run this via the Claude Code executor — it can't reliably post on Reddit. Use the ReddGrow tab with your Chrome extension instead. The agent's suggested copy is right above and the extension will pre-fill it for each thread.
-                </div>
-              </div>
-              <button
-                onClick={(e) => { e.stopPropagation(); window.open('/seo?tab=reddit', '_blank'); }}
-                className="text-[11px] font-bold px-2.5 py-1 bg-chess-accent text-white border border-chess-accent rounded hover:bg-chess-accent/90"
-              >
-                → Open ReddGrow
-              </button>
+            <div className="mt-2 text-[11px] text-chess-text-tertiary italic">
+              💬 {extractRedditUrls(task.description).length} Reddit URL{extractRedditUrls(task.description).length === 1 ? '' : 's'} — on approve, drafts auto-inject into the ReddGrow queue (no manual step).
             </div>
           )}
           {/* Needs-review banner: the executor couldn't physically do this

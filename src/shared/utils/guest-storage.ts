@@ -121,8 +121,12 @@ export async function migrateGuestToBase44(
     create: (data: Record<string, unknown>) => Promise<Record<string, unknown>>;
     list: () => Promise<Record<string, unknown>[]>;
   }>,
-): Promise<{ games: number; analyses: number; settings: boolean }> {
-  const stats = { games: 0, analyses: 0, settings: false };
+): Promise<{ games: number; analyses: number; settings: boolean; failures: number }> {
+  // `failures` tracks per-item migration failures (Base44 throttling, etc.).
+  // AuthContext only window.reload()s on stats.failures === 0 — partial
+  // success leaves the unmigrated items in localStorage so the user can
+  // retry manually instead of looping on a re-trigger reload.
+  const stats = { games: 0, analyses: 0, settings: false, failures: 0 };
 
   // Migrate games
   const guestGames = getGuestEntities<Record<string, unknown>>('Game');
@@ -132,6 +136,7 @@ export async function migrateGuestToBase44(
       await base44Entities.Game.create(gameData);
       stats.games++;
     } catch (err) {
+      stats.failures++;
       console.warn('[Guest Migration] Failed to migrate game:', err);
     }
   }
@@ -144,6 +149,7 @@ export async function migrateGuestToBase44(
       await base44Entities.Analysis.create(analysisData);
       stats.analyses++;
     } catch (err) {
+      stats.failures++;
       console.warn('[Guest Migration] Failed to migrate analysis:', err);
     }
   }
@@ -165,6 +171,7 @@ export async function migrateGuestToBase44(
       }
       stats.settings = true;
     } catch (err) {
+      stats.failures++;
       console.warn('[Guest Migration] Failed to migrate settings:', err);
     }
   }
@@ -183,12 +190,17 @@ export async function migrateGuestToBase44(
         await base44Entities.Pattern.create(guestPatterns);
       }
     } catch (err) {
+      stats.failures++;
       console.warn('[Guest Migration] Failed to migrate patterns:', err);
     }
   }
 
-  // Clear guest data after successful migration
-  clearAllGuestData();
+  // Clear guest data only on a clean migration. If any item failed, keep
+  // the localStorage copy so AuthContext can decline to reload (and the
+  // user can retry manually on next login).
+  if (stats.failures === 0) {
+    clearAllGuestData();
+  }
   console.log('[Guest Migration] Complete:', stats);
 
   return stats;

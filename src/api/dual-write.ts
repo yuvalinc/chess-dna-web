@@ -105,6 +105,7 @@ async function mirrorCreate(entity: Entity, base44Row: { id: string }): Promise<
   }
 
   const payload = transformToSupabase(entity, base44Row, userId);
+  const isSingleton = entity === 'Pattern' || entity === 'UserPreferences';
 
   try {
     await supabaseFetch(`/${table}`, {
@@ -112,6 +113,32 @@ async function mirrorCreate(entity: Entity, base44Row: { id: string }): Promise<
       body: JSON.stringify(payload),
     });
   } catch (err) {
+    // Singletons (UserPreferences, Pattern) have UNIQUE(user_id). The app
+    // sometimes calls .create() on a singleton that already exists (race
+    // during onboarding, hooks that don't check first). Base44 silently
+    // accepts; PostgREST returns 409. Treat as "should have been an update"
+    // and retry as PATCH so the mirror stays in sync instead of dropping
+    // the write.
+    if (isSingleton && err instanceof SupabaseError && err.status === 409) {
+      try {
+        const patchBody = { ...payload };
+        delete (patchBody as Record<string, unknown>).id;
+        delete (patchBody as Record<string, unknown>).user_id;
+        await supabaseFetch(`/${table}?user_id=eq.${encodeURIComponent(userId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(patchBody),
+        });
+        return;
+      } catch (patchErr) {
+        await logDrift({
+          entity, entityId: base44Row.id, operation: 'create',
+          base44Value: base44Row,
+          note: `singleton 409 → PATCH retry failed: ${describeErr(patchErr)}`,
+        });
+        throw patchErr;
+      }
+    }
+
     await logDrift({
       entity, entityId: base44Row.id, operation: 'create',
       base44Value: base44Row, note: `supabase create failed: ${describeErr(err)}`,

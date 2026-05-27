@@ -1216,7 +1216,7 @@ function TaskRow({
 }
 
 function IssueCard({
-  issue, isLatest, onApprove, onToggleTask, onRemoveTask, onMarkDoneTask, onMarkReviewedTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, removedTitles, tokens,
+  issue, isLatest, onApprove, onToggleTask, onRemoveTask, onMarkDoneTask, onMarkReviewedTask, onMergePR, onRejectPR, showRaw, onToggleRaw, busy, execStatuses, removedTitles, tokens, comments,
 }: {
   issue: GhIssue;
   isLatest: boolean;
@@ -1233,6 +1233,7 @@ function IssueCard({
   execStatuses: Map<string, TaskExecutionStatus>;
   removedTitles: Set<string>;
   tokens: number;
+  comments: GhComment[] | null;
 }) {
   const status = statusFromIssue(issue);
   const sty = STATUS_STYLES[status];

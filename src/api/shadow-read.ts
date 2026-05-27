@@ -246,9 +246,17 @@ function compareRows(
     ? ((supabase.settings as Record<string, unknown> | undefined) ?? {})
     : supabase;
 
+  // For UserPreferences specifically, `id` stays at the top level of the
+  // Supabase row (not packed into settings) — comparing Base44.id against
+  // settings.id is always a false positive.
+  const skipTopLevelOnUserPrefs = entity === 'UserPreferences'
+    ? new Set(['id'])
+    : new Set<string>();
+
   // Walk Base44 keys; the snake_case equivalent is what's in supabase.
   for (const [key, b44Val] of Object.entries(base44)) {
     if (IGNORED_FIELDS.has(key)) continue;
+    if (skipTopLevelOnUserPrefs.has(key)) continue;
     const snakeKey = key.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
     if (IGNORED_FIELDS.has(snakeKey)) continue;
     // For UserPreferences, supabase keeps the original camelCase keys inside
@@ -258,7 +266,7 @@ function compareRows(
       ? (sbFieldSource[key] ?? sbFieldSource[snakeKey])
       : sbFieldSource[snakeKey];
 
-    if (!shallowEqual(b44Val, sbVal)) {
+    if (!equivalentValues(b44Val, sbVal)) {
       diffs.push({ field: key, base44: b44Val, supabase: sbVal });
       if (diffs.length >= 10) break; // cap per-row drift to avoid log spam
     }
@@ -267,23 +275,70 @@ function compareRows(
   return diffs;
 }
 
+/**
+ * Treat `""`, `null`, and `undefined` as equivalent at the leaf level.
+ * Base44 returns empty strings for unset optional fields (e.g. an unset
+ * `geminiApiKey` comes back as `""`); when we round-trip through the
+ * `settings` jsonb, missing keys come back as `undefined`. Without this
+ * lenient match every unset preference shows as drift.
+ */
+function equivalentValues(a: unknown, b: unknown): boolean {
+  if (isAbsent(a) && isAbsent(b)) return true;
+  return shallowEqual(a, b);
+}
+
+function isAbsent(v: unknown): boolean {
+  return v === '' || v === null || v === undefined;
+}
+
 function shallowEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null) return false;
   if (typeof a !== typeof b) return false;
 
-  // Both arrays: compare length + each item (deep-equal via JSON for jsonb).
+  // Arrays: length + canonical compare. Also normalize string-encoded items
+  // (Base44 stores Analysis.moves / Pattern.patterns / PatternSnapshot.themes
+  // as `string[]` of JSON-encoded objects; Supabase stores the parsed
+  // `object[]`). Without this normalization every list comparison reports
+  // those columns as drift even though the data is identical.
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
-    return JSON.stringify(a) === JSON.stringify(b);
+    return canonicalJson(normalizeArray(a)) === canonicalJson(normalizeArray(b));
   }
 
-  // Both objects: JSON-compare (good enough for jsonb columns).
+  // Objects: canonical (key-sorted) JSON compare. JSON.stringify on raw
+  // objects is order-sensitive, so `player` and `opponent` jsonb columns
+  // reported as drift hundreds of times per day even though the bytes were
+  // semantically identical (e.g. {color,rating,result,username} vs the
+  // same keys in a different order from PostgREST).
   if (typeof a === 'object' && typeof b === 'object') {
-    return JSON.stringify(a) === JSON.stringify(b);
+    return canonicalJson(a) === canonicalJson(b);
   }
 
   return false;
+}
+
+function normalizeArray(arr: unknown[]): unknown[] {
+  return arr.map((v) => {
+    if (typeof v === 'string' && (v.startsWith('{') || v.startsWith('['))) {
+      try { return JSON.parse(v); } catch { return v; }
+    }
+    return v;
+  });
+}
+
+/** JSON.stringify with deterministic object key ordering (depth-first). */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, val) => {
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(val).sort()) {
+        sorted[k] = (val as Record<string, unknown>)[k];
+      }
+      return sorted;
+    }
+    return val;
+  });
 }
 
 // Base44 column → Supabase column mapping for ORDER BY and filter keys.

@@ -332,13 +332,15 @@ async function fetchRedditThread(url) {
   const data = await res.json();
   const post = data?.[0]?.data?.children?.[0]?.data;
   if (!post) return null;
-  // Note: we used to drop archived/locked threads here, but the user wants
-  // ALL agent-suggested copy visible in ReddGrow — the suggested comments
-  // are reusable on similar live threads, and silent drops caused "agent
-  // promised 4 drafts, only 1 landed" frustration. Pass the archived flag
-  // through; buildDraftBlock renders an ⚠ ARCHIVED marker for those.
+  // Hard rule: archived/locked threads NEVER reach ReddGrow. The suggested
+  // copy on them is technically reusable on similar live threads, but the
+  // user explicitly does not want them in the queue ("DONT SHOW ME
+  // SUGGESTIONS FROM ARCHIVE THREADS"). When the SEO agent proposes an
+  // archived URL, we drop it here and let the daily reddit-daily scanner
+  // surface a fresh live alternative instead.
   if (post.archived || post.locked) {
-    console.log(`[exec]   archived/locked (still injecting with marker): ${url}`);
+    console.log(`[exec]   skip archived/locked: ${url}`);
+    return null;
   }
   return {
     subreddit: post.subreddit,
@@ -348,8 +350,8 @@ async function fetchRedditThread(url) {
     selftext: post.selftext ?? '',
     created_utc: post.created_utc ?? Math.floor(Date.now() / 1000),
     permalink: post.permalink ?? new URL(url).pathname,
-    archived: post.archived ?? false,
-    locked: post.locked ?? false,
+    archived: false,
+    locked: false,
   };
 }
 
@@ -378,38 +380,23 @@ function buildDraftBlock(draft, idx) {
       '',
     ].join('\n');
   }
-  // Comment-on-existing-thread shape (the original path).
-  // Archived/locked threads still get injected so the user has visibility
-  // into the agent's suggested copy — they can reuse the text on a similar
-  // live thread. The header carries an explicit ⚠ ARCHIVED marker so the
-  // user doesn't waste a click trying to post.
-  const archived = draft.archived || draft.locked;
+  // Comment-on-existing-thread shape. Archived threads are dropped upstream
+  // in fetchRedditThread — they never reach this function. Every draft here
+  // is on a live, postable thread.
   const ageHrs = ((Date.now() / 1000 - draft.created_utc) / 3600);
   const ageDisplay = ageHrs < 24
     ? `${ageHrs.toFixed(1)}h ago`
     : `${Math.round(ageHrs / 24)}d old`;
   const excerpt = (draft.selftext ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
-  const matchSuffix = archived
-    ? ' · ⚠ ARCHIVED — cannot comment, reuse copy on similar live thread'
-    : '';
-  const archivedTag = archived ? ' · 🔒 archived' : '';
-  const archivedNote = archived
-    ? [
-        ``,
-        `**⚠ ARCHIVED — Reddit blocks new comments on threads >6mo old.**`,
-        `The suggested copy below is reusable on a similar live thread (search r/${draft.subreddit} for current discussions on the same topic).`,
-      ].join('\n')
-    : '';
   return [
     `### [r/${draft.subreddit}] ${draft.title.replace(/[\[\]]/g, '')}  <!-- draft-${idx} -->`,
     `- **Type**: promotional`,
-    `- **Match**: 100% _· seeded by SEO executor from ${draft.fromSeoIssue} (AI-citation target)${matchSuffix}_`,
-    `- **Posted**: ${ageDisplay} · ${draft.score}↑ · ${draft.num_comments} comments${archivedTag}`,
+    `- **Match**: 100% _· seeded by SEO executor from ${draft.fromSeoIssue} (AI-citation target)_`,
+    `- **Posted**: ${ageDisplay} · ${draft.score}↑ · ${draft.num_comments} comments`,
     `- **URL**: https://www.reddit.com${draft.permalink}`,
     ``,
     `**Original post**:`,
     `> ${excerpt || '_(link post, no body text)_'}${(draft.selftext ?? '').length > 240 ? '…' : ''}`,
-    archivedNote,
     ``,
     `**AI draft**:`,
     '```',
@@ -418,7 +405,7 @@ function buildDraftBlock(draft, idx) {
     ``,
     '---',
     '',
-  ].filter(l => l !== '' || true).join('\n');
+  ].join('\n');
 }
 
 // Find the most recent OPEN reddit-daily issue regardless of date. Earlier

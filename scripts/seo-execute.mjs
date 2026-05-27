@@ -461,11 +461,30 @@ async function injectIntoReddGrow(task, seoIssueNumber) {
   if (enriched.length === 0) return 0;
 
   // Append to today's reddit-daily issue, re-numbering drafts so IDs don't
-  // collide with existing ones.
+  // collide with existing ones. Deduplicate against existing drafts by Reddit
+  // post ID (the 6-8 char base36 segment in /comments/<id>/) — same target
+  // URL across multiple SEO runs would otherwise double-inject and clutter
+  // the ReddGrow queue with the same thread twice.
   const target = await findOrCreateRedditIssue();
   const body = target.body ?? '';
   const existingCount = (body.match(/<!--\s*draft-\d+\s*-->/g) ?? []).length;
-  const newBlocks = enriched
+  const existingPostIds = new Set(
+    [...body.matchAll(/\*\*URL\*\*:\s*\S*?\/comments\/([a-z0-9]+)/gi)].map(m => m[1])
+  );
+  const beforeDedup = enriched.length;
+  const newDrafts = enriched.filter(d => {
+    const id = (d.permalink || d.url || '').match(/\/comments\/([a-z0-9]+)/i)?.[1];
+    if (id && existingPostIds.has(id)) {
+      console.log(`[exec]   skip duplicate: already in #${target.number} — ${d.url || d.permalink}`);
+      return false;
+    }
+    return true;
+  });
+  if (newDrafts.length === 0) {
+    console.log(`[exec]   all ${beforeDedup} drafts already in #${target.number}, nothing to inject`);
+    return 0;
+  }
+  const newBlocks = newDrafts
     .map((d, i) => buildDraftBlock(d, existingCount + i + 1))
     .join('\n');
 
@@ -477,7 +496,7 @@ async function injectIntoReddGrow(task, seoIssueNumber) {
     newBody = body.trimEnd() + '\n\n## Drafts\n\n' + newBlocks;
   }
   // Update the title to reflect the new count.
-  const totalDrafts = existingCount + enriched.length;
+  const totalDrafts = existingCount + newDrafts.length;
   await gh(`/repos/${GH_REPO}/issues/${target.number}`, {
     method: 'PATCH',
     body: JSON.stringify({
@@ -485,8 +504,9 @@ async function injectIntoReddGrow(task, seoIssueNumber) {
       title: `Reddit ${todayIso()} — ${totalDrafts} draft${totalDrafts === 1 ? '' : 's'}`,
     }),
   });
-  console.log(`[exec]   → injected ${enriched.length} reddit draft(s) into #${target.number}`);
-  return enriched.length;
+  const dupes = beforeDedup - newDrafts.length;
+  console.log(`[exec]   → injected ${newDrafts.length} reddit draft(s) into #${target.number}${dupes > 0 ? ` (${dupes} duplicate${dupes === 1 ? '' : 's'} skipped)` : ''}`);
+  return newDrafts.length;
 }
 
 async function listApprovedIssues() {

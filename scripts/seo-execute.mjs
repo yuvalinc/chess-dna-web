@@ -332,13 +332,13 @@ async function fetchRedditThread(url) {
   const data = await res.json();
   const post = data?.[0]?.data?.children?.[0]?.data;
   if (!post) return null;
-  // Reddit archives threads after 6 months — commenting + voting both blocked.
-  // The aiv_citations dataset surfaces these because AI engines still index
-  // them, but they're useless as outreach targets. Drop them here so they
-  // never make it into ReddGrow's queue.
+  // Note: we used to drop archived/locked threads here, but the user wants
+  // ALL agent-suggested copy visible in ReddGrow — the suggested comments
+  // are reusable on similar live threads, and silent drops caused "agent
+  // promised 4 drafts, only 1 landed" frustration. Pass the archived flag
+  // through; buildDraftBlock renders an ⚠ ARCHIVED marker for those.
   if (post.archived || post.locked) {
-    console.log(`[exec]   skip archived/locked: ${url}`);
-    return null;
+    console.log(`[exec]   archived/locked (still injecting with marker): ${url}`);
   }
   return {
     subreddit: post.subreddit,
@@ -379,17 +379,37 @@ function buildDraftBlock(draft, idx) {
     ].join('\n');
   }
   // Comment-on-existing-thread shape (the original path).
-  const ageHrs = ((Date.now() / 1000 - draft.created_utc) / 3600).toFixed(1);
+  // Archived/locked threads still get injected so the user has visibility
+  // into the agent's suggested copy — they can reuse the text on a similar
+  // live thread. The header carries an explicit ⚠ ARCHIVED marker so the
+  // user doesn't waste a click trying to post.
+  const archived = draft.archived || draft.locked;
+  const ageHrs = ((Date.now() / 1000 - draft.created_utc) / 3600);
+  const ageDisplay = ageHrs < 24
+    ? `${ageHrs.toFixed(1)}h ago`
+    : `${Math.round(ageHrs / 24)}d old`;
   const excerpt = (draft.selftext ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  const matchSuffix = archived
+    ? ' · ⚠ ARCHIVED — cannot comment, reuse copy on similar live thread'
+    : '';
+  const archivedTag = archived ? ' · 🔒 archived' : '';
+  const archivedNote = archived
+    ? [
+        ``,
+        `**⚠ ARCHIVED — Reddit blocks new comments on threads >6mo old.**`,
+        `The suggested copy below is reusable on a similar live thread (search r/${draft.subreddit} for current discussions on the same topic).`,
+      ].join('\n')
+    : '';
   return [
     `### [r/${draft.subreddit}] ${draft.title.replace(/[\[\]]/g, '')}  <!-- draft-${idx} -->`,
     `- **Type**: promotional`,
-    `- **Match**: 100% _· seeded by SEO executor from ${draft.fromSeoIssue} (AI-citation target)_`,
-    `- **Posted**: ${ageHrs}h ago · ${draft.score}↑ · ${draft.num_comments} comments`,
+    `- **Match**: 100% _· seeded by SEO executor from ${draft.fromSeoIssue} (AI-citation target)${matchSuffix}_`,
+    `- **Posted**: ${ageDisplay} · ${draft.score}↑ · ${draft.num_comments} comments${archivedTag}`,
     `- **URL**: https://www.reddit.com${draft.permalink}`,
     ``,
     `**Original post**:`,
     `> ${excerpt || '_(link post, no body text)_'}${(draft.selftext ?? '').length > 240 ? '…' : ''}`,
+    archivedNote,
     ``,
     `**AI draft**:`,
     '```',
@@ -398,7 +418,7 @@ function buildDraftBlock(draft, idx) {
     ``,
     '---',
     '',
-  ].join('\n');
+  ].filter(l => l !== '' || true).join('\n');
 }
 
 // Find the most recent OPEN reddit-daily issue regardless of date. Earlier
@@ -471,30 +491,13 @@ async function injectIntoReddGrow(task, seoIssueNumber) {
   const existingPostIds = new Set(
     [...body.matchAll(/\*\*URL\*\*:\s*\S*?\/comments\/([a-z0-9]+)/gi)].map(m => m[1])
   );
-
-  // Prune any drafts already in the queue whose threads have since become
-  // archived (Reddit auto-archives at ~180d). They got injected before our
-  // archived-filter was added OR ticked over the 6-month line since the
-  // last injection. Either way they're dead weight — strip them so the
-  // ReddGrow tab isn't cluttered with unpostable threads.
-  let prunedBody = body;
-  const existingDraftMatches = [...body.matchAll(/(###\s+\[r\/[^\]]+\][^\n]*\n[\s\S]*?\n---\n?)/g)];
-  for (const match of existingDraftMatches) {
-    const block = match[1];
-    const pid = block.match(/\*\*URL\*\*:\s*\S*?\/comments\/([a-z0-9]+)/i)?.[1];
-    if (!pid) continue;
-    try {
-      const meta = await fetchRedditThread(`https://www.reddit.com/comments/${pid}/`);
-      if (!meta) { // null = archived/locked per fetchRedditThread filter
-        prunedBody = prunedBody.replace(block, '');
-        console.log(`[exec]   pruned archived draft from #${target.number}: ${pid}`);
-        existingPostIds.delete(pid);
-      }
-      await new Promise(r => setTimeout(r, 400));
-    } catch {}
-  }
-  // Recompute existingCount after pruning so new draft IDs don't collide.
-  const liveBody = prunedBody;
+  // No auto-prune of archived drafts. The user wants ALL agent-suggested
+  // copy visible in ReddGrow even when the target thread is archived —
+  // the suggested comments are reusable on similar live threads, and
+  // hiding them silently caused "didnt follow anymore" frustration earlier.
+  // Archived drafts are clearly marked with ⚠ ARCHIVED in their block;
+  // the user can ✕ Remove any they don't want via the dashboard.
+  const liveBody = body;
   const liveExistingCount = (liveBody.match(/<!--\s*draft-\d+\s*-->/g) ?? []).length;
   const beforeDedup = enriched.length;
   const newDrafts = enriched.filter(d => {

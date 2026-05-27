@@ -49,6 +49,10 @@ interface ParsedDraft {
   url: string;
   originalExcerpt: string;
   draft: string;
+  // Reddit archives threads after ~6 months — comments rejected. We still
+  // inject these so the agent's suggested copy is reusable on similar live
+  // threads, but the card needs to make the unpostability obvious.
+  archived: boolean;
 }
 
 type DraftAction = 'opened' | 'posted' | 'skipped';
@@ -114,10 +118,15 @@ function parseDrafts(body: string | null): ParsedDraft[] {
     const [, subreddit, title, id] = headerMatch;
     const typeM = block.match(/\*\*Type\*\*:\s*(warmup|promotional|brand_monitor|post)/);
     const match = block.match(/\*\*Match\*\*:\s*(\d+)%(?:\s*·\s*_([^_]+)_)?/);
-    const posted = block.match(/\*\*Posted\*\*:\s*([\d.]+h)\s+ago\s*·\s*(\d+)↑\s*·\s*(\d+)\s+comments/);
+    // Posted line can now read either "1.5h ago" or "238d old" since
+    // injected archived drafts use the "Xd old" format.
+    const posted = block.match(/\*\*Posted\*\*:\s*([\d.]+(?:h\s+ago|d\s+old))\s*·\s*(\d+)↑\s*·\s*(\d+)\s+comments/);
     const url = block.match(/\*\*URL\*\*:\s*(\S+)/);
     const original = block.match(/\*\*Original post\*\*:\s*\n>\s*(.+?)(?=\n\n)/s);
     const draftBlock = block.match(/\*\*AI draft\*\*:\s*\n```\s*\n([\s\S]+?)\n```/);
+    // Archived marker can appear in either the Match line (newer format) or
+    // the Posted line (🔒 archived tag).
+    const archived = /⚠\s*ARCHIVED|🔒\s*archived/i.test(block);
     out.push({
       id,
       subreddit,
@@ -132,6 +141,7 @@ function parseDrafts(body: string | null): ParsedDraft[] {
       url: url?.[1] ?? '',
       originalExcerpt: original?.[1]?.trim() ?? '',
       draft: draftBlock?.[1]?.trim() ?? '',
+      archived,
     });
   }
   return out;
@@ -568,6 +578,14 @@ function DraftCard({
         <span className="text-[11px] text-chess-text-tertiary">{draft.upvotes}↑</span>
         <span className="text-[11px] text-chess-text-tertiary">·</span>
         <span className="text-[11px] text-chess-text-tertiary">{draft.comments} comments</span>
+        {draft.archived && (
+          <span
+            className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold border bg-chess-blunder/15 text-chess-blunder border-chess-blunder/30"
+            title="Reddit auto-archived this thread (older than 6 months). New comments rejected. Suggested copy below is reusable on a similar live thread — search the same subreddit."
+          >
+            🔒 ARCHIVED
+          </span>
+        )}
         {isPosted && <span className="ms-auto text-[10px] uppercase tracking-wider text-chess-best font-bold">✓ posted</span>}
         {isSkipped && <span className="ms-auto text-[10px] uppercase tracking-wider text-chess-text-tertiary font-bold">skipped</span>}
         {isOpened && !isPosted && !isSkipped && (
@@ -586,26 +604,45 @@ function DraftCard({
       {draft.reasons && (
         <div className="text-[11px] text-chess-text-tertiary mb-2 italic">{draft.reasons}</div>
       )}
-      {ratioBlocked && (
+      {ratioBlocked && !draft.archived && (
         <div className="text-[11px] bg-chess-blunder/10 border border-chess-blunder/30 rounded p-2 mb-2 text-chess-blunder">
           ⚠ <strong>Ratio gate</strong>: post {-promoBudget + 1} more Warmup comment{-promoBudget === 0 ? '' : 's'} before this Promotional draft. Reddit flags accounts with more than 1 self-promo per 9 helpful posts.
+        </div>
+      )}
+      {draft.archived && (
+        <div className="text-[11px] bg-chess-blunder/10 border border-chess-blunder/30 rounded p-2 mb-2 text-chess-blunder">
+          🔒 <strong>Archived thread</strong>: Reddit blocks new comments after ~6 months. The draft below is still useful — copy the text and reuse on a similar live thread in r/{draft.subreddit}.
         </div>
       )}
       <div className="flex gap-2 flex-wrap">
         <button
           onClick={onCopyOpen}
-          disabled={busyKey != null || ratioBlocked}
+          disabled={busyKey != null || ratioBlocked || draft.archived}
           className={`text-[12px] font-bold px-3 py-1.5 rounded-md border disabled:opacity-60 ${
-            ratioBlocked
+            ratioBlocked || draft.archived
               ? 'bg-chess-surface text-chess-text-tertiary border-chess-border/40 cursor-not-allowed'
               : 'bg-chess-accent text-white border-chess-accent hover:bg-chess-accent/90'
           }`}
-          title={ratioBlocked
-            ? 'Blocked: post more Warmup drafts first to maintain a healthy 9:1 ratio'
-            : 'Copy the draft to clipboard and open the Reddit thread in a new tab'}
+          title={draft.archived
+            ? 'Archived thread — Reddit rejects new comments. Use the Copy-text button instead.'
+            : ratioBlocked
+              ? 'Blocked: post more Warmup drafts first to maintain a healthy 9:1 ratio'
+              : 'Copy the draft to clipboard and open the Reddit thread in a new tab'}
         >
-          📋 Copy & Open Reddit
+          {draft.archived ? '🔒 Cannot post (archived)' : '📋 Copy & Open Reddit'}
         </button>
+        {draft.archived && (
+          <button
+            onClick={async (e) => {
+              e.stopPropagation();
+              try { await navigator.clipboard.writeText(draft.draft); } catch {}
+            }}
+            className="text-[12px] font-bold px-3 py-1.5 rounded-md border bg-chess-bg/60 text-chess-text border-chess-border/40 hover:bg-chess-bg/80"
+            title="Copy the suggested comment to clipboard — paste it on a similar live thread"
+          >
+            📋 Copy text only
+          </button>
+        )}
         {isOpened && !isPosted && !isSkipped && (
           <button
             onClick={onPosted}

@@ -247,7 +247,17 @@ function parseExecutionStatuses(comments: GhComment[]): Map<string, TaskExecutio
     } else if (body.startsWith('❌')) {
       map.set(title, { status: 'failed' });
     } else if (body.startsWith('🔧')) {
-      if (!map.has(title)) map.set(title, { status: 'in_progress' });
+      // Retry semantics: a 🔧 comment landing AFTER a prior ❌ / failed state
+      // means the daemon picked the task up again (e.g. after the user
+      // swapped the issue's labels back to seo-approved). Promote to
+      // in_progress so the dashboard reflects the current attempt, not the
+      // historical failure. Already-terminal states (done / done_manual /
+      // reviewed / pr_merged) still win — those mean "complete, don't
+      // overwrite".
+      const cur = map.get(title)?.status;
+      const isTerminal = cur === 'done' || cur === 'done_manual'
+        || cur === 'reviewed' || cur === 'pr_merged' || cur === 'pr_open';
+      if (!isTerminal) map.set(title, { status: 'in_progress' });
     }
   }
   return map;

@@ -21,6 +21,20 @@ const REPO_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = `${REPO_DIR}/scripts/seo-daemon.sh`;
 
 function buildPlist() {
+  // Reliability knobs:
+  //   StartInterval=30        → fire every 30s while loaded
+  //   RunAtLoad=true          → fire immediately on load (login, manual launchctl load)
+  //   ProcessType=Interactive → exempt from macOS App Nap / energy-saver throttling
+  //                             (Background process types get aggressively throttled on
+  //                             battery; Interactive ones do not)
+  //   LowPriorityIO=false     → don't let macOS deprioritise the disk IO from our gh /
+  //                             node calls when other apps are busy
+  //   ThrottleInterval=10     → if the wrapper exits in <10s (e.g. crashes early),
+  //                             launchd waits 10s before re-firing instead of the
+  //                             default 10min throttle that effectively pauses us
+  //   AbandonProcessGroup=true → if the wrapper spawns long-running children (Claude
+  //                              Code can run for minutes), don't kill them when the
+  //                              parent shell exits
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -35,6 +49,14 @@ function buildPlist() {
   <key>StartInterval</key>
   <integer>30</integer>
   <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>LowPriorityIO</key>
+  <false/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>AbandonProcessGroup</key>
   <true/>
   <key>StandardOutPath</key>
   <string>${LOGS_DIR}/seo-executor.out.log</string>

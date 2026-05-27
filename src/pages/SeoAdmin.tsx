@@ -450,7 +450,7 @@ export default function SeoAdmin() {
   useEffect(() => {
     if (!pat || !displayed) { setComments(null); setPrStates(new Map()); return; }
     let cancelled = false;
-    (async () => {
+    const fetchOnce = async () => {
       try {
         const list = await ghFetch(`/repos/${GH_REPO}/issues/${displayed.number}/comments?per_page=100`);
         if (cancelled) return;
@@ -477,10 +477,24 @@ export default function SeoAdmin() {
       } catch {
         if (!cancelled) setComments(null);
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    fetchOnce();
+    // Auto-poll while the displayed issue is mid-run. The daemon ticks every
+    // 30s and posts 🔧 / 📝 / ✅ comments throughout — without this poll the
+    // dashboard freezes on the snapshot from page-load and the "Daemon
+    // hasn't picked this up" banner shows a false positive even after the
+    // daemon has actually started working.
+    const status = statusFromIssue(displayed);
+    const inFlight = status === 'approved' || status === 'partial';
+    const intervalId = inFlight
+      ? window.setInterval(() => { fetchOnce(); }, 30_000)
+      : null;
+    return () => {
+      cancelled = true;
+      if (intervalId != null) window.clearInterval(intervalId);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayed?.number, pat]);
+  }, [displayed?.number, displayed?.labels, pat]);
 
   const execStatuses = useMemo(() => {
     const base = comments ? parseExecutionStatuses(comments) : new Map<string, TaskExecutionStatus>();
@@ -851,6 +865,7 @@ export default function SeoAdmin() {
         execStatuses={execStatuses}
         removedTitles={removedTitles}
         tokens={dailyTokens}
+        comments={comments}
       />}
 
       {past.length > 0 && (
@@ -1267,15 +1282,27 @@ function IssueCard({
           // instead of cheerfully claiming "the daemon will handle it".
           // updated_at moves when the seo-approved label gets added, so it's
           // a decent proxy for approval time.
+          // True signal "the daemon never woke up" = no comment of ANY kind on
+          // this issue (🔧 / 📝 / ✅ / 🏁 / ❌ all count as "alive"). The
+          // executor posts the 🔧 comment immediately when it starts each
+          // task, so its absence after a long grace window is the only
+          // reliable death indicator. Bumped grace from 3min → 10min: macOS
+          // sleeps overnight, the daemon resumes within 30s of wake but
+          // tasks themselves can take a few minutes, especially the first
+          // one that pulls origin/main + spins up a worktree.
           const approvedAgoMs = Date.now() - new Date(issue.updated_at).getTime();
-          const daemonGraceMs = 3 * 60 * 1000;
-          const daemonLikelyDead = execStatuses.size === 0 && approvedAgoMs > daemonGraceMs;
+          const daemonGraceMs = 10 * 60 * 1000;
+          const anyExecutorComment = (comments ?? []).some(c => {
+            const b = c.body ?? '';
+            return /^(🔧|📝|✅|🏁|❌|🔎)/.test(b);
+          });
+          const daemonLikelyDead = !anyExecutorComment && approvedAgoMs > daemonGraceMs;
           if (daemonLikelyDead) {
             return (
               <div className="text-[12px] bg-chess-blunder/10 border border-chess-blunder/30 rounded p-3">
                 <div className="text-chess-blunder font-bold mb-1">⚠ Daemon hasn't picked this up</div>
                 <div className="text-chess-text-secondary mb-2">
-                  Approved {Math.round(approvedAgoMs / 60000)} min ago but no execution comments yet. The local launchd daemon that runs Claude Code on approved issues isn't running on your Mac.
+                  Approved {Math.round(approvedAgoMs / 60000)} min ago, still no executor activity. macOS sleeping or the daemon isn't loaded.
                 </div>
                 <div className="text-chess-text-secondary">
                   Run this once to fix (survives reboots, never needs re-running):

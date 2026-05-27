@@ -288,6 +288,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIsAdmin(email === ADMIN_EMAIL || ADMIN_EMAILS.includes(email ?? ''));
         void resolveBetaStatus(email, id);
         console.log('[Chess DNA Auth] auth.me() succeeded — userId:', id, 'email:', email);
+        // Fire-and-forget: top up this user's Supabase mirror if it has
+        // any gap vs Base44. Runs at most once per 24h per user, gated by
+        // localStorage. No-op for users already at parity. Critical for
+        // Phase 6 — users who never opened the app after shadow-mode shipped
+        // need their historical rows mirrored before reads flip.
+        void import('@/api/lazy-backfill').then(({ startLazyBackfill }) => {
+          startLazyBackfill(email);
+        }).catch(() => { /* lazy import failed, skip silently */ });
       })
       .catch((err: unknown) => {
         // auth.me() failed but token exists → still authenticated.

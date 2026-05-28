@@ -29,11 +29,42 @@ const GH_HEADERS = () => ({
   'Content-Type': 'application/json',
 });
 
+// Wrap fetch with retry-on-transient-failure. The daemon runs on a laptop
+// whose wifi sleeps/drops — "fetch failed" / ENOTFOUND api.github.com are
+// common and recoverable. Retry network-level errors (TypeError from fetch,
+// DNS failures) and 5xx/429 responses up to 3× with exponential backoff.
+// Do NOT retry 4xx (other than 429) — those are real client errors.
+async function fetchWithRetry(url, init = {}, label = 'fetch', tries = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`${label} → ${res.status}`);
+        // fall through to backoff
+      } else {
+        return res; // 4xx — let caller handle (don't retry)
+      }
+    } catch (e) {
+      // Network-level failure (DNS, connection reset, offline). Retryable.
+      lastErr = e;
+    }
+    if (attempt < tries) {
+      const backoffMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.warn(`[exec]   ${label} attempt ${attempt}/${tries} failed (${lastErr?.message ?? lastErr}), retrying in ${backoffMs}ms`);
+      await new Promise(r => setTimeout(r, backoffMs));
+    }
+  }
+  throw lastErr ?? new Error(`${label} failed after ${tries} attempts`);
+}
+
 async function gh(path, init = {}) {
-  const res = await fetch(`${GH_BASE}${path}`, {
-    ...init,
-    headers: { ...GH_HEADERS(), ...(init.headers ?? {}) },
-  });
+  const res = await fetchWithRetry(
+    `${GH_BASE}${path}`,
+    { ...init, headers: { ...GH_HEADERS(), ...(init.headers ?? {}) } },
+    `${init.method ?? 'GET'} ${path}`,
+  );
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${init.method ?? 'GET'} ${path} → ${res.status}: ${body.slice(0, 500)}`);
@@ -327,7 +358,13 @@ function parseUrlCommentPairs(description) {
 async function fetchRedditThread(url) {
   const base = url.replace(/[?#].*$/, '').replace(/\/$/, '');
   const jsonUrl = `${base}.json`;
-  const res = await fetch(jsonUrl, { headers: { 'User-Agent': REDDIT_USER_AGENT } });
+  let res;
+  try {
+    res = await fetchWithRetry(jsonUrl, { headers: { 'User-Agent': REDDIT_USER_AGENT } }, `reddit ${base}`);
+  } catch (e) {
+    console.warn(`[exec]   reddit fetch gave up for ${url}: ${e.message}`);
+    return null;
+  }
   if (!res.ok) return null;
   const data = await res.json();
   const post = data?.[0]?.data?.children?.[0]?.data;

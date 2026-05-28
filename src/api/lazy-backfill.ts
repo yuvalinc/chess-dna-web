@@ -62,15 +62,31 @@ function markBackfilled(userEmail: string): void {
 const ENTITIES: Entity[] = ['Game', 'Analysis', 'PatternSnapshot'];
 
 /**
- * Public entry point. Call this AFTER auth.me() resolves with a real email.
+ * Public entry point. Call this AFTER auth.me() resolves.
+ *
+ * @param userEmail    the Supabase user_id we write rows under (JWT sub / email)
+ * @param base44UserId the caller's Base44 ObjectId (auth.me().id). REQUIRED —
+ *   we scope the Base44 read by `created_by_id = base44UserId` rather than
+ *   calling `.list()`. For admin accounts `.list()` returns EVERY user's rows
+ *   (RLS is bypassed for admins), and writing all of those under one email
+ *   corrupts the mirror. Scoping by created_by_id is correct for admins and
+ *   normal users alike.
+ *
  * Returns immediately; backfill runs in the background. Never throws.
  */
-export function startLazyBackfill(userEmail: string | null): void {
+export function startLazyBackfill(userEmail: string | null, base44UserId: string | null): void {
   if (!userEmail) return;
+  if (!base44UserId) {
+    // Without the caller's ObjectId we can't safely scope the Base44 read.
+    // Skip rather than risk an admin-wide pull. Dual-write still mirrors new
+    // writes; we just don't do the historical top-up this session.
+    console.warn('[lazy-backfill] no base44UserId — skipping to avoid unscoped read');
+    return;
+  }
   if (!isSupabaseConfigured()) return;
   if (isRecentlyBackfilled(userEmail)) return;
 
-  void runBackfill(userEmail)
+  void runBackfill(userEmail, base44UserId)
     .then((summaries) => {
       const filled = summaries.reduce((s, x) => s + x.filled, 0);
       const errors = summaries.reduce((s, x) => s + x.errors, 0);
@@ -85,11 +101,11 @@ export function startLazyBackfill(userEmail: string | null): void {
     });
 }
 
-async function runBackfill(userEmail: string): Promise<BackfillSummary[]> {
+async function runBackfill(userEmail: string, base44UserId: string): Promise<BackfillSummary[]> {
   const summaries: BackfillSummary[] = [];
   for (const entity of ENTITIES) {
     try {
-      summaries.push(await backfillEntity(entity, userEmail));
+      summaries.push(await backfillEntity(entity, userEmail, base44UserId));
     } catch (err) {
       console.warn(`[lazy-backfill] ${entity} failed:`, err);
       summaries.push({ entity, base44Count: -1, supabaseCount: -1, missing: -1, filled: 0, errors: 1 });
@@ -98,10 +114,11 @@ async function runBackfill(userEmail: string): Promise<BackfillSummary[]> {
   return summaries;
 }
 
-async function backfillEntity(entity: Entity, userEmail: string): Promise<BackfillSummary> {
-  // Walk Base44 IDs first (cheap — list returns rows but we only keep id).
-  // RLS in Base44 scopes to the caller, so this is just our own user's data.
-  const base44Rows = await fetchAllBase44(entity);
+async function backfillEntity(entity: Entity, userEmail: string, base44UserId: string): Promise<BackfillSummary> {
+  // Scope the Base44 read to THIS user's rows by created_by_id. Never use a
+  // bare .list() here — admins would pull everyone's data and we'd write it
+  // all under one email (this exact bug corrupted the mirror once).
+  const base44Rows = await fetchOwnBase44(entity, base44UserId);
   if (base44Rows.length === 0) {
     return { entity, base44Count: 0, supabaseCount: 0, missing: 0, filled: 0, errors: 0 };
   }
@@ -148,14 +165,20 @@ async function backfillEntity(entity: Entity, userEmail: string): Promise<Backfi
 }
 
 /**
- * Fetch all rows from Base44 for the current user (RLS-scoped). Single call
- * with the documented max page size; if a user has > 5000 rows of any one
- * entity we'd need an explicit date cursor — but that's not realistic for
- * normal users (heaviest user has < 1000 games).
+ * Fetch this user's own rows from Base44, scoped by created_by_id. This is
+ * the admin-safe path: `.list()` would return every user's rows for an admin
+ * account, but `filter({ created_by_id })` always returns just the caller's.
+ *
+ * Tradeoff: legacy Base44 rows that predate the created_by_id field won't be
+ * matched. That's acceptable — they're a vanishing edge case, and shadow-mode
+ * still serves them from Base44. Far better than the admin-wide corruption
+ * risk of a bare .list().
  */
-async function fetchAllBase44(entity: Entity): Promise<Array<{ id: string }>> {
-  const handler = rawEntities[entity];
-  const rows = await handler.list('-created_date', BASE44_PAGE) as Array<{ id: string }>;
+async function fetchOwnBase44(entity: Entity, base44UserId: string): Promise<Array<{ id: string }>> {
+  const handler = rawEntities[entity] as unknown as {
+    filter: (f: Record<string, unknown>, sort?: string, limit?: number) => Promise<Array<{ id: string }>>;
+  };
+  const rows = await handler.filter({ created_by_id: base44UserId }, '-created_date', BASE44_PAGE);
   return rows.filter((r) => !!r?.id);
 }
 

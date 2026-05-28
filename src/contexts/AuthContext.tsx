@@ -294,7 +294,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Phase 6 — users who never opened the app after shadow-mode shipped
         // need their historical rows mirrored before reads flip.
         void import('@/api/lazy-backfill').then(({ startLazyBackfill }) => {
-          startLazyBackfill(email);
+          // Pass the Base44 ObjectId (id) so the backfill scopes its read by
+          // created_by_id — never a bare .list(), which returns ALL users'
+          // rows for admin accounts and would corrupt the mirror.
+          startLazyBackfill(email, id);
         }).catch(() => { /* lazy import failed, skip silently */ });
       })
       .catch((err: unknown) => {
